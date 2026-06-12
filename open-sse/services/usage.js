@@ -53,7 +53,7 @@ const CLAUDE_CONFIG = {
 };
 
 const CODEBUDDY_CONFIG = {
-  usageUrl: "https://www.codebuddy.ai/billing/meter/get-user-resource",
+  usageUrl: "https://www.codebuddy.ai/v2/billing/meter/get-user-resource",
   productCode: "p_tcaca",
   packageCodes: {
     free: "TCACA_code_001_PqouKr6QWV",
@@ -112,15 +112,46 @@ export async function getUsageForProvider(connection, proxyOptions = null) {
   }
 }
 
+async function fetchCodeBuddyUid(accessToken, providerSpecificData = {}, proxyOptions = null) {
+  const cachedUid = providerSpecificData?.uid || providerSpecificData?.rawAuth?.uid;
+  if (cachedUid) return { uid: cachedUid, enterpriseId: providerSpecificData?.enterpriseId || null };
+
+  const domain = providerSpecificData?.domain || providerSpecificData?.rawAuth?.domain || "www.codebuddy.ai";
+  try {
+    const response = await proxyAwareFetch(`https://${domain}/v2/plugin/accounts`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+        "X-Domain": domain,
+      },
+    }, proxyOptions);
+
+    if (!response.ok) return { uid: null, enterpriseId: null };
+
+    const body = await response.json();
+    const accounts = body?.data?.accounts || [];
+    const account = accounts.find((a) => a.lastLogin) || accounts[0] || {};
+    return {
+      uid: account.uid || null,
+      enterpriseId: account.enterpriseId || null,
+    };
+  } catch {
+    return { uid: null, enterpriseId: null };
+  }
+}
+
 async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOptions = null) {
   if (!accessToken) {
     return { plan: "CodeBuddy", message: "CodeBuddy access token not available.", quotas: {} };
   }
 
   try {
+    const { uid, enterpriseId } = await fetchCodeBuddyUid(accessToken, providerSpecificData, proxyOptions);
+
     const response = await proxyAwareFetch(CODEBUDDY_CONFIG.usageUrl, {
       method: "POST",
-      headers: buildCodeBuddyUsageHeaders(accessToken, providerSpecificData),
+      headers: buildCodeBuddyUsageHeaders(accessToken, providerSpecificData, uid, enterpriseId),
       body: JSON.stringify(buildCodeBuddyUsageBody()),
     }, proxyOptions);
 
@@ -135,7 +166,7 @@ async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOp
     if (response.status === 401 || response.status === 403) {
       return {
         plan: "CodeBuddy",
-        message: "CodeBuddy quota endpoint requires a web console session; the current CLI/plugin OAuth token can fetch account data but not credit usage.",
+        message: `CodeBuddy quota: auth failed (${response.status}). uid=${uid ? "yes" : "missing"}.`,
         quotas: {},
       };
     }
@@ -209,20 +240,26 @@ function buildCodeBuddyUsageBody() {
   };
 }
 
-function buildCodeBuddyUsageHeaders(accessToken, providerSpecificData = {}) {
+function buildCodeBuddyUsageHeaders(accessToken, providerSpecificData = {}, uid = null, enterpriseId = null) {
   const domain = providerSpecificData?.domain || providerSpecificData?.rawAuth?.domain || "www.codebuddy.ai";
-  const webCookie = providerSpecificData?.webCookie || providerSpecificData?.cookie || providerSpecificData?.codeBuddyCookie;
 
-  return {
-    ...(webCookie ? { Cookie: webCookie } : { Authorization: `Bearer ${accessToken}` }),
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
     Accept: "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
     "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0 CodeBuddy quota probe",
-    "X-Requested-With": "XMLHttpRequest",
     "X-Domain": domain,
-    Origin: `https://${domain}`,
-    Referer: `https://${domain}/profile/usage`,
   };
+
+  if (uid) {
+    headers["X-User-Id"] = uid;
+  }
+  if (enterpriseId) {
+    headers["X-Enterprise-Id"] = enterpriseId;
+    headers["X-Tenant-Id"] = enterpriseId;
+  }
+
+  return headers;
 }
 
 function parseCodeBuddyUsage(payload) {
