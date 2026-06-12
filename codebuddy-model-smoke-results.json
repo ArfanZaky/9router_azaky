@@ -1,0 +1,825 @@
+{
+  "testedAt": "2026-06-11T17:34:10.343Z",
+  "ok": [
+    {
+      "model": "default-model",
+      "ok": true,
+      "status": 200,
+      "ms": 4946,
+      "content": "ok",
+      "error": ""
+    },
+    {
+      "model": "default-model-lite",
+      "ok": true,
+      "status": 200,
+      "ms": 2115,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "claude-sonnet-4.6",
+      "ok": true,
+      "status": 200,
+      "ms": 4476,
+      "content": "ok",
+      "error": ""
+    },
+    {
+      "model": "claude-haiku-4.5",
+      "ok": true,
+      "status": 200,
+      "ms": 1572,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "deepseek-v3-0324",
+      "ok": true,
+      "status": 200,
+      "ms": 730,
+      "content": "[",
+      "error": ""
+    },
+    {
+      "model": "glm-5.0",
+      "ok": true,
+      "status": 200,
+      "ms": 2297,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "glm-5v-turbo",
+      "ok": true,
+      "status": 200,
+      "ms": 491,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "glm-4.6",
+      "ok": true,
+      "status": 200,
+      "ms": 823,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "kimi-k2.6",
+      "ok": true,
+      "status": 200,
+      "ms": 6824,
+      "content": "Ack",
+      "error": ""
+    },
+    {
+      "model": "kimi-k2.5",
+      "ok": true,
+      "status": 200,
+      "ms": 852,
+      "content": "Ready",
+      "error": ""
+    }
+  ],
+  "fail": [
+    {
+      "model": "default",
+      "ok": false,
+      "status": 400,
+      "ms": 7818,
+      "content": "",
+      "error": "[codebuddy/default] [400]: {\"code\":11102,\"msg\":\"model [default] service info not found\",\"requestId\":\"95384d57be1046e5a7dc9d7d2dda3832\"} (reset after 1s)"
+    },
+    {
+      "model": "auto",
+      "ok": false,
+      "status": 400,
+      "ms": 8036,
+      "content": "",
+      "error": "[codebuddy/auto] [400]: {\"code\":11102,\"msg\":\"model [auto] service info not found\",\"requestId\":\"1a0034d21813405ca84d1d2de84f65c2\"} (reset after 2s)"
+    },
+    {
+      "model": "lite",
+      "ok": false,
+      "status": 400,
+      "ms": 8029,
+      "content": "",
+      "error": "[codebuddy/lite] [400]: {\"code\":11102,\"msg\":\"model [lite] service info not found\",\"requestId\":\"86e3d3a32869425e84399a0338af13d2\"} (reset after 6s)"
+    },
+    {
+      "model": "claude-sonnet-4.6-1m",
+      "ok": false,
+      "status": 400,
+      "ms": 8213,
+      "content": "",
+      "error": "[codebuddy/claude-sonnet-4.6-1m] [400]: {\"code\":11102,\"msg\":\"model [claude-sonnet-4.6-1m] service info not found\",\"requestId\":\"6451b77a9c774d1e859c6d02b7dca12f\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4.8",
+      "ok": false,
+      "status": 400,
+      "ms": 7881,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4.8] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4.8] service info not found\",\"requestId\":\"ffcd08b9498047e2bc55b47b7bb7b9ba\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4.8-1m",
+      "ok": false,
+      "status": 400,
+      "ms": 7446,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4.8-1m] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4.8-1m] service info not found\",\"requestId\":\"497a48eb080344839786b458539b8651\"} (reset after 6s)"
+    },
+    {
+      "model": "claude-opus-4.7",
+      "ok": false,
+      "status": 400,
+      "ms": 8649,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4.7] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4.7] service info not found\",\"requestId\":\"df0f813f89ba4064b2325257c7627030\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4.7-1m",
+      "ok": false,
+      "status": 200,
+      "ms": 1979,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "claude-opus-4.6",
+      "ok": false,
+      "status": 200,
+      "ms": 2314,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "claude-opus-4.6-1m",
+      "ok": false,
+      "status": 400,
+      "ms": 15762,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4.6-1m] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4.6-1m] service info not found\",\"requestId\":\"ec7593e502444c2cacea103b38982c5f\"} (reset after 1s)"
+    },
+    {
+      "model": "gpt-5.5",
+      "ok": false,
+      "status": 400,
+      "ms": 23267,
+      "content": "",
+      "error": "[codebuddy/gpt-5.5] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"a56ba7d8a5d04a85bf1b6ee3a4cc9f98\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"param\":\"max_out"
+    },
+    {
+      "model": "gpt-5.4",
+      "ok": false,
+      "status": 400,
+      "ms": 18835,
+      "content": "",
+      "error": "[codebuddy/gpt-5.4] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"4d8754845f4646139c2a35ba03fd49b9\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"param\":\"max_out"
+    },
+    {
+      "model": "gpt-5.3-codex",
+      "ok": false,
+      "status": 400,
+      "ms": 17424,
+      "content": "",
+      "error": "[codebuddy/gpt-5.3-codex] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"bd84973904d04d2f85552c2418040718\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"param\":\"m"
+    },
+    {
+      "model": "gpt-5.1-codex",
+      "ok": false,
+      "status": 400,
+      "ms": 17657,
+      "content": "",
+      "error": "[codebuddy/gpt-5.1-codex] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"6d4fa4e5f2864f5ea1d43ee09cf65d59\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"param\":\"m"
+    },
+    {
+      "model": "gpt-5.1-codex-mini",
+      "ok": false,
+      "status": 400,
+      "ms": 14714,
+      "content": "",
+      "error": "[codebuddy/gpt-5.1-codex-mini] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"6cce25ba0ae94b9890394f0f29976fe4\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"para"
+    },
+    {
+      "model": "gemini-3.1-pro",
+      "ok": false,
+      "status": 200,
+      "ms": 2862,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.0-flash",
+      "ok": false,
+      "status": 200,
+      "ms": 1935,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.5-flash",
+      "ok": false,
+      "status": 200,
+      "ms": 1059,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "ok": false,
+      "status": 200,
+      "ms": 4255,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "ok": false,
+      "status": 200,
+      "ms": 1054,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "ok": false,
+      "status": 200,
+      "ms": 4531,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "deepseek-v3-2-volc",
+      "ok": false,
+      "status": 400,
+      "ms": 12248,
+      "content": "",
+      "error": "[codebuddy/deepseek-v3-2-volc] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v3-2-volc] service info not found\",\"requestId\":\"d4a531018ce44ae386c88e5403541855\"} (reset after 18s)"
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "ok": false,
+      "status": 400,
+      "ms": 9480,
+      "content": "",
+      "error": "[codebuddy/deepseek-v4-pro] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v4-pro] service info not found\",\"requestId\":\"a1a3d632c7274727ab86164cf8868e1a\"} (reset after 8s)"
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "ok": false,
+      "status": 400,
+      "ms": 9205,
+      "content": "",
+      "error": "[codebuddy/deepseek-v4-flash] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v4-flash] service info not found\",\"requestId\":\"ee7716a94b9049329e761133e188f55f\"} (reset after 2s)"
+    },
+    {
+      "model": "deepseek-v4-pro-exclusive",
+      "ok": false,
+      "status": 400,
+      "ms": 8673,
+      "content": "",
+      "error": "[codebuddy/deepseek-v4-pro-exclusive] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v4-pro-exclusive] service info not found\",\"requestId\":\"8e8fad3283ee4aa98fbeb19b6e115c3e\"} (reset after 1s)"
+    },
+    {
+      "model": "deepseek-v3.1",
+      "ok": false,
+      "status": 400,
+      "ms": 10238,
+      "content": "",
+      "error": "[codebuddy/deepseek-v3.1] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v3.1] service info not found\",\"requestId\":\"38acf376dfa245aa9781db6482009731\"} (reset after 1s)"
+    },
+    {
+      "model": "glm-5.1",
+      "ok": false,
+      "status": 400,
+      "ms": 9881,
+      "content": "",
+      "error": "[codebuddy/glm-5.1] [400]: {\"code\":11102,\"msg\":\"model [glm-5.1] service info not found\",\"requestId\":\"a478919e25d844a08e1ba43fec8eedba\"} (reset after 1s)"
+    },
+    {
+      "model": "glm-5.0-turbo",
+      "ok": false,
+      "status": 400,
+      "ms": 9544,
+      "content": "",
+      "error": "[codebuddy/glm-5.0-turbo] [400]: {\"code\":11102,\"msg\":\"model [glm-5.0-turbo] service info not found\",\"requestId\":\"f5ef6e11b5f440368268fef435446f1e\"} (reset after 1s)"
+    },
+    {
+      "model": "glm-4.7",
+      "ok": false,
+      "status": 400,
+      "ms": 8399,
+      "content": "",
+      "error": "[codebuddy/glm-4.7] [400]: {\"code\":11102,\"msg\":\"model [glm-4.7] service info not found\",\"requestId\":\"14c78b167a5e4354b820f723875d6061\"} (reset after 1s)"
+    },
+    {
+      "model": "glm-4.6v",
+      "ok": false,
+      "status": 400,
+      "ms": 8626,
+      "content": "",
+      "error": "[codebuddy/glm-4.6v] [400]: {\"code\":11102,\"msg\":\"model [glm-4.6v] service info not found\",\"requestId\":\"c3f03d03e3ef48febeec241ccf3c2576\"} (reset after 1s)"
+    },
+    {
+      "model": "kimi-k2-thinking",
+      "ok": false,
+      "status": 400,
+      "ms": 11342,
+      "content": "",
+      "error": "[codebuddy/kimi-k2-thinking] [400]: {\"code\":11102,\"msg\":\"model [kimi-k2-thinking] service info not found\",\"requestId\":\"78d29f3106034399a10db5b1a644560c\"} (reset after 1s)"
+    },
+    {
+      "model": "kimi-k2.5-thinking",
+      "ok": false,
+      "status": 400,
+      "ms": 9639,
+      "content": "",
+      "error": "[codebuddy/kimi-k2.5-thinking] [400]: {\"code\":11102,\"msg\":\"model [kimi-k2.5-thinking] service info not found\",\"requestId\":\"d78eaf539f25452298211c5f140a7b44\"} (reset after 9s)"
+    },
+    {
+      "model": "minimax-m2.5",
+      "ok": false,
+      "status": 400,
+      "ms": 9977,
+      "content": "",
+      "error": "[codebuddy/minimax-m2.5] [400]: {\"code\":11102,\"msg\":\"model [minimax-m2.5] service info not found\",\"requestId\":\"6ed7a56ae59044d9920f5ea9f1682a1f\"} (reset after 1s)"
+    },
+    {
+      "model": "minimax-m2.7",
+      "ok": false,
+      "status": 400,
+      "ms": 9512,
+      "content": "",
+      "error": "[codebuddy/minimax-m2.7] [400]: {\"code\":11102,\"msg\":\"model [minimax-m2.7] service info not found\",\"requestId\":\"4fd29ba0a4c047768347549b55589488\"} (reset after 1s)"
+    },
+    {
+      "model": "minimax-m3-play",
+      "ok": false,
+      "status": 400,
+      "ms": 9542,
+      "content": "",
+      "error": "[codebuddy/minimax-m3-play] [400]: {\"code\":11102,\"msg\":\"model [minimax-m3-play] service info not found\",\"requestId\":\"729b6cc3d5b14ef0a279871fb196b484\"} (reset after 1s)"
+    },
+    {
+      "model": "hy3-preview",
+      "ok": false,
+      "status": 400,
+      "ms": 10328,
+      "content": "",
+      "error": "[codebuddy/hy3-preview] [400]: {\"code\":11102,\"msg\":\"model [hy3-preview] service info not found\",\"requestId\":\"9cdf65f0d7d54d6f9af68f74b4b836c3\"} (reset after 1s)"
+    },
+    {
+      "model": "hunyuan-chat",
+      "ok": false,
+      "status": 400,
+      "ms": 10144,
+      "content": "",
+      "error": "[codebuddy/hunyuan-chat] [400]: {\"code\":11102,\"msg\":\"model [hunyuan-chat] service info not found\",\"requestId\":\"58415f46b38c44bfbee58caeb2abd67b\"} (reset after 1s)"
+    },
+    {
+      "model": "hunyuan-2.0-instruct",
+      "ok": false,
+      "status": 400,
+      "ms": 8232,
+      "content": "",
+      "error": "[codebuddy/hunyuan-2.0-instruct] [400]: {\"code\":11102,\"msg\":\"model [hunyuan-2.0-instruct] service info not found\",\"requestId\":\"474117b63cc64c2287041b49b7a2ee9d\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4-6",
+      "ok": false,
+      "status": 400,
+      "ms": 10219,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4-6] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4-6] service info not found\",\"requestId\":\"edd1ce6d80144562bc8b738e932a7438\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4-6-thinking",
+      "ok": false,
+      "status": 400,
+      "ms": 5416,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4-6-thinking] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4-6-thinking] service info not found\",\"requestId\":\"75d5377a16494c9a8f1b0b78a34c0964\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-4.6-opus-max",
+      "ok": false,
+      "status": 400,
+      "ms": 7584,
+      "content": "",
+      "error": "[codebuddy/claude-4.6-opus-max] [400]: {\"code\":11102,\"msg\":\"model [claude-4.6-opus-max] service info not found\",\"requestId\":\"0972f6b8ef1747f0bf38962266d68c1d\"} (reset after 1s)"
+    }
+  ],
+  "results": [
+    {
+      "model": "default-model",
+      "ok": true,
+      "status": 200,
+      "ms": 4946,
+      "content": "ok",
+      "error": ""
+    },
+    {
+      "model": "default-model-lite",
+      "ok": true,
+      "status": 200,
+      "ms": 2115,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "default",
+      "ok": false,
+      "status": 400,
+      "ms": 7818,
+      "content": "",
+      "error": "[codebuddy/default] [400]: {\"code\":11102,\"msg\":\"model [default] service info not found\",\"requestId\":\"95384d57be1046e5a7dc9d7d2dda3832\"} (reset after 1s)"
+    },
+    {
+      "model": "auto",
+      "ok": false,
+      "status": 400,
+      "ms": 8036,
+      "content": "",
+      "error": "[codebuddy/auto] [400]: {\"code\":11102,\"msg\":\"model [auto] service info not found\",\"requestId\":\"1a0034d21813405ca84d1d2de84f65c2\"} (reset after 2s)"
+    },
+    {
+      "model": "lite",
+      "ok": false,
+      "status": 400,
+      "ms": 8029,
+      "content": "",
+      "error": "[codebuddy/lite] [400]: {\"code\":11102,\"msg\":\"model [lite] service info not found\",\"requestId\":\"86e3d3a32869425e84399a0338af13d2\"} (reset after 6s)"
+    },
+    {
+      "model": "claude-sonnet-4.6",
+      "ok": true,
+      "status": 200,
+      "ms": 4476,
+      "content": "ok",
+      "error": ""
+    },
+    {
+      "model": "claude-sonnet-4.6-1m",
+      "ok": false,
+      "status": 400,
+      "ms": 8213,
+      "content": "",
+      "error": "[codebuddy/claude-sonnet-4.6-1m] [400]: {\"code\":11102,\"msg\":\"model [claude-sonnet-4.6-1m] service info not found\",\"requestId\":\"6451b77a9c774d1e859c6d02b7dca12f\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4.8",
+      "ok": false,
+      "status": 400,
+      "ms": 7881,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4.8] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4.8] service info not found\",\"requestId\":\"ffcd08b9498047e2bc55b47b7bb7b9ba\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4.8-1m",
+      "ok": false,
+      "status": 400,
+      "ms": 7446,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4.8-1m] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4.8-1m] service info not found\",\"requestId\":\"497a48eb080344839786b458539b8651\"} (reset after 6s)"
+    },
+    {
+      "model": "claude-opus-4.7",
+      "ok": false,
+      "status": 400,
+      "ms": 8649,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4.7] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4.7] service info not found\",\"requestId\":\"df0f813f89ba4064b2325257c7627030\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4.7-1m",
+      "ok": false,
+      "status": 200,
+      "ms": 1979,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "claude-opus-4.6",
+      "ok": false,
+      "status": 200,
+      "ms": 2314,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "claude-opus-4.6-1m",
+      "ok": false,
+      "status": 400,
+      "ms": 15762,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4.6-1m] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4.6-1m] service info not found\",\"requestId\":\"ec7593e502444c2cacea103b38982c5f\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-haiku-4.5",
+      "ok": true,
+      "status": 200,
+      "ms": 1572,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "gpt-5.5",
+      "ok": false,
+      "status": 400,
+      "ms": 23267,
+      "content": "",
+      "error": "[codebuddy/gpt-5.5] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"a56ba7d8a5d04a85bf1b6ee3a4cc9f98\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"param\":\"max_out"
+    },
+    {
+      "model": "gpt-5.4",
+      "ok": false,
+      "status": 400,
+      "ms": 18835,
+      "content": "",
+      "error": "[codebuddy/gpt-5.4] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"4d8754845f4646139c2a35ba03fd49b9\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"param\":\"max_out"
+    },
+    {
+      "model": "gpt-5.3-codex",
+      "ok": false,
+      "status": 400,
+      "ms": 17424,
+      "content": "",
+      "error": "[codebuddy/gpt-5.3-codex] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"bd84973904d04d2f85552c2418040718\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"param\":\"m"
+    },
+    {
+      "model": "gpt-5.1-codex",
+      "ok": false,
+      "status": 400,
+      "ms": 17657,
+      "content": "",
+      "error": "[codebuddy/gpt-5.1-codex] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"6d4fa4e5f2864f5ea1d43ee09cf65d59\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"param\":\"m"
+    },
+    {
+      "model": "gpt-5.1-codex-mini",
+      "ok": false,
+      "status": 400,
+      "ms": 14714,
+      "content": "",
+      "error": "[codebuddy/gpt-5.1-codex-mini] [400]: {\"code\":11133,\"msg\":\"Invalid request parameters\",\"requestId\":\"6cce25ba0ae94b9890394f0f29976fe4\",\"extError\":{\"code\":\"integer_below_min_value\",\"message\":\"invalid parameter value\",\"para"
+    },
+    {
+      "model": "gemini-3.1-pro",
+      "ok": false,
+      "status": 200,
+      "ms": 2862,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.0-flash",
+      "ok": false,
+      "status": 200,
+      "ms": 1935,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.5-flash",
+      "ok": false,
+      "status": 200,
+      "ms": 1059,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "ok": false,
+      "status": 200,
+      "ms": 4255,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "ok": false,
+      "status": 200,
+      "ms": 1054,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "ok": false,
+      "status": 200,
+      "ms": 4531,
+      "content": "",
+      "error": ""
+    },
+    {
+      "model": "deepseek-v3-2-volc",
+      "ok": false,
+      "status": 400,
+      "ms": 12248,
+      "content": "",
+      "error": "[codebuddy/deepseek-v3-2-volc] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v3-2-volc] service info not found\",\"requestId\":\"d4a531018ce44ae386c88e5403541855\"} (reset after 18s)"
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "ok": false,
+      "status": 400,
+      "ms": 9480,
+      "content": "",
+      "error": "[codebuddy/deepseek-v4-pro] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v4-pro] service info not found\",\"requestId\":\"a1a3d632c7274727ab86164cf8868e1a\"} (reset after 8s)"
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "ok": false,
+      "status": 400,
+      "ms": 9205,
+      "content": "",
+      "error": "[codebuddy/deepseek-v4-flash] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v4-flash] service info not found\",\"requestId\":\"ee7716a94b9049329e761133e188f55f\"} (reset after 2s)"
+    },
+    {
+      "model": "deepseek-v4-pro-exclusive",
+      "ok": false,
+      "status": 400,
+      "ms": 8673,
+      "content": "",
+      "error": "[codebuddy/deepseek-v4-pro-exclusive] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v4-pro-exclusive] service info not found\",\"requestId\":\"8e8fad3283ee4aa98fbeb19b6e115c3e\"} (reset after 1s)"
+    },
+    {
+      "model": "deepseek-v3.1",
+      "ok": false,
+      "status": 400,
+      "ms": 10238,
+      "content": "",
+      "error": "[codebuddy/deepseek-v3.1] [400]: {\"code\":11102,\"msg\":\"model [deepseek-v3.1] service info not found\",\"requestId\":\"38acf376dfa245aa9781db6482009731\"} (reset after 1s)"
+    },
+    {
+      "model": "deepseek-v3-0324",
+      "ok": true,
+      "status": 200,
+      "ms": 730,
+      "content": "[",
+      "error": ""
+    },
+    {
+      "model": "glm-5.1",
+      "ok": false,
+      "status": 400,
+      "ms": 9881,
+      "content": "",
+      "error": "[codebuddy/glm-5.1] [400]: {\"code\":11102,\"msg\":\"model [glm-5.1] service info not found\",\"requestId\":\"a478919e25d844a08e1ba43fec8eedba\"} (reset after 1s)"
+    },
+    {
+      "model": "glm-5.0",
+      "ok": true,
+      "status": 200,
+      "ms": 2297,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "glm-5.0-turbo",
+      "ok": false,
+      "status": 400,
+      "ms": 9544,
+      "content": "",
+      "error": "[codebuddy/glm-5.0-turbo] [400]: {\"code\":11102,\"msg\":\"model [glm-5.0-turbo] service info not found\",\"requestId\":\"f5ef6e11b5f440368268fef435446f1e\"} (reset after 1s)"
+    },
+    {
+      "model": "glm-5v-turbo",
+      "ok": true,
+      "status": 200,
+      "ms": 491,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "glm-4.7",
+      "ok": false,
+      "status": 400,
+      "ms": 8399,
+      "content": "",
+      "error": "[codebuddy/glm-4.7] [400]: {\"code\":11102,\"msg\":\"model [glm-4.7] service info not found\",\"requestId\":\"14c78b167a5e4354b820f723875d6061\"} (reset after 1s)"
+    },
+    {
+      "model": "glm-4.6",
+      "ok": true,
+      "status": 200,
+      "ms": 823,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "glm-4.6v",
+      "ok": false,
+      "status": 400,
+      "ms": 8626,
+      "content": "",
+      "error": "[codebuddy/glm-4.6v] [400]: {\"code\":11102,\"msg\":\"model [glm-4.6v] service info not found\",\"requestId\":\"c3f03d03e3ef48febeec241ccf3c2576\"} (reset after 1s)"
+    },
+    {
+      "model": "kimi-k2.6",
+      "ok": true,
+      "status": 200,
+      "ms": 6824,
+      "content": "Ack",
+      "error": ""
+    },
+    {
+      "model": "kimi-k2.5",
+      "ok": true,
+      "status": 200,
+      "ms": 852,
+      "content": "Ready",
+      "error": ""
+    },
+    {
+      "model": "kimi-k2-thinking",
+      "ok": false,
+      "status": 400,
+      "ms": 11342,
+      "content": "",
+      "error": "[codebuddy/kimi-k2-thinking] [400]: {\"code\":11102,\"msg\":\"model [kimi-k2-thinking] service info not found\",\"requestId\":\"78d29f3106034399a10db5b1a644560c\"} (reset after 1s)"
+    },
+    {
+      "model": "kimi-k2.5-thinking",
+      "ok": false,
+      "status": 400,
+      "ms": 9639,
+      "content": "",
+      "error": "[codebuddy/kimi-k2.5-thinking] [400]: {\"code\":11102,\"msg\":\"model [kimi-k2.5-thinking] service info not found\",\"requestId\":\"d78eaf539f25452298211c5f140a7b44\"} (reset after 9s)"
+    },
+    {
+      "model": "minimax-m2.5",
+      "ok": false,
+      "status": 400,
+      "ms": 9977,
+      "content": "",
+      "error": "[codebuddy/minimax-m2.5] [400]: {\"code\":11102,\"msg\":\"model [minimax-m2.5] service info not found\",\"requestId\":\"6ed7a56ae59044d9920f5ea9f1682a1f\"} (reset after 1s)"
+    },
+    {
+      "model": "minimax-m2.7",
+      "ok": false,
+      "status": 400,
+      "ms": 9512,
+      "content": "",
+      "error": "[codebuddy/minimax-m2.7] [400]: {\"code\":11102,\"msg\":\"model [minimax-m2.7] service info not found\",\"requestId\":\"4fd29ba0a4c047768347549b55589488\"} (reset after 1s)"
+    },
+    {
+      "model": "minimax-m3-play",
+      "ok": false,
+      "status": 400,
+      "ms": 9542,
+      "content": "",
+      "error": "[codebuddy/minimax-m3-play] [400]: {\"code\":11102,\"msg\":\"model [minimax-m3-play] service info not found\",\"requestId\":\"729b6cc3d5b14ef0a279871fb196b484\"} (reset after 1s)"
+    },
+    {
+      "model": "hy3-preview",
+      "ok": false,
+      "status": 400,
+      "ms": 10328,
+      "content": "",
+      "error": "[codebuddy/hy3-preview] [400]: {\"code\":11102,\"msg\":\"model [hy3-preview] service info not found\",\"requestId\":\"9cdf65f0d7d54d6f9af68f74b4b836c3\"} (reset after 1s)"
+    },
+    {
+      "model": "hunyuan-chat",
+      "ok": false,
+      "status": 400,
+      "ms": 10144,
+      "content": "",
+      "error": "[codebuddy/hunyuan-chat] [400]: {\"code\":11102,\"msg\":\"model [hunyuan-chat] service info not found\",\"requestId\":\"58415f46b38c44bfbee58caeb2abd67b\"} (reset after 1s)"
+    },
+    {
+      "model": "hunyuan-2.0-instruct",
+      "ok": false,
+      "status": 400,
+      "ms": 8232,
+      "content": "",
+      "error": "[codebuddy/hunyuan-2.0-instruct] [400]: {\"code\":11102,\"msg\":\"model [hunyuan-2.0-instruct] service info not found\",\"requestId\":\"474117b63cc64c2287041b49b7a2ee9d\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4-6",
+      "ok": false,
+      "status": 400,
+      "ms": 10219,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4-6] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4-6] service info not found\",\"requestId\":\"edd1ce6d80144562bc8b738e932a7438\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-opus-4-6-thinking",
+      "ok": false,
+      "status": 400,
+      "ms": 5416,
+      "content": "",
+      "error": "[codebuddy/claude-opus-4-6-thinking] [400]: {\"code\":11102,\"msg\":\"model [claude-opus-4-6-thinking] service info not found\",\"requestId\":\"75d5377a16494c9a8f1b0b78a34c0964\"} (reset after 1s)"
+    },
+    {
+      "model": "claude-4.6-opus-max",
+      "ok": false,
+      "status": 400,
+      "ms": 7584,
+      "content": "",
+      "error": "[codebuddy/claude-4.6-opus-max] [400]: {\"code\":11102,\"msg\":\"model [claude-4.6-opus-max] service info not found\",\"requestId\":\"0972f6b8ef1747f0bf38962266d68c1d\"} (reset after 1s)"
+    }
+  ]
+}

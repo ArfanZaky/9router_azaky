@@ -1,0 +1,122 @@
+{
+  "testedAt": "2026-06-11T17:35:31.276Z",
+  "results": [
+    {
+      "model": "claude-opus-4.7-1m",
+      "ok": true,
+      "status": 200,
+      "ms": 3279,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "claude-opus-4.6",
+      "ok": true,
+      "status": 200,
+      "ms": 1429,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gpt-5.5",
+      "ok": true,
+      "status": 200,
+      "ms": 3017,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gpt-5.4",
+      "ok": true,
+      "status": 200,
+      "ms": 2240,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gpt-5.3-codex",
+      "ok": true,
+      "status": 200,
+      "ms": 2437,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gpt-5.1-codex",
+      "ok": true,
+      "status": 200,
+      "ms": 1749,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gpt-5.1-codex-mini",
+      "ok": false,
+      "status": 200,
+      "ms": 2574,
+      "content": "",
+      "finish": "length",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.1-pro",
+      "ok": true,
+      "status": 200,
+      "ms": 3548,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.0-flash",
+      "ok": true,
+      "status": 200,
+      "ms": 2020,
+      "content": "OK.",
+      "finish": "length",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.5-flash",
+      "ok": true,
+      "status": 200,
+      "ms": 1489,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "ok": true,
+      "status": 200,
+      "ms": 7361,
+      "content": "OK",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "ok": true,
+      "status": 200,
+      "ms": 1458,
+      "content": "OK.",
+      "finish": "stop",
+      "error": ""
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "ok": true,
+      "status": 200,
+      "ms": 5276,
+      "content": "OK.",
+      "finish": "stop",
+      "error": ""
+    }
+  ]
+}
