@@ -52,7 +52,16 @@ async function defaultSaveQoderConnection({ tokens, email }) {
 
 async function defaultBrowserLauncher(proxyUrl) {
   const { chromium } = await import("playwright");
-  const launchOptions = { headless: true };
+  const launchOptions = {
+    headless: true,
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-infobars",
+      "--disable-features=PrivateNetworkAccessRespectPreflightResults,PrivateNetworkAccessSendPreflights,BlockInsecurePrivateNetworkRequests,TranslateUI,OptimizationHints",
+    ],
+  };
   if (proxyUrl) {
     launchOptions.proxy = { server: proxyUrl };
   }
@@ -79,6 +88,32 @@ class QoderBulkImportManager extends KiroBulkImportManager {
     this.proxyUrl = proxyUrl;
   }
 
+  async createStealthContext(browser) {
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+      Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+      Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+      window.chrome = { runtime: {} };
+      const origQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (p) =>
+        p.name === "notifications"
+          ? Promise.resolve({ state: Notification.permission })
+          : origQuery(p);
+      const origGetParam = WebGLRenderingContext.prototype.getParameter;
+      WebGLRenderingContext.prototype.getParameter = function (param) {
+        if (param === 37445) return "Intel Inc.";
+        if (param === 37446) return "Intel Iris OpenGL Engine";
+        return origGetParam.apply(this, arguments);
+      };
+    });
+    const page = await context.newPage();
+    return { context, page };
+  }
+
   async processAccount(job, account, workerId) {
     if (job.cancelRequested || !job.browser) {
       this.finalizeAccount(account, "cancelled", { error: "Job cancelled" });
@@ -88,7 +123,7 @@ class QoderBulkImportManager extends KiroBulkImportManager {
     const qoderService = this.qoderServiceFactory();
     const { verificationUriComplete, codeVerifier, nonce, machineId } = qoderService.initiateDeviceFlow();
 
-    const { context, page } = await createFreshContext(job.browser);
+    const { context, page } = await this.createStealthContext(job.browser);
     account.runtimeSession = { context, page };
 
     const pollPromise = this.pollForToken(qoderService, nonce, codeVerifier, job);
