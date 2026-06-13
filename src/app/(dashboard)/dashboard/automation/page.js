@@ -145,8 +145,8 @@ function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="mb-4 text-lg font-semibold text-text-main">CodeBuddy Bulk Token Import</h3>
-        <p className="mb-3 text-xs text-text-muted">Paste access tokens, one per line. Each token will be validated and imported as a connection.</p>
+        <h3 className="mb-4 text-lg font-semibold text-text-main">CodeBuddy OAuth Token Import</h3>
+        <p className="mb-3 text-xs text-text-muted">Paste CodeBuddy OAuth access tokens, one per line. This is separate from generated CodeBuddy Access Keys.</p>
         <textarea
           className="mb-3 w-full rounded-lg border border-border bg-background p-3 font-mono text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none"
           rows={8}
@@ -191,10 +191,10 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
         >
           <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
             <span className="material-symbols-outlined text-[20px] text-primary">group_add</span>
-            Auto Login Bulk
+            Auto Login + Generate Key
           </span>
           <span className="text-xs leading-relaxed text-text-muted">
-            Run bulk GSuite gmail|password login with worker progress and manual assist.
+            Run bulk GSuite gmail|password login, create a CodeBuddy Access Key, and save it for model calls.
           </span>
         </button>
         <button
@@ -204,10 +204,10 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
         >
           <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
             <span className="material-symbols-outlined text-[20px] text-primary">playlist_add</span>
-            Bulk Token Import
+            OAuth Token Import
           </span>
           <span className="text-xs leading-relaxed text-text-muted">
-            Paste multiple access tokens directly. No browser needed.
+            Paste OAuth access tokens directly. Generated Access Keys should come from automation.
           </span>
         </button>
         <button
@@ -220,7 +220,7 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
             Device OAuth Login
           </span>
           <span className="text-xs leading-relaxed text-text-muted">
-            Open CodeBuddy browser login and poll until the access token is saved.
+            Open CodeBuddy browser login and poll until the OAuth token is saved.
           </span>
         </button>
       </div>
@@ -232,7 +232,7 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
       <BulkAccountAutomationModal
         isOpen={isBulkOpen}
         provider="codebuddy"
-        title="CodeBuddy Bulk GSuite Login"
+        title="CodeBuddy Bulk GSuite Login + Access Key"
         serviceName="CodeBuddy"
         onSuccess={onRefresh}
         onClose={() => setIsBulkOpen(false)}

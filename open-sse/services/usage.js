@@ -92,7 +92,7 @@ export async function getUsageForProvider(connection, proxyOptions = null) {
     case "kiro":
       return await getKiroUsage(accessToken, providerSpecificData, proxyOptions);
     case "codebuddy":
-      return await getCodeBuddyUsage(accessToken, providerSpecificData, proxyOptions);
+      return await getCodeBuddyUsage(accessToken, providerSpecificData, proxyOptions, apiKey);
     case "qoder":
       return await getQoderUsage(accessToken, proxyOptions);
     case "qwen":
@@ -141,9 +141,23 @@ async function fetchCodeBuddyUid(accessToken, providerSpecificData = {}, proxyOp
   }
 }
 
-async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOptions = null) {
+async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOptions = null, apiKey = null) {
   if (!accessToken) {
-    return { plan: "CodeBuddy", message: "CodeBuddy access token not available.", quotas: {} };
+    if (apiKey) {
+      return {
+        plan: "CodeBuddy",
+        message: "CodeBuddy chat key active. Upstream quota is unavailable without a valid IDE OAuth token; use 9router Usage for local request and token tracking.",
+        quotas: {},
+        authMode: "generated-api-key",
+        trackingMode: "local-router",
+      };
+    }
+    return {
+      plan: "CodeBuddy",
+      message: "CodeBuddy upstream quota is unavailable because no valid IDE OAuth token is stored.",
+      quotas: {},
+      trackingMode: "unavailable",
+    };
   }
 
   try {
@@ -166,8 +180,10 @@ async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOp
     if (response.status === 401 || response.status === 403) {
       return {
         plan: "CodeBuddy",
-        message: `CodeBuddy quota: auth failed (${response.status}). uid=${uid ? "yes" : "missing"}.`,
+        message: `CodeBuddy IDE OAuth token was rejected (${response.status}). Upstream quota is unavailable; use 9router Usage for local request and token tracking.`,
         quotas: {},
+        authMode: "oauth-rejected",
+        trackingMode: "local-router",
       };
     }
 
@@ -179,7 +195,10 @@ async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOp
       };
     }
 
-    return parseCodeBuddyUsage(payload);
+    return {
+      ...parseCodeBuddyUsage(payload),
+      authMode: "oauth",
+    };
   } catch (error) {
     return { plan: "CodeBuddy", message: `CodeBuddy connected. Unable to fetch quota: ${error.message}`, quotas: {} };
   }
@@ -234,7 +253,6 @@ function buildCodeBuddyUsageBody() {
     PageSize: 200,
     ProductCode: CODEBUDDY_CONFIG.productCode,
     Status: [0, 3],
-    PackageCodes: Object.values(CODEBUDDY_CONFIG.packageCodes),
     PackageEndTimeRangeBegin: formatCodeBuddyDate(now),
     PackageEndTimeRangeEnd: formatCodeBuddyDate(rangeEnd),
   };

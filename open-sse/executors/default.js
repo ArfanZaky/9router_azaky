@@ -280,6 +280,12 @@ export class DefaultExecutor extends BaseExecutor {
           headers["Accept"] = "text/event-stream";
           headers["Content-Type"] = "application/json; charset=utf-8";
           headers["User-Agent"] = "CLI/2.105.2 CodeBuddy/2.105.2";
+          // CLI spoofing headers for restricted account bypass
+          headers["X-App"] = "cli";
+          headers["X-Stainless-Runtime"] = "node";
+          headers["X-Stainless-Lang"] = "js";
+          headers["X-Stainless-Helper-Method"] = "stream";
+          headers["X-Stainless-Retry-Count"] = "0";
           headers["X-Requested-With"] = "XMLHttpRequest";
           headers["X-Domain"] = credentials.providerSpecificData?.domain || "www.codebuddy.ai";
           headers["X-Request-ID"] = requestId;

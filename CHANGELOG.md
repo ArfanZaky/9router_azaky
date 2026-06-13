@@ -1,3 +1,24 @@
+# Unreleased
+
+## Automation
+- CodeBuddy bulk automation now continues from Google login and onboarding through Access Key creation.
+- A worker is successful only after the generated Access Key is saved to the provider connection.
+- Existing Access Keys are reused to avoid duplicate key creation.
+- Restricted pages no longer trigger an immediate skip; automation attempts key creation with the authenticated browser session and records the upstream API result.
+- Added explicit states for invalid key sessions, key limits, duplicate key-name retry, and missing key secrets.
+
+## CodeBuddy
+- Generated Access Keys are the primary credential for chat/model calls.
+- OAuth tokens, web session metadata, `uid`, and enterprise identity are retained in the same connection.
+- Upstream quota is queried only with a valid IDE OAuth access token plus `uid`/enterprise identity headers.
+- Restricted/generated-key sessions no longer retry quota through stale web cookies after OAuth rejection.
+- When upstream quota authentication is unavailable, Quota Tracker reports the limitation and directs users to 9router Usage for locally observed request/token tracking.
+
+## Distribution
+- Synced the root npm package and CLI package at `0.4.78`.
+- Removed the legacy `9router` CLI binary alias so npm installs expose only `wyxrouter`.
+- Documented `npx wyxrouter`, global npm installation, source development, and CLI bundle packaging.
+
 # v0.4.71 (2026-06-06)
 
 ## Features

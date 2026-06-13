@@ -21,6 +21,16 @@ const CODEBUDDY_POLL_TIMEOUT_MS = 15 * 60_000;
 const CODEBUDDY_POLL_INTERVAL_MS = 5_000;
 const CODEBUDDY_MAX_TRANSIENT_POLL_ERRORS = 6;
 const CODEBUDDY_COOKIE_DOMAINS = new Set(["codebuddy.ai", "www.codebuddy.ai"]);
+const CODEBUDDY_KEYS_URL = "https://www.codebuddy.ai/profile/keys";
+const CODEBUDDY_API_KEY_ENDPOINT = "https://www.codebuddy.ai/console/api/client/v1/api-keys";
+const CODEBUDDY_DEFAULT_KEY_EXPIRE_DAYS = 365;
+const CODEBUDDY_KEY_SESSION_TIMEOUT_MS = 45_000;
+const CODEBUDDY_KEY_SESSION_POLL_MS = 1_500;
+const CODEBUDDY_PERSONAL_ENTERPRISE_ID = "personal-edition-user-id";
+const CODEBUDDY_KEY_ERROR_CODES = {
+  nameExists: 12502,
+  keyLimitReached: 12601,
+};
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -50,7 +60,14 @@ async function defaultSaveCodeBuddyConnection({ tokens, email }) {
     providerSpecificData.webCookieCapturedAt = tokens.webCookieCapturedAt || new Date().toISOString();
   }
 
-  const connection = await createProviderConnection({
+  if (tokens.generatedApiKey) {
+    providerSpecificData.codebuddyApiKeyId = tokens.generatedApiKey.id || null;
+    providerSpecificData.codebuddyApiKeyName = tokens.generatedApiKey.name || null;
+    providerSpecificData.codebuddyApiKeyExpiresAt = tokens.generatedApiKey.expiresAt || null;
+    providerSpecificData.authMode = "generated-api-key";
+  }
+
+  const connectionData = {
     provider: CODEBUDDY_PROVIDER_ID,
     authType: "oauth",
     ...tokens,
@@ -60,7 +77,14 @@ async function defaultSaveCodeBuddyConnection({ tokens, email }) {
       ? new Date(Date.now() + tokens.expiresIn * 1000).toISOString()
       : null,
     testStatus: "active",
-  });
+  };
+
+  const effectiveApiKey = tokens.generatedApiKey?.key || tokens.apiKey;
+  if (effectiveApiKey) {
+    connectionData.apiKey = effectiveApiKey;
+  }
+
+  const connection = await createProviderConnection(connectionData);
 
   return { connection };
 }
@@ -73,6 +97,50 @@ async function defaultRequestDeviceCode(providerId) {
 async function defaultPollForToken(providerId, deviceCode) {
   const { pollForToken } = await import("../providers.js");
   return pollForToken(providerId, deviceCode);
+}
+
+async function fetchCodeBuddyLoginAccount(accessToken, state, domain = "www.codebuddy.ai") {
+  if (!accessToken || !state) return null;
+  try {
+    const response = await fetch(`https://${domain}/v2/plugin/login/account?state=${encodeURIComponent(state)}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+        "X-Domain": domain,
+      },
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const data = payload?.data || payload || {};
+    if (!data || typeof data !== "object") return null;
+    return {
+      uid: data.uid || null,
+      nickname: data.nickname || null,
+      email: data.email || null,
+      enterpriseId: data.enterpriseId || null,
+      enterpriseName: data.enterpriseName || null,
+      rawAuth: data,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function defaultFindExistingCodeBuddyApiKey(email) {
+  if (!email) return null;
+  try {
+    const { getProviderConnections } = await import("../../../models/index.js");
+    const connections = await getProviderConnections({ provider: CODEBUDDY_PROVIDER_ID });
+    const existing = connections.find((connection) => (
+      connection.authType === "oauth"
+      && connection.email === email
+      && connection.apiKey
+    ));
+    return existing?.apiKey || null;
+  } catch {
+    return null;
+  }
 }
 
 async function captureCodeBuddyWebCookie(context) {
@@ -122,10 +190,222 @@ async function attachCodeBuddyWebCookie(context, tokens = {}) {
   };
 }
 
+function normalizeCodeBuddyKeyName(email) {
+  const prefix = String(email || "codebuddy")
+    .replace(/[^a-zA-Z0-9_.@-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "codebuddy";
+  const suffix = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+  return `9router-${prefix}-${suffix}`.slice(0, 50);
+}
+
+function classifyCodeBuddyKeyError(status, payload) {
+  const code = payload?.code ?? payload?.error?.code ?? payload?.data?.code;
+  const msg = payload?.msg || payload?.message || payload?.error?.message || payload?.error || `HTTP ${status}`;
+  if (status === 401 || status === 403) {
+    return {
+      step: "key_session_invalid",
+      status: "needs_manual",
+      message: `CodeBuddy key session invalid (${status})`,
+      retryable: false,
+    };
+  }
+  if (code === CODEBUDDY_KEY_ERROR_CODES.keyLimitReached) {
+    return {
+      step: "key_limit_reached",
+      status: "failed",
+      message: "CodeBuddy API key limit reached",
+      retryable: false,
+    };
+  }
+  if (code === CODEBUDDY_KEY_ERROR_CODES.nameExists) {
+    return {
+      step: "key_name_exists",
+      status: "failed",
+      message: "CodeBuddy API key name already exists",
+      retryable: true,
+    };
+  }
+  return {
+    step: "key_create_failed",
+    status: "failed",
+    message: msg || "CodeBuddy API key creation failed",
+    retryable: false,
+  };
+}
+
+function buildCodeBuddyKeyResult(payload, fallbackName) {
+  const data = payload?.data || payload || {};
+  const key = data.key || data.api_key || data.apiKey;
+  if (!key) return null;
+  const item = data.item || data.apiKeyItem || data;
+  return {
+    key,
+    id: item?.key_id || item?.id || item?.keyId || null,
+    name: item?.name || data.name || fallbackName,
+    expiresAt: data.expires_at || data.expiresAt || item?.expires_at || item?.expiresAt || null,
+    createdAt: item?.created_at || item?.createdAt || null,
+  };
+}
+
+async function waitForCodeBuddyConsoleAccount(page, onStep, timeoutMs = CODEBUDDY_KEY_SESSION_TIMEOUT_MS) {
+  const startedAt = Date.now();
+  let lastError = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = await page.evaluate(async () => {
+      try {
+        const response = await fetch("/console/accounts", {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "x-requested-with": "XMLHttpRequest",
+            "X-Domain": window.location.hostname || "www.codebuddy.ai",
+          },
+        });
+        const text = await response.text();
+        let payload = null;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch {
+          payload = null;
+        }
+        const accounts = payload?.data?.accounts || payload?.accounts || [];
+        return { ok: response.ok, status: response.status, payload, accounts };
+      } catch (error) {
+        return { ok: false, status: 0, error: error?.message || String(error) };
+      }
+    });
+
+    if (result?.ok && Array.isArray(result.accounts) && result.accounts.length > 0) {
+      const account = result.accounts.find((entry) => entry?.lastLogin) || result.accounts[0] || {};
+      return {
+        account,
+        userEnterpriseId: account.type && account.type !== "personal" && account.enterpriseId
+          ? account.enterpriseId
+          : CODEBUDDY_PERSONAL_ENTERPRISE_ID,
+      };
+    }
+
+    lastError = result?.error || `status=${result?.status || "unknown"}`;
+    onStep?.("waiting_codebuddy_key_session", `Waiting for CodeBuddy web console session (${lastError})`);
+    await page.waitForTimeout(CODEBUDDY_KEY_SESSION_POLL_MS);
+  }
+
+  const error = new Error(`CodeBuddy key session invalid: ${lastError || "no account session"}`);
+  error.step = "key_session_invalid";
+  error.status = "needs_manual";
+  throw error;
+}
+
+async function postCodeBuddyApiKeyFromPage(page, keyName, userEnterpriseId) {
+  return page.evaluate(async ({ endpoint, name, expireInDays, userEnterpriseId }) => {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      mode: "cors",
+      credentials: "include",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name,
+        expire_in_days: expireInDays,
+        user_enterprise_id: userEnterpriseId,
+      }),
+    });
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      payload,
+      text: payload ? null : text.slice(0, 300),
+    };
+  }, {
+    endpoint: CODEBUDDY_API_KEY_ENDPOINT,
+    name: keyName,
+    expireInDays: CODEBUDDY_DEFAULT_KEY_EXPIRE_DAYS,
+    userEnterpriseId,
+  });
+}
+
+export async function createCodeBuddyApiKey(page, email, onStep, {
+  existingApiKey = null,
+  directReplay = false,
+  userEnterpriseId: forcedUserEnterpriseId = null,
+} = {}) {
+  if (existingApiKey) {
+    return { skipped: true, key: existingApiKey };
+  }
+  if (!page) {
+    const error = new Error("CodeBuddy browser session is not available for API key creation");
+    error.step = "key_session_invalid";
+    error.status = "needs_manual";
+    throw error;
+  }
+
+  let userEnterpriseId = forcedUserEnterpriseId || CODEBUDDY_PERSONAL_ENTERPRISE_ID;
+  if (directReplay) {
+    onStep?.("creating_codebuddy_api_key_direct", "Replaying CodeBuddy API key creation from current web session");
+  } else {
+    onStep?.("opening_codebuddy_keys", "Opening CodeBuddy Access Keys page");
+    await page.goto(CODEBUDDY_KEYS_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForTimeout(2_000);
+
+    const session = await waitForCodeBuddyConsoleAccount(page, onStep);
+    userEnterpriseId = session.userEnterpriseId || userEnterpriseId;
+  }
+
+  const firstName = normalizeCodeBuddyKeyName(email);
+  const keyNames = [firstName, `${firstName.slice(0, 41)}-${Math.random().toString(36).slice(2, 8)}`.slice(0, 50)];
+
+  let lastFailure = null;
+  for (let attempt = 0; attempt < keyNames.length; attempt += 1) {
+    const keyName = keyNames[attempt];
+    onStep?.("creating_codebuddy_api_key", `Creating CodeBuddy API key${attempt ? " with retry name" : ""}`);
+
+    const result = await postCodeBuddyApiKeyFromPage(page, keyName, userEnterpriseId);
+
+    if (result?.ok && (result.payload?.code === 0 || result.payload?.code === 200 || result.payload?.code === undefined)) {
+      const apiKey = buildCodeBuddyKeyResult(result.payload, keyName);
+      if (apiKey?.key) {
+        return apiKey;
+      }
+      const error = new Error("CodeBuddy API key created but secret was not returned");
+      error.step = "key_create_no_secret";
+      error.status = "failed";
+      throw error;
+    }
+
+    const failure = classifyCodeBuddyKeyError(result?.status, result?.payload || { message: result?.text });
+    lastFailure = failure;
+    if (failure.retryable && attempt === 0) continue;
+
+    const error = new Error(failure.message);
+    error.step = failure.step;
+    error.status = failure.status;
+    throw error;
+  }
+
+  const error = new Error(lastFailure?.message || "CodeBuddy API key creation failed");
+  error.step = lastFailure?.step || "key_create_failed";
+  error.status = lastFailure?.status || "failed";
+  throw error;
+}
+
 function createCodeBuddyPollPromise({
   deviceCode,
   pollToken,
   onStep,
+  fetchLoginAccount = fetchCodeBuddyLoginAccount,
   timeoutMs = CODEBUDDY_POLL_TIMEOUT_MS,
   pollIntervalMs = CODEBUDDY_POLL_INTERVAL_MS,
   maxTransientErrors = CODEBUDDY_MAX_TRANSIENT_POLL_ERRORS,
@@ -143,8 +423,22 @@ function createCodeBuddyPollPromise({
 
       const result = await pollToken(CODEBUDDY_PROVIDER_ID, deviceCode);
       if (result.success) {
+        const accessToken = result.tokens?.accessToken || result.tokens?.access_token;
+        const loginAccount = await fetchLoginAccount(accessToken, deviceCode);
         return {
-          tokens: result.tokens,
+          tokens: {
+            ...result.tokens,
+            providerSpecificData: {
+              ...(result.tokens?.providerSpecificData || {}),
+              ...(loginAccount?.uid ? { uid: loginAccount.uid } : {}),
+              ...(loginAccount?.nickname ? { nickname: loginAccount.nickname } : {}),
+              ...(loginAccount?.enterpriseId ? { enterpriseId: loginAccount.enterpriseId } : {}),
+              ...(loginAccount?.enterpriseName ? { enterpriseName: loginAccount.enterpriseName } : {}),
+              ...(loginAccount?.rawAuth ? { rawAuth: loginAccount.rawAuth } : {}),
+              domain: "www.codebuddy.ai",
+              oauthState: deviceCode,
+            },
+          },
         };
       }
 
@@ -217,14 +511,107 @@ async function completeCodeBuddyRegistration(page, onStep) {
       reportStep("complete_register_done", "CodeBuddy registration completed, establishing session");
     }
 
-    // Note: CodeBuddy web console uses Keycloak auth which is separate from the
-    // CLI OAuth flow. Web session cookies for quota tracking cannot be obtained
-    // from the OAuth token alone. Users can attach a quota cookie manually via
-    // Dashboard -> Providers -> CodeBuddy -> Quota Cookie.
+    reportStep("codebuddy_registration_ready", "CodeBuddy registration flow is ready for API key creation");
   } catch (error) {
     reportStep("complete_register_skipped", `Could not complete registration: ${error.message}`);
   }
 }
+
+async function finalizeCodeBuddySuccess({ manager, job, account, context, page, tokens, email, createOptions = {} }) {
+  manager.setAccountStep(account, "creating_codebuddy_api_key", "Generating CodeBuddy Access Key");
+  await manager.persistJobSnapshot(job, { forcePreview: true });
+
+  const effectiveTokens = tokens || {};
+  const existingApiKey = effectiveTokens.apiKey
+    || effectiveTokens.generatedApiKey?.key
+    || await manager.findExistingApiKey(email);
+
+  const generatedApiKey = existingApiKey
+    ? { skipped: true, key: existingApiKey }
+    : await manager.createApiKey(page, email, (step, message) => {
+      manager.setAccountStep(account, step, message);
+      void manager.persistJobSnapshot(job, { forcePreview: false });
+    }, {
+      existingApiKey,
+      ...createOptions,
+    });
+
+  manager.setAccountStep(account, "saving_connection", "Saving CodeBuddy connection with generated API key");
+  await manager.persistJobSnapshot(job, { forcePreview: true });
+  const tokensWithCookie = await attachCodeBuddyWebCookie(context, {
+    ...effectiveTokens,
+    ...(generatedApiKey?.skipped ? {} : { generatedApiKey }),
+  });
+  const { connection } = await manager.saveConnection({
+    tokens: tokensWithCookie,
+    email,
+  });
+
+  manager.finalizeAccount(account, "success", {
+    connectionId: connection.id,
+    step: "connection_saved",
+    message: generatedApiKey?.skipped
+      ? "CodeBuddy connection already has an API key"
+      : "CodeBuddy connection saved with generated API key",
+  });
+  return { connection, generatedApiKey };
+}
+
+async function collectCodeBuddyOAuthTokensIfReady(successPromise, timeoutMs = 500) {
+  if (!successPromise) return {};
+  try {
+    const result = await Promise.race([
+      successPromise,
+      wait(timeoutMs).then(() => null),
+    ]);
+    return result?.tokens || {};
+  } catch {
+    return {};
+  }
+}
+
+async function finalizeRestrictedCodeBuddySession({
+  manager,
+  job,
+  account,
+  context,
+  page,
+  successPromise,
+  reason,
+}) {
+  manager.setAccountStep(
+    account,
+    "restricted_key_replay",
+    "Restricted page detected; replaying CodeBuddy Access Key creation from web session"
+  );
+  await manager.persistJobSnapshot(job, { forcePreview: true });
+
+  const tokens = await collectCodeBuddyOAuthTokensIfReady(successPromise);
+  const replayTokens = {
+    ...tokens,
+    providerSpecificData: {
+      ...(tokens.providerSpecificData || {}),
+      restrictedDetected: true,
+      restrictedReason: reason || "Account restricted page detected during automation",
+      oauthTokenCaptured: Boolean(tokens.accessToken),
+    },
+  };
+
+  return finalizeCodeBuddySuccess({
+    manager,
+    job,
+    account,
+    context,
+    page,
+    tokens: replayTokens,
+    email: account.email,
+    createOptions: {
+      directReplay: true,
+      userEnterpriseId: CODEBUDDY_PERSONAL_ENTERPRISE_ID,
+    },
+  });
+}
+
 export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
   constructor({
     browserLauncher,
@@ -232,6 +619,9 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     requestDeviceCodeFn = defaultRequestDeviceCode,
     pollToken = defaultPollForToken,
     saveConnection = defaultSaveCodeBuddyConnection,
+    createApiKeyFn = createCodeBuddyApiKey,
+    findExistingApiKeyFn = defaultFindExistingCodeBuddyApiKey,
+    fetchLoginAccountFn = fetchCodeBuddyLoginAccount,
     pollIntervalMs = CODEBUDDY_POLL_INTERVAL_MS,
   } = {}) {
     super({
@@ -242,6 +632,9 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
     this.requestDeviceCode = requestDeviceCodeFn;
     this.pollToken = pollToken;
     this.saveConnection = saveConnection;
+    this.createApiKey = createApiKeyFn;
+    this.findExistingApiKey = findExistingApiKeyFn;
+    this.fetchLoginAccount = fetchLoginAccountFn;
     this.pollIntervalMs = pollIntervalMs;
   }
 
@@ -269,18 +662,14 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
           });
         }
 
-        this.setAccountStep(account, "saving_connection", "Saving CodeBuddy OAuth connection");
-        await this.persistJobSnapshot(job, { forcePreview: true });
-        const tokensWithCookie = await attachCodeBuddyWebCookie(context, result.tokens);
-        const { connection } = await this.saveConnection({
-          tokens: tokensWithCookie,
+        await finalizeCodeBuddySuccess({
+          manager: this,
+          job,
+          account,
+          context,
+          page: manualPage || account.manualSession?.page,
+          tokens: result.tokens,
           email: account.email,
-        });
-
-        this.finalizeAccount(account, "success", {
-          connectionId: connection.id,
-          step: "connection_saved",
-          message: "CodeBuddy connection saved successfully",
         });
         await this.persistJobSnapshot(job, { forcePreview: true });
       } catch (error) {
@@ -291,9 +680,9 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
             message: "Job cancelled while waiting for manual completion",
           });
         } else {
-          this.finalizeAccount(account, "failed_exchange", {
+          this.finalizeAccount(account, error.status || "failed_exchange", {
             error: error.message || "Manual assist flow failed during token polling.",
-            step: "exchange_failed",
+            step: error.step || "exchange_failed",
             message: error.message || "Manual assist flow failed during token polling.",
           });
         }
@@ -333,12 +722,14 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
       const successPromise = createCodeBuddyPollPromise({
         deviceCode: deviceData.device_code,
         pollToken: this.pollToken,
+        fetchLoginAccount: this.fetchLoginAccount,
         pollIntervalMs: this.pollIntervalMs,
         onStep: (step, message) => {
           this.setAccountStep(account, step, message);
           void this.persistJobSnapshot(job, { forcePreview: false });
         },
       });
+      successPromise.catch(() => null);
 
       const automationResult = await this.googleAutomation({
         page,
@@ -365,17 +756,30 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
           void this.persistJobSnapshot(job, { forcePreview: false });
         });
 
-        this.setAccountStep(account, "saving_connection", "Saving CodeBuddy OAuth connection");
-        await this.persistJobSnapshot(job, { forcePreview: true });
-        const tokensWithCookie = await attachCodeBuddyWebCookie(context, automationResult.tokens);
-        const { connection } = await this.saveConnection({
-          tokens: tokensWithCookie,
+        const { connection } = await finalizeCodeBuddySuccess({
+          manager: this,
+          job,
+          account,
+          context,
+          page,
+          tokens: automationResult.tokens,
           email: account.email,
         });
-        this.finalizeAccount(account, "success", {
-          connectionId: connection.id,
-          step: "connection_saved",
-          message: "CodeBuddy connection saved successfully",
+        account.runtimeSession = null;
+        await context.close().catch(() => null);
+        await this.persistJobSnapshot(job, { forcePreview: true });
+        return;
+      }
+
+      if (automationResult.status === "failed_restricted") {
+        await finalizeRestrictedCodeBuddySession({
+          manager: this,
+          job,
+          account,
+          context,
+          page,
+          successPromise,
+          reason: automationResult.error,
         });
         account.runtimeSession = null;
         await context.close().catch(() => null);
@@ -417,9 +821,9 @@ export class CodeBuddyBulkImportManager extends KiroBulkImportManager {
           message: "Job cancelled while CodeBuddy automation was running",
         });
       } else {
-        this.finalizeAccount(account, "failed", {
+        this.finalizeAccount(account, error.status || "failed", {
           error: error.message || "Unexpected CodeBuddy bulk import failure.",
-          step: "failed",
+          step: error.step || "failed",
           message: error.message || "Unexpected CodeBuddy bulk import failure.",
         });
       }
