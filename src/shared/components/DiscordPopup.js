@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import Image from "next/image";
 
 const DISCORD_URL = "https://dsc.gg/wyxhub";
@@ -8,16 +9,17 @@ const STORAGE_KEY = "discord-popup-dismissed";
 
 export default function DiscordPopup() {
   const [visible, setVisible] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    setMounted(true);
     const dismissed = window.localStorage.getItem(STORAGE_KEY);
     if (dismissed === "forever") return;
     const timer = setTimeout(() => setVisible(true), 800);
     return () => clearTimeout(timer);
   }, []);
 
-  if (!visible) return null;
+  if (!mounted || !visible) return null;
 
   const handleJoin = () => {
     window.open(DISCORD_URL, "_blank", "noopener,noreferrer");
@@ -29,16 +31,18 @@ export default function DiscordPopup() {
   };
 
   const handleDontRemind = () => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY, "forever");
-    }
+    window.localStorage.setItem(STORAGE_KEY, "forever");
     setVisible(false);
   };
 
-  return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+  return createPortal(
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.45)", backdropFilter: "blur(4px)" }}
+      onClick={handleClose}
+    >
       <div
-        className="relative mx-4 w-full max-w-sm overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl"
+        style={{ position: "relative", width: "100%", maxWidth: 384, margin: "0 16px" }}
+        className="overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex flex-col items-center gap-4 px-6 pt-8 pb-6">
@@ -53,9 +57,7 @@ export default function DiscordPopup() {
           </div>
 
           <div className="text-center">
-            <h3 className="text-lg font-bold text-text-main">
-              Join our Discord!
-            </h3>
+            <h3 className="text-lg font-bold text-text-main">Join our Discord!</h3>
             <p className="mt-2 text-sm leading-relaxed text-text-muted">
               Get help, share configs, request features, and hang out with the WYx0 community.
             </p>
@@ -67,13 +69,7 @@ export default function DiscordPopup() {
               onClick={handleJoin}
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#5865F2] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#4752C4]"
             >
-              <Image
-                src="/icons/discord.svg"
-                alt=""
-                width={18}
-                height={18}
-                className="brightness-0 invert"
-              />
+              <Image src="/icons/discord.svg" alt="" width={18} height={18} className="brightness-0 invert" />
               Join Discord
             </button>
             <button
@@ -94,6 +90,7 @@ export default function DiscordPopup() {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

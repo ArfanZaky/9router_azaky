@@ -12,10 +12,9 @@ export async function GET(request) {
 
   if (!job) {
     return NextResponse.json({
-      success: false,
+      success: true,
       ...buildLookupResponse(null),
-      error: "Bulk import job not found",
-    }, { status: 404 });
+    });
   }
 
   return NextResponse.json({
