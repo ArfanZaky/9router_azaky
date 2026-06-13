@@ -253,6 +253,15 @@ function isTokenExpired(connection) {
 async function testOAuthConnection(connection, effectiveProxy = null) {
   const config = OAUTH_TEST_CONFIG[connection.provider];
   if (!config) return { valid: false, error: "Provider test not supported", refreshed: false };
+  if (connection.provider === "codebuddy" && !connection.accessToken && connection.apiKey) {
+    const keyResult = await testApiKeyConnection(connection, effectiveProxy);
+    return {
+      valid: keyResult.valid,
+      error: keyResult.error,
+      refreshed: false,
+      newTokens: null,
+    };
+  }
   if (!connection.accessToken) return { valid: false, error: "No access token", refreshed: false };
 
   // Cursor uses protobuf API - can only verify token exists, not test endpoint
@@ -447,6 +456,27 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       case "openrouter": {
         const res = await fetchWithConnectionProxy("https://openrouter.ai/api/v1/auth/key", { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
+      }
+      case "codebuddy": {
+        const domain = connection.providerSpecificData?.domain || "www.codebuddy.ai";
+        const res = await fetchWithConnectionProxy("https://www.codebuddy.ai/v2/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${connection.apiKey}`,
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "CLI/2.105.2 CodeBuddy/2.105.2",
+            "X-Domain": domain,
+          },
+          body: JSON.stringify({
+            model: getDefaultModel("codebuddy") || "cb/default-model",
+            messages: [{ role: "user", content: "test" }],
+            max_tokens: 1,
+            stream: false,
+          }),
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key" };
       }
       case "glm": {
         const res = await fetchWithConnectionProxy("https://api.z.ai/api/anthropic/v1/messages", {

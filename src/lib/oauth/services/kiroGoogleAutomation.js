@@ -559,6 +559,78 @@ async function clickFirstVisibleLocatorCenter(page, selectors) {
   return false;
 }
 
+async function handleCodeBuddyRegionPageViaApi(page, reportStep) {
+  if (!isProviderPage(page) || isGoogleAuthPage(page)) return false;
+
+  const result = await page.evaluate(async () => {
+    const bodyText = document.body?.innerText || "";
+    const looksLikeRegionPage = document.querySelector(".page-region")
+      || /select\s+region|region|country|area|get started|complete/i.test(bodyText);
+    if (!looksLikeRegionPage) return null;
+
+    try {
+      const response = await fetch("https://www.codebuddy.ai/console/login/account", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          accept: "application/json, text/plain, */*",
+          "content-type": "application/json",
+          "x-requested-with": "XMLHttpRequest",
+          "x-domain": window.location.hostname || "www.codebuddy.ai",
+        },
+        referrer: "https://www.codebuddy.ai/register/user/complete",
+        body: JSON.stringify({
+          attributes: {
+            countryCode: ["62"],
+            countryFullName: ["Indonesia"],
+            countryName: ["ID"],
+          },
+        }),
+      });
+
+      const text = await response.text().catch(() => "");
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = { raw: text };
+      }
+
+      if (response.ok && (!data || data.code === 0 || data.code === 200 || typeof data.code === "undefined")) {
+        return { action: "submitted_via_api" };
+      }
+
+      return {
+        action: "api_failed",
+        status: response.status,
+        code: data?.code,
+        message: data?.msg || data?.message || text || `HTTP ${response.status}`,
+      };
+    } catch (error) {
+      return {
+        action: "api_failed",
+        message: error?.message || "region submit request failed",
+      };
+    }
+  }).catch(() => null);
+
+  if (!result?.action) return false;
+
+  if (result.action === "submitted_via_api") {
+    reportStep("submitting_codebuddy_region", "Submitted CodeBuddy region via account API");
+    await page.waitForTimeout(1500);
+    return true;
+  }
+
+  reportStep(
+    "codebuddy_region_api_failed",
+    result.message
+      ? `CodeBuddy region API submit failed: ${result.message}`
+      : "CodeBuddy region API submit failed"
+  );
+  return false;
+}
+
 async function handleCodeBuddyRegionPageWithMouse(page, reportStep) {
   if (!isProviderPage(page) || isGoogleAuthPage(page)) return false;
 
@@ -629,6 +701,9 @@ async function handleCodeBuddyRegionPageWithMouse(page, reportStep) {
 
 async function handleCodeBuddyRegionPage(page, reportStep) {
   if (!isProviderPage(page) || isGoogleAuthPage(page)) return false;
+
+  const handledViaApi = await handleCodeBuddyRegionPageViaApi(page, reportStep);
+  if (handledViaApi) return true;
 
   const handledWithMouse = await handleCodeBuddyRegionPageWithMouse(page, reportStep);
   if (handledWithMouse) return true;
