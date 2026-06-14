@@ -268,4 +268,126 @@ describe("KiroBulkImportManager", () => {
 
     fs.rmSync(manager.storageDir, { recursive: true, force: true });
   });
+
+  it("does not let a hung page.screenshot freeze getJobWithPreview (frontend polling path)", async () => {
+    // Regression for Qoder bulk Live Browser Preview freeze.
+    // Frontend polls /api/oauth/{provider}/bulk-import/[jobId] every 2s, which calls
+    // manager.getJobWithPreview(). That used to await this.capturePreview() WITHOUT
+    // a timeout, so a hung page.screenshot (caused by Qoder's concurrent
+    // page.evaluate against /api/v1/me/userplan) would hang the HTTP request and
+    // freeze the modal. The fix centralises the screenshot timeout inside
+    // capturePreview so EVERY caller (persistJobSnapshot AND getJobWithPreview)
+    // is protected.
+    const manager = new KiroBulkImportManager();
+    manager.storageDir = path.join(os.tmpdir(), `kiro-bulk-test-getjob-${Date.now()}`);
+
+    // Simulate a page whose screenshot hangs forever -- mirrors the Qoder
+    // page.evaluate-stalls-screenshot scenario.
+    const hangingPage = {
+      screenshot: () => new Promise(() => {}),
+    };
+
+    const job = {
+      jobId: "job-hung-getjob",
+      status: "running",
+      concurrency: 1,
+      engine: "chromium",
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      error: null,
+      cancelRequested: false,
+      browser: null,
+      nextIndex: 0,
+      manualFollowups: new Set(),
+      persistPromise: Promise.resolve(),
+      lastPreview: {
+        email: "old@test.com",
+        workerId: 1,
+        status: "running",
+        step: "checking_plan",
+        updatedAt: new Date().toISOString(),
+        imageData: "data:image/jpeg;base64,OLD",
+      },
+      lastPreviewCapturedAt: 0,
+      accounts: [{
+        line: 1,
+        email: "user@test.com",
+        status: "running",
+        workerId: 1,
+        currentStep: "checking_plan",
+        updatedAt: new Date().toISOString(),
+        runtimeSession: { page: hangingPage },
+        manualSession: null,
+        logs: [],
+      }],
+    };
+    manager.jobs.set(job.jobId, job);
+
+    const start = Date.now();
+    const sanitized = await manager.getJobWithPreview(job.jobId);
+    const elapsed = Date.now() - start;
+
+    // Frontend polls every 2s; the previous bug let a single hung screenshot
+    // hold the request open until Next.js timeout. Allow 4s total budget.
+    expect(elapsed).toBeLessThan(4000);
+    expect(sanitized).toBeTruthy();
+    // Previous preview must be preserved -- modal continues to render the last
+    // good frame instead of going blank.
+    expect(sanitized.preview?.imageData).toBe("data:image/jpeg;base64,OLD");
+
+    fs.rmSync(manager.storageDir, { recursive: true, force: true });
+  });
+
+  it("returns a freshly captured preview when page.screenshot resolves quickly", async () => {
+    // Happy-path regression: the timeout guard must not regress the normal
+    // case -- a working screenshot should replace the previous image.
+    const manager = new KiroBulkImportManager();
+    manager.storageDir = path.join(os.tmpdir(), `kiro-bulk-test-fresh-${Date.now()}`);
+
+    const fastPage = {
+      screenshot: async () => Buffer.from("FRESHIMAGE"),
+    };
+
+    const job = {
+      jobId: "job-fresh",
+      status: "running",
+      concurrency: 1,
+      engine: "chromium",
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      error: null,
+      cancelRequested: false,
+      browser: null,
+      nextIndex: 0,
+      manualFollowups: new Set(),
+      persistPromise: Promise.resolve(),
+      lastPreview: {
+        email: "old@test.com",
+        imageData: "data:image/jpeg;base64,OLD",
+      },
+      lastPreviewCapturedAt: 0,
+      accounts: [{
+        line: 1,
+        email: "user@test.com",
+        status: "running",
+        workerId: 1,
+        currentStep: "checking_plan",
+        updatedAt: new Date().toISOString(),
+        runtimeSession: { page: fastPage },
+        manualSession: null,
+        logs: [],
+      }],
+    };
+    manager.jobs.set(job.jobId, job);
+
+    const sanitized = await manager.getJobWithPreview(job.jobId);
+
+    expect(sanitized.preview?.imageData).toBe(
+      `data:image/jpeg;base64,${Buffer.from("FRESHIMAGE").toString("base64")}`
+    );
+
+    fs.rmSync(manager.storageDir, { recursive: true, force: true });
+  });
 });

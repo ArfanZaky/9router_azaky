@@ -126,16 +126,19 @@ class QoderBulkImportManager extends KiroBulkImportManager {
         this.setAccountStep(account, "checking_plan", "Reading plan tier via browser session");
         await this.persistJobSnapshot(job, { forcePreview: true });
         try {
-          const plan = await page.evaluate(async () => {
-            try {
-              const r = await fetch("https://qoder.com/api/v1/me/userplan", {
-                credentials: "include",
-                headers: { accept: "application/json" },
-              });
-              if (!r.ok) return null;
-              return r.json();
-            } catch { return null; }
-          });
+          const plan = await Promise.race([
+            page.evaluate(async () => {
+              try {
+                const r = await fetch("https://qoder.com/api/v1/me/userplan", {
+                  credentials: "include",
+                  headers: { accept: "application/json" },
+                });
+                if (!r.ok) return null;
+                return r.json();
+              } catch { return null; }
+            }),
+            new Promise((resolve) => setTimeout(() => resolve(null), 10_000)),
+          ]);
           planTier = plan?.plan_tier || plan?.plan_tier_name || "";
           const planStatus = plan?.status || "";
           this.setAccountStep(account, "plan_checked", `Plan: ${planTier || "unknown"} (${planStatus || "unknown"})`);

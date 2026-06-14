@@ -480,8 +480,9 @@ export class KiroBulkImportManager {
   async getJobWithPreview(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) return readJsonFile(getJobFile(jobId, this.storageDir));
-    const preview = await this.capturePreview(job);
-    job.lastPreview = preview || job.lastPreview || null;
+    const preview = await this.capturePreviewWithTimeout(job);
+    if (preview) job.lastPreview = preview;
+    job.lastPreviewCapturedAt = Date.now();
     await this.persistJobSnapshot(job, { forcePreview: false });
     return sanitizeJob(job, { preview: job.lastPreview || null });
   }
@@ -589,25 +590,31 @@ export class KiroBulkImportManager {
     appendAccountLog(account, step, message, level);
   }
 
+  async capturePreviewWithTimeout(job) {
+    // Defence in depth. capturePreview already hard-caps page.screenshot, but
+    // any caller (including subclasses or future overrides) must never be able
+    // to freeze the worker or the frontend polling request. Two failure modes
+    // are bug-equivalent: a hung page.screenshot, and a hung capturePreview
+    // that someone monkey-patched. Both are bounded here.
+    let preview = null;
+    try {
+      preview = await Promise.race([
+        this.capturePreview(job),
+        new Promise((resolve) => setTimeout(() => resolve(null), PREVIEW_CAPTURE_TIMEOUT_MS)),
+      ]);
+    } catch {
+      preview = null;
+    }
+    return preview;
+  }
+
   async persistJobSnapshot(job, { forcePreview = false } = {}) {
     if (!job) return;
 
     const runPersist = async () => {
       const shouldCapturePreview = forcePreview || (Date.now() - (job.lastPreviewCapturedAt || 0) >= PREVIEW_CAPTURE_INTERVAL_MS);
       if (shouldCapturePreview) {
-        // Preview capture must never block the persist queue. A hung
-        // page.screenshot used to poison job.persistPromise for the rest of the
-        // job, leaving the modal stuck on a stale image. We hard-cap the wait
-        // and treat any failure as "keep the previous preview".
-        let preview = null;
-        try {
-          preview = await Promise.race([
-            this.capturePreview(job),
-            new Promise((resolve) => setTimeout(() => resolve(null), PREVIEW_CAPTURE_TIMEOUT_MS)),
-          ]);
-        } catch {
-          preview = null;
-        }
+        const preview = await this.capturePreviewWithTimeout(job);
         if (preview) {
           job.lastPreview = preview;
         }
@@ -648,23 +655,38 @@ export class KiroBulkImportManager {
       updatedAt: previewAccount.updatedAt || nowIso(),
     };
 
+    // Hard cap the screenshot. page.screenshot has NO default timeout on
+    // Playwright unless setDefaultTimeout was called; a concurrent page.evaluate
+    // (Qoder fetches /api/v1/me/userplan while status is still 'running') can
+    // stall the screenshot indefinitely. Without this race, BOTH
+    // persistJobSnapshot AND getJobWithPreview (frontend's 2s polling path)
+    // freeze and the Live Browser Preview modal sticks on a stale image.
+    const previousImage = job.lastPreview?.imageData || null;
+    let screenshot;
     try {
-      const screenshot = await page.screenshot({
-        type: "jpeg",
-        quality: 55,
-        fullPage: false,
-        animations: "disabled",
-        caret: "hide",
-      });
-
-      return {
-        ...meta,
-        imageData: `data:image/jpeg;base64,${screenshot.toString("base64")}`,
-      };
+      screenshot = await Promise.race([
+        page.screenshot({
+          type: "jpeg",
+          quality: 55,
+          fullPage: false,
+          animations: "disabled",
+          caret: "hide",
+          timeout: PREVIEW_CAPTURE_TIMEOUT_MS,
+        }),
+        new Promise((resolve) => setTimeout(() => resolve(null), PREVIEW_CAPTURE_TIMEOUT_MS)),
+      ]);
     } catch {
-      const previousImage = job.lastPreview?.imageData || null;
       return { ...meta, imageData: previousImage };
     }
+
+    if (!screenshot) {
+      return { ...meta, imageData: previousImage };
+    }
+
+    return {
+      ...meta,
+      imageData: `data:image/jpeg;base64,${screenshot.toString("base64")}`,
+    };
   }
 
   async runManualFollowup(job, account, workerId, context, callbackPromise, codeVerifier) {
