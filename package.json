@@ -1,6 +1,6 @@
 {
   "name": "wyxrouter",
-  "version": "0.4.83",
+  "version": "0.4.84",
   "description": "WYx0 fork of 9Router - AI Router with Kiro/CodeBuddy automation and quota tracking",
   "bin": {
     "wyxrouter": "./cli/cli.js"
@@ -67,9 +67,11 @@
     "zustand": "^5.0.10"
   },
   "optionalDependencies": {
-    "better-sqlite3": "^12.6.2"
+    "better-sqlite3": "^12.6.2",
+    "camoufox-js": "^0.11.0"
   },
   "comment_better_sqlite3": "kept in optionalDependencies so npm install doesn't fail on systems without build tools — sql.js is used as fallback at runtime",
+  "comment_camoufox_js": "optional stealth-Firefox engine for bulk-import; runtime auto-installs to user data dir if user picks Camoufox in the modal but the package is missing — Chromium remains the default and works without this dep",
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.18",
     "eslint": "^9",

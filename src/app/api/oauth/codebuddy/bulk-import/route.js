@@ -30,6 +30,7 @@ export async function POST(request) {
     const job = await manager.startJob({
       accounts,
       concurrency: body?.concurrency,
+      engine: body?.engine,
     });
 
     return NextResponse.json({

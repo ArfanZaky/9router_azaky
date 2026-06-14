@@ -50,13 +50,9 @@ async function defaultSaveQoderConnection({ tokens, email }) {
   return { connection };
 }
 
-async function defaultBrowserLauncher(proxyUrl) {
-  const { chromium } = await import("playwright");
-  const launchOptions = { headless: true };
-  if (proxyUrl) {
-    launchOptions.proxy = { server: proxyUrl };
-  }
-  return chromium.launch(launchOptions);
+async function defaultBrowserLauncher(proxyUrl, engine) {
+  const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
+  return launchBulkImportBrowser({ engine: engine || "chromium", proxyUrl });
 }
 
 class QoderBulkImportManager extends KiroBulkImportManager {
@@ -68,7 +64,7 @@ class QoderBulkImportManager extends KiroBulkImportManager {
     proxyUrl = null,
   } = {}) {
     super({
-      browserLauncher: () => browserLauncher(proxyUrl),
+      browserLauncher: (job) => browserLauncher(proxyUrl, job?.engine),
       googleAutomation: null,
       socialExchange: null,
       kiroServiceFactory: qoderServiceFactory,

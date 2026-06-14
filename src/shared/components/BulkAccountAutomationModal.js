@@ -11,6 +11,11 @@ import Modal from "./Modal";
 const DEFAULT_CONCURRENCY = 4;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "needs_manual"]);
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const DEFAULT_ENGINE = "chromium";
+const ENGINE_OPTIONS = [
+  { value: "chromium", label: "Chromium (default, fast)" },
+  { value: "camoufox", label: "Camoufox (stealth Firefox, slower)" },
+];
 
 function formatStepLabel(value) {
   return String(value || "waiting").replaceAll("_", " ");
@@ -67,6 +72,7 @@ export default function BulkAccountAutomationModal({
   const completedRefreshJobsRef = useRef(new Set());
   const [bulkText, setBulkText] = useState("");
   const [concurrency, setConcurrency] = useState(String(DEFAULT_CONCURRENCY));
+  const [engine, setEngine] = useState(DEFAULT_ENGINE);
   const [activeJob, setActiveJob] = useState(null);
   const [error, setError] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -186,6 +192,7 @@ export default function BulkAccountAutomationModal({
         body: JSON.stringify({
           accounts: lines,
           concurrency: Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
+          engine,
         }),
       });
       const data = await res.json();
@@ -275,19 +282,37 @@ export default function BulkAccountAutomationModal({
               </p>
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm font-medium">Concurrent Workers</label>
-              <Input
-                type="number"
-                min="1"
-                max="8"
-                value={concurrency}
-                onChange={(event) => setConcurrency(event.target.value)}
-                placeholder="4"
-              />
-              <p className="mt-1 text-xs text-text-muted">
-                Default 4. Allowed range: 1 to 8 workers.
-              </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-medium">Concurrent Workers</label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="8"
+                  value={concurrency}
+                  onChange={(event) => setConcurrency(event.target.value)}
+                  placeholder="4"
+                />
+                <p className="mt-1 text-xs text-text-muted">
+                  Default 4. Allowed range: 1 to 8 workers.
+                </p>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium">Browser Engine</label>
+                <select
+                  value={engine}
+                  onChange={(event) => setEngine(event.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  {ENGINE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-text-muted">
+                  Camoufox is a stealth Firefox; first run downloads ~150MB.
+                </p>
+              </div>
             </div>
           </>
         )}

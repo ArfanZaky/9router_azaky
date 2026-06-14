@@ -1,3 +1,16 @@
+# v0.4.84 (2026-06-14)
+
+## Bulk Import Browser Engine Selection
+- Added a Browser Engine dropdown to the bulk-import modal: **Chromium (default)** or **Camoufox (stealth Firefox)**. The job carries the engine choice all the way to the launcher, and the UI persists nothing extra — pick at start time per job.
+- Camoufox is shipped via `optionalDependencies` so users on locked-down npm registries don't fail `npm install -g wyxrouter`. The package and its ~150MB Firefox binary install lazily into the user's data dir on first Camoufox-engine job, mirroring the sqlite/playwright runtime pattern.
+- Both engine paths now route through `bulkImportBrowserEngine.js`, which wraps `ensurePlaywrightRuntime` + `ensureCamoufoxRuntime` and converts every install/missing-binary failure into an actionable error string ("Run X manually, then retry. You can also switch back to the Chromium engine."). The job error propagates to every queued account so the modal renders it instead of silently sitting on a blank Live Browser Preview.
+
+## Hotfix — Auto-install Playwright Chromium on First Bulk Import
+- Fixed `browserType.launch: Executable doesn't exist at .../chrome-headless-shell.exe` error that hit users right after `npm install -g wyxrouter`.
+- Playwright doesn't ship a Chromium binary by default through npm global installs; the package-level postinstall has to download it. We now do that lazily on the first bulk-import attempt instead of eagerly at install time so users who never touch automation aren't billed ~150MB of disk.
+- Added `cli/hooks/playwrightRuntime.js` mirroring the existing sqlite runtime helper. The helper also lazy-installs the `playwright` npm package itself into the user data dir if it's missing, so a failed `npm install -g wyxrouter --omit=optional` doesn't leave the worker with no engine at all.
+- Affects Kiro / Qoder / CodeBuddy bulk-import managers (they all share the same launcher path).
+
 # v0.4.83 (2026-06-14)
 
 ## Hotfix — Workspace Welcome Click Reliability

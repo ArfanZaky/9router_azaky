@@ -242,12 +242,9 @@ export function buildLookupResponse(job, extras = {}) {
   };
 }
 
-async function defaultBrowserLauncher() {
-  const { chromium } = await import("playwright");
-
-  return await chromium.launch({
-    headless: true,
-  });
+async function defaultBrowserLauncher(job) {
+  const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
+  return launchBulkImportBrowser({ engine: job?.engine || "chromium" });
 }
 
 async function defaultSocialExchange(args) {
@@ -404,7 +401,7 @@ export class KiroBulkImportManager {
     this.latestJobId = readPersistedLatestJobId(this.metaFile);
   }
 
-  async startJob({ accounts, concurrency }) {
+  async startJob({ accounts, concurrency, engine }) {
     const { parsed, invalidLines } = parseKiroBulkAccounts(accounts);
     if (!parsed.length) {
       const error = invalidLines.length > 0
@@ -422,10 +419,13 @@ export class KiroBulkImportManager {
 
     const jobId = randomUUID();
     const createdAt = nowIso();
+    const { normalizeBulkImportEngine, DEFAULT_BULK_IMPORT_ENGINE } = await import("./bulkImportBrowserEngine.js");
+    const resolvedEngine = engine ? normalizeBulkImportEngine(engine) : DEFAULT_BULK_IMPORT_ENGINE;
     const job = {
       jobId,
       status: "running",
       concurrency: clampConcurrency(concurrency),
+      engine: resolvedEngine,
       createdAt,
       startedAt: createdAt,
       finishedAt: null,
@@ -809,7 +809,7 @@ export class KiroBulkImportManager {
     if (!job) return;
 
     try {
-      job.browser = await this.browserLauncher();
+      job.browser = await this.browserLauncher(job);
       job.accounts.forEach((account) => {
         if (account.status === "queued" && (account.logs || []).length === 1) {
           this.setAccountStep(account, "waiting_for_worker", "Waiting for a free worker");
