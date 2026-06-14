@@ -43,16 +43,22 @@ function isChromiumBinaryAvailable() {
 }
 
 function findCli() {
+  const candidates = [];
   try {
-    return require.resolve("playwright/cli.js");
+    const pwPkg = require.resolve("playwright/package.json");
+    candidates.push(path.join(path.dirname(pwPkg), "cli.js"));
   } catch {}
   try {
-    return require.resolve("playwright-core/cli.js");
+    const pwCorePkg = require.resolve("playwright-core/package.json");
+    candidates.push(path.join(path.dirname(pwCorePkg), "cli.js"));
   } catch {}
   try {
-    const runtimeCli = path.join(getRuntimeNodeModules(), "playwright", "cli.js");
-    if (fs.existsSync(runtimeCli)) return runtimeCli;
+    candidates.push(path.join(getRuntimeNodeModules(), "playwright", "cli.js"));
+    candidates.push(path.join(getRuntimeNodeModules(), "playwright-core", "cli.js"));
   } catch {}
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
   return null;
 }
 

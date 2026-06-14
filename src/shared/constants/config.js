@@ -10,7 +10,21 @@ export const APP_CONFIG = {
 // GitHub configuration
 export const GITHUB_CONFIG = {
   changelogUrl: "https://raw.githubusercontent.com/decolua/9router/refs/heads/master/CHANGELOG.md",
-  donateUrl: "https://9router.com/api/donate",
+};
+
+export const PAYMENKU_LINK_BASE = "https://paymenku.com/pay/link";
+
+export const PAYMENKU_DONATE_TIERS = [
+  { amount: 10_000, label: "Rp 10.000", code: "PLFN4ZFO7Z50IX" },
+  { amount: 25_000, label: "Rp 25.000", code: "PLGOIHBTOHKXQS" },
+  { amount: 50_000, label: "Rp 50.000", code: "PLDNZ2PPWD2EWU" },
+  { amount: 100_000, label: "Rp 100.000", code: "PLDWATSV4ZDYOM" },
+  { amount: 250_000, label: "Rp 250.000", code: "PLFTMTHRTAJBLR" },
+];
+
+export const PAYMENKU_DONATE_INFO = {
+  title: "Support 9Router WYx0",
+  message: "Pilih nominal donasi. Pembayaran via QRIS, Virtual Account, atau E-Wallet didukung di halaman Paymenku.",
 };
 
 // Updater configuration

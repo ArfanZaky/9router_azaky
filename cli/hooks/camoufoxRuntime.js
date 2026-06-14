@@ -31,13 +31,17 @@ function tryRequireCamoufox() {
 }
 
 function findCamoufoxCli() {
+  const candidates = [];
   try {
-    return require.resolve(`${CAMOUFOX_PACKAGE}/dist/cli.js`);
+    const pkgJson = require.resolve(`${CAMOUFOX_PACKAGE}/package.json`);
+    candidates.push(path.join(path.dirname(pkgJson), "dist", "cli.js"));
   } catch {}
   try {
-    const runtimeCli = path.join(getRuntimeNodeModules(), CAMOUFOX_PACKAGE, "dist", "cli.js");
-    if (fs.existsSync(runtimeCli)) return runtimeCli;
+    candidates.push(path.join(getRuntimeNodeModules(), CAMOUFOX_PACKAGE, "dist", "cli.js"));
   } catch {}
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
   return null;
 }
 

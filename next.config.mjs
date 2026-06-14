@@ -13,7 +13,7 @@ const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE
 const nextConfig = {
   distDir: process.env.NEXT_DIST_DIR || ".next",
   output: "standalone",
-  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite"],
+  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "camoufox-js", "playwright", "playwright-core"],
   turbopack: {
     root: tracingRoot
   },
@@ -30,7 +30,6 @@ const nextConfig = {
     proxyClientMaxBodySize,
   },
   webpack: (config, { isServer }) => {
-    // Ignore fs/path modules in browser bundle
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -38,7 +37,27 @@ const nextConfig = {
         path: false,
       };
     }
-    // Exclude logs, .next, gitbook subapp from watcher
+    if (isServer) {
+      // Optional native modules. They live in optionalDependencies so
+      // `npm install` succeeds on machines without build tools, which means
+      // they may be MISSING from node_modules at build time. Treating them
+      // as commonjs externals tells webpack to emit a `require()` call and
+      // not try to resolve the path itself, so a missing package no longer
+      // fails the build. Runtime adapter loaders (createRequire) still
+      // surface a clean MODULE_NOT_FOUND if the user really needs it.
+      const optionalNativeExternals = [
+        "better-sqlite3",
+        "camoufox-js",
+      ];
+      const externals = Array.isArray(config.externals) ? config.externals : [config.externals].filter(Boolean);
+      externals.push(({ request }, callback) => {
+        if (optionalNativeExternals.includes(request)) {
+          return callback(null, `commonjs ${request}`);
+        }
+        callback();
+      });
+      config.externals = externals;
+    }
     config.watchOptions = { ...config.watchOptions, ignored: /[\\/](logs|\.next|gitbook|cli)[\\/]/ };
     return config;
   },
