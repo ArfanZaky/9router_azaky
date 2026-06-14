@@ -1,3 +1,12 @@
+# v0.4.86-6 (2026-06-15)
+
+## Release Highlights
+- [UI] Codex CLI tool card: hapus section "Gateway" (3 button Auto Codex / Router Pool / Original) + dropdown "Pin specific Codex account". Sekarang sama seperti tool lain (Cursor/OpenCode/dll) — user tinggal isi Model + Subagent Model langsung.
+
+## Technical Notes
+- User report: Codex via CLI Tools punya 3 mode (router/pool/original) yang bikin response truncated jadi "Bac Sek P L" (cuma keluar 1-2 huruf per kata, output gak lengkap). Mode tersebut juga membingungkan untuk pemakaian normal.
+- Fix: hapus `gatewayAccounts` state, `fetchGatewayAccounts`, `applyGatewayPreset`, dan seluruh "Gateway" UI section dari `src/app/(dashboard)/dashboard/cli-tools/components/CodexToolCard.js`. Backend `parseCodexGatewayModel` di `src/sse/services/codexGateway.js` dan API `/api/cli-tools/codex-gateway/accounts` dibiarkan utuh karena masih bisa dipakai user yang explicit ngetik prefix `auto-codex`/`router/`/`original/`/`account/` di field Model — UI cuma berhenti suggest mode tersebut.
+
 # v0.4.86-5 (2026-06-15)
 
 ## Release Highlights

@@ -22,8 +22,6 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
   const [modelAliases, setModelAliases] = useState({});
   const [showManualConfigModal, setShowManualConfigModal] = useState(false);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
-  const [gatewayAccounts, setGatewayAccounts] = useState([]);
-  const [gatewayOriginal, setGatewayOriginal] = useState(null);
 
   useEffect(() => {
     if (apiKeys?.length > 0 && !selectedApiKey) {
@@ -39,11 +37,9 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
     if (isExpanded && !codexStatus) {
       checkCodexStatus();
       fetchModelAliases();
-      fetchGatewayAccounts();
     }
     if (isExpanded) {
       fetchModelAliases();
-      fetchGatewayAccounts();
     }
   }, [isExpanded]);
 
@@ -54,19 +50,6 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
       if (res.ok) setModelAliases(data.aliases || {});
     } catch (error) {
       console.log("Error fetching model aliases:", error);
-    }
-  };
-
-  const fetchGatewayAccounts = async () => {
-    try {
-      const res = await fetch("/api/cli-tools/codex-gateway/accounts", { cache: "no-store" });
-      const data = await res.json();
-      if (res.ok) {
-        setGatewayAccounts(data.accounts || []);
-        setGatewayOriginal(data.original || null);
-      }
-    } catch (error) {
-      console.log("Error fetching Codex gateway accounts:", error);
     }
   };
 
@@ -174,11 +157,6 @@ export default function CodexToolCard({ tool, isExpanded, onToggle, baseUrl, api
       setSubagentModel(model.value);
     }
     setModalOpen(false);
-  };
-
-  const applyGatewayPreset = (model) => {
-    setSelectedModel(model);
-    if (!subagentModel) setSubagentModel(model);
   };
 
   const getManualConfigs = () => {
@@ -339,37 +317,6 @@ model = "${effectiveSubagentModel}"
                     {selectedModel && <button onClick={() => setSelectedModel("")} className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-text-muted hover:text-red-500 rounded transition-colors" title="Clear"><span className="material-symbols-outlined text-[14px]">close</span></button>}
                   </div>
                   <button onClick={() => setModalOpen(true)} disabled={!activeProviders?.length} className={`w-full sm:w-auto rounded border px-2 py-2 text-xs transition-colors sm:py-1.5 whitespace-nowrap sm:shrink-0 ${activeProviders?.length ? "bg-surface border-border text-text-main hover:border-primary cursor-pointer" : "opacity-50 cursor-not-allowed border-border"}`}>Select Model</button>
-                </div>
-
-                {/* Codex Gateway */}
-                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[8rem_auto_1fr] sm:items-start sm:gap-2">
-                  <span className="text-xs font-semibold text-text-main sm:text-right sm:text-sm sm:pt-1.5">Gateway</span>
-                  <span className="material-symbols-outlined hidden text-text-muted text-[14px] sm:inline sm:pt-1.5">arrow_forward</span>
-                  <div className="flex min-w-0 flex-col gap-2">
-                    <div className="flex flex-wrap gap-1.5">
-                      <button type="button" onClick={() => applyGatewayPreset("auto-codex")} className="rounded border border-border bg-surface px-2 py-1 text-xs text-text-main transition-colors hover:border-primary/60 hover:bg-primary/5">Auto Codex</button>
-                      <button type="button" onClick={() => applyGatewayPreset("router/gpt-5.5")} className="rounded border border-border bg-surface px-2 py-1 text-xs text-text-main transition-colors hover:border-primary/60 hover:bg-primary/5">Router Pool</button>
-                      <button type="button" title={gatewayOriginal?.label ? `Original: ${gatewayOriginal.label}` : "Original Codex account"} onClick={() => applyGatewayPreset("original/gpt-5.5")} className="rounded border border-border bg-surface px-2 py-1 text-xs text-text-main transition-colors hover:border-primary/60 hover:bg-primary/5">
-                        Original
-                      </button>
-                    </div>
-                    {gatewayAccounts.length > 0 && (
-                      <select
-                        value={selectedModel?.startsWith("account/") ? selectedModel : ""}
-                        onChange={(event) => {
-                          if (event.target.value) applyGatewayPreset(event.target.value);
-                        }}
-                        className="w-full min-w-0 rounded border border-border bg-surface px-2 py-2 text-xs text-text-main focus:outline-none focus:ring-1 focus:ring-primary/50 sm:py-1.5"
-                      >
-                        <option value="">Pin specific Codex account...</option>
-                        {gatewayAccounts.map((account) => (
-                          <option key={account.id} value={`account/${account.slug}`}>
-                            {account.label}{account.imported ? " (GPTJson)" : " (Original)"}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
                 </div>
 
                 {/* Subagent Model */}
