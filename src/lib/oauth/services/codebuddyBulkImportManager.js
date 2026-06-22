@@ -648,7 +648,7 @@ async function completeCodeBuddyRegistration(page, onStep) {
 
 async function finalizeCodeBuddySuccess({ manager, job, account, context, page, tokens, email, createOptions = {} }) {
   let effectiveTokens = tokens || {};
-  if (page) {
+  if (page && typeof page.evaluate === "function") {
     const regionResult = await submitCodeBuddyRegionProfile(page, (step, message) => {
       manager.setAccountStep(account, step, message);
       void manager.persistJobSnapshot(job, { forcePreview: false });

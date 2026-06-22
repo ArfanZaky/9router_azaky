@@ -1,137 +1,81 @@
 import { BaseExecutor } from "./base.js";
-import { PROVIDERS } from "../config/providers.js";
+import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
+import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { OAUTH_ENDPOINTS, buildKimiHeaders } from "../config/appConstants.js";
-import { buildClineHeaders } from "../../src/shared/utils/clineAuth.js";
+import { buildClineHeaders } from "../shared/clineAuth.js";
 import { getCachedClaudeHeaders } from "../utils/claudeHeaderCache.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
+import { stripUnsupportedParams } from "../translator/concerns/paramSupport.js";
 import { randomUUID } from "crypto";
-import { gzipSync } from "zlib";
 
-const CODEBUDDY_SYSTEM_PROMPT = "You are CodeBuddy Code.";
-const CODEBUDDY_MIN_OUTPUT_TOKENS = 16;
-const CODEBUDDY_TOOL_DESCRIPTION_MAX_CHARS = 1200;
-const CODEBUDDY_SCHEMA_DESCRIPTION_MAX_CHARS = 500;
-const CODEBUDDY_ALLOWED_REQUEST_FIELDS = [
-  "temperature",
-  "top_p",
-  "presence_penalty",
-  "frequency_penalty",
-  "stop",
-  "tool_choice",
-  "parallel_tool_calls",
-  "response_format",
-];
+// Auth header descriptors — derived from registry transport.auth, fallback to hardcoded defaults.
+const BEARER = { combined: true, header: "Authorization", scheme: "bearer" };
+const XAPIKEY = { combined: true, header: "x-api-key", scheme: "raw" };
+const AUTH_DESCRIPTORS = Object.fromEntries(
+  Object.entries(PROVIDERS)
+    .filter(([, t]) => t.auth)
+    .map(([id, t]) => [id, t.auth])
+);
 
-function codeBuddyRequestId() {
-  return randomUUID().replace(/-/g, "");
+// Apply a token to a header per scheme (matches legacy: combined always sets, even when undefined).
+function setAuth(headers, spec, token) {
+  headers[spec.header] = spec.scheme === "bearer" ? `Bearer ${token}` : token;
 }
 
-function truncateMiddle(text, maxChars, label = "truncated for CodeBuddy") {
-  if (typeof text !== "string" || text.length <= maxChars) return text;
-  const head = Math.floor(maxChars * 0.75);
-  const tail = Math.max(0, maxChars - head - label.length - 12);
-  return `${text.slice(0, head)}\n\n[${label}]\n\n${text.slice(-tail)}`;
-}
-
-function sanitizeCodeBuddyContent(content, role) {
-  if (role === "system" || role === "developer") return "";
-  if (typeof content === "string") {
-    return content;
+// Resolve auth onto headers from a descriptor.
+function applyAuth(headers, desc, credentials) {
+  if (desc.combined) {
+    // combined providers always set the header (legacy behavior, incl. noAuth → "Bearer undefined")
+    setAuth(headers, desc, credentials.apiKey || credentials.accessToken);
+    if (desc.anthropicVersion && !headers["anthropic-version"]) headers["anthropic-version"] = ANTHROPIC_API_VERSION;
+    return;
   }
-  if (!Array.isArray(content)) return content;
-  return content.map((part) => {
-    if (!part || typeof part !== "object") return part;
-    return part;
-  });
+  // split apiKey/oauth: set only the matching branch (legacy: anthropic-compatible skips when both absent)
+  if (credentials.apiKey) setAuth(headers, desc.apiKey, credentials.apiKey);
+  else if (credentials.accessToken) setAuth(headers, desc.oauth, credentials.accessToken);
+  if (desc.anthropicVersion && !headers["anthropic-version"]) headers["anthropic-version"] = ANTHROPIC_API_VERSION;
 }
 
-function sanitizeCodeBuddySchema(schema) {
-  if (!schema || typeof schema !== "object") return schema;
-  if (Array.isArray(schema)) return schema.map(sanitizeCodeBuddySchema);
-  const next = { ...schema };
-  if (typeof next.description === "string") {
-    next.description = truncateMiddle(
-      next.description,
-      CODEBUDDY_SCHEMA_DESCRIPTION_MAX_CHARS,
-      "schema description truncated"
-    );
-  }
-  for (const key of Object.keys(next)) {
-    if (key !== "description" && next[key] && typeof next[key] === "object") {
-      next[key] = sanitizeCodeBuddySchema(next[key]);
+// Provider-specific header quirks kept as small hooks (not pure auth).
+const HEADER_HOOKS = {
+  kimiHeaders: (h) => Object.assign(h, buildKimiHeaders()),
+  clineHeaders: (h, c) => Object.assign(h, buildClineHeaders(c.apiKey || c.accessToken)),
+  kilocodeOrg: (h, c) => { if (c.providerSpecificData?.orgId) h["X-Kilocode-OrganizationID"] = c.providerSpecificData.orgId; },
+  claudeOverlay: (h) => {
+    const cached = getCachedClaudeHeaders();
+    if (!cached) return;
+    for (const lcKey of Object.keys(cached)) {
+      const titleKey = lcKey.replace(/(^|-)([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase());
+      if (lcKey === "anthropic-beta") {
+        const staticBetaStr = h[titleKey] || h[lcKey] || "";
+        const flags = new Set(staticBetaStr.split(",").map(f => f.trim()).filter(Boolean));
+        for (const f of cached[lcKey].split(",").map(f => f.trim()).filter(Boolean)) flags.add(f);
+        cached[lcKey] = Array.from(flags).join(",");
+      }
+      if (titleKey !== lcKey && h[titleKey] !== undefined) delete h[titleKey];
     }
-  }
-  return next;
-}
+    Object.assign(h, cached);
+  },
+};
 
-function normalizeCodeBuddyTools(tools) {
-  if (!Array.isArray(tools)) return tools;
-  return tools.map((tool) => {
-    if (!tool || typeof tool !== "object") return tool;
-    if (tool.function && typeof tool.function === "object") {
-      return {
-        ...tool,
-        function: {
-          ...tool.function,
-          description: truncateMiddle(
-            tool.function.description || "",
-            CODEBUDDY_TOOL_DESCRIPTION_MAX_CHARS,
-            "tool description truncated"
-          ),
-          parameters: sanitizeCodeBuddySchema(tool.function.parameters),
-        },
-      };
-    }
-    return {
-      ...tool,
-      description: truncateMiddle(
-        tool.description || "",
-        CODEBUDDY_TOOL_DESCRIPTION_MAX_CHARS,
-        "tool description truncated"
-      ),
-      input_schema: sanitizeCodeBuddySchema(tool.input_schema),
-      parameters: sanitizeCodeBuddySchema(tool.parameters),
-    };
-  });
-}
-
-function normalizeCodeBuddyMessages(messages) {
-  const source = Array.isArray(messages) ? messages : [];
-  const next = [{ role: "system", content: CODEBUDDY_SYSTEM_PROMPT }];
-  for (const message of source) {
-    if (!message || typeof message !== "object") continue;
-    if (message.role === "system" || message.role === "developer") continue;
-    const sanitized = {
-      ...message,
-      content: sanitizeCodeBuddyContent(message.content, message.role),
-    };
-    if (sanitized.role === "user" && typeof sanitized.content === "string") {
-      next.push({ ...sanitized, content: [{ type: "text", text: sanitized.content }] });
-    } else {
-      next.push(sanitized);
-    }
-  }
-  return next;
-}
-
-function buildCodeBuddyBody(model, transformed, maxTokens, maxCompletionTokens) {
-  const body = {
-    model,
-    messages: normalizeCodeBuddyMessages(transformed.messages),
-    stream: true,
-  };
-  for (const field of CODEBUDDY_ALLOWED_REQUEST_FIELDS) {
-    if (transformed[field] !== undefined) body[field] = transformed[field];
-  }
-  if (Array.isArray(transformed.tools)) body.tools = normalizeCodeBuddyTools(transformed.tools);
-  if (Number.isFinite(maxTokens) && maxTokens > 0) {
-    body.max_tokens = Math.max(maxTokens, CODEBUDDY_MIN_OUTPUT_TOKENS);
-  } else if (Number.isFinite(maxCompletionTokens) && maxCompletionTokens > 0) {
-    body.max_tokens = Math.max(maxCompletionTokens, CODEBUDDY_MIN_OUTPUT_TOKENS);
-  }
-  return body;
-}
+// Config-driven OAuth refresh grants — derived from registry oauth.refresh.
+const REFRESH_GRANTS = Object.fromEntries(
+  Object.entries(PROVIDER_OAUTH)
+    .filter(([, o]) => o.refresh)
+    .map(([id, o]) => {
+      const tokenUrl = o.tokenUrl;
+      const encoding = o.refresh.encoding;
+      const extraParams = o.refresh.scope ? { scope: o.refresh.scope } : {};
+      return [id, {
+        encoding,
+        url: () => tokenUrl,
+        params: (ex) => id === "gemini"
+          ? { client_id: ex.config.clientId, client_secret: ex.config.clientSecret, ...extraParams }
+          : { client_id: o.clientId, ...extraParams },
+      }];
+    })
+);
 
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
@@ -140,19 +84,16 @@ export class DefaultExecutor extends BaseExecutor {
 
   transformRequest(model, body) {
     const transformed = this.applyJsonSchemaFallback(body);
-    if (this.provider === "codebuddy") {
-      const maxTokens = Number(transformed.max_tokens);
-      const maxCompletionTokens = Number(transformed.max_completion_tokens);
-      return buildCodeBuddyBody(model, transformed, maxTokens, maxCompletionTokens);
-    }
-    return injectReasoningContent({ provider: this.provider, model, body: transformed });
-  }
 
-  prepareRequestBody(transformedBody, headers) {
-    const bodyStr = JSON.stringify(transformedBody);
-    if (this.provider !== "codebuddy") return bodyStr;
-    headers["Content-Encoding"] = "gzip";
-    return gzipSync(bodyStr);
+    if (transformed && typeof transformed === "object") {
+      // quirk: some openai-compatible providers reject Anthropic's client_metadata field
+      if (this.config.quirks?.dropClientMetadata) {
+        delete transformed.client_metadata;
+      }
+      stripUnsupportedParams(this.provider, model, transformed);
+    }
+
+    return injectReasoningContent({ provider: this.provider, model, body: transformed });
   }
 
   // Fallback json_schema → json_object for openai-compatible providers without native Structured Output.
@@ -176,148 +117,69 @@ export class DefaultExecutor extends BaseExecutor {
   }
 
   buildUrl(model, stream, urlIndex = 0, credentials = null) {
+    // Runtime transport (multi-endpoint providers): use the sourceFormat-matched endpoint
+    const rt = credentials?.runtimeTransport;
+    if (rt?.baseUrl) {
+      return rt.urlSuffix ? `${rt.baseUrl}${rt.urlSuffix}` : rt.baseUrl;
+    }
     if (this.provider?.startsWith?.("openai-compatible-")) {
-      const baseUrl = credentials?.providerSpecificData?.baseUrl || "https://api.openai.com/v1";
+      const baseUrl = credentials?.providerSpecificData?.baseUrl || OPENAI_COMPAT_BASE;
       const normalized = baseUrl.replace(/\/$/, "");
       const path = this.provider.includes("responses") ? "/responses" : "/chat/completions";
       return `${normalized}${path}`;
     }
     if (this.provider?.startsWith?.("anthropic-compatible-")) {
-      const baseUrl = credentials?.providerSpecificData?.baseUrl || "https://api.anthropic.com/v1";
+      const baseUrl = credentials?.providerSpecificData?.baseUrl || ANTHROPIC_COMPAT_BASE;
       const normalized = baseUrl.replace(/\/$/, "");
       return `${normalized}/messages`;
     }
-    switch (this.provider) {
-      case "claude":
-      case "glm":
-      case "kimi":
-      case "minimax":
-      case "minimax-cn":
-        return `${this.config.baseUrl}?beta=true`;
-      case "kimi-coding":
-        return `${this.config.baseUrl}?beta=true`;
-      case "gemini":
-        return `${this.config.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
-      default: {
-        const url = this.config.baseUrl;
-        if (url?.includes("{accountId}")) {
-          const accountId = credentials?.providerSpecificData?.accountId;
-          if (!accountId) throw new Error(`${this.provider} requires accountId in providerSpecificData`);
-          return url.replace("{accountId}", accountId);
-        }
-        return url;
-      }
+    // gemini-format: build :streamGenerateContent / :generateContent path
+    if (this.config.format === "gemini") {
+      return `${this.config.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
     }
+    // urlSuffix (e.g. ?beta=true) declared per-provider in registry
+    if (this.config.urlSuffix) {
+      return `${this.config.baseUrl}${this.config.urlSuffix}`;
+    }
+    const url = this.config.baseUrl;
+    if (url?.includes("{accountId}")) {
+      const accountId = credentials?.providerSpecificData?.accountId;
+      if (!accountId) throw new Error(`${this.provider} requires accountId in providerSpecificData`);
+      return url.replace("{accountId}", accountId);
+    }
+    return url;
+  }
+
+  // Fallback descriptor for providers without an explicit entry in AUTH_DESCRIPTORS.
+  resolveAuthDescriptor() {
+    if (this.provider?.startsWith?.("anthropic-compatible-")) {
+      return { apiKey: { header: "x-api-key", scheme: "raw" }, oauth: { header: "Authorization", scheme: "bearer" }, anthropicVersion: true };
+    }
+    if (this.config?.format === "claude") {
+      return { ...XAPIKEY, anthropicVersion: true };
+    }
+    return BEARER;
   }
 
   buildHeaders(credentials, stream = true) {
-    const headers = { "Content-Type": "application/json", ...this.config.headers };
-
-    switch (this.provider) {
-      case "gemini":
-        credentials.apiKey ? headers["x-goog-api-key"] = credentials.apiKey : headers["Authorization"] = `Bearer ${credentials.accessToken}`;
-        break;
-      case "claude": {
-        // Overlay live cached headers from real Claude Code client over static defaults.
-        // Static headers (Title-Case) remain as cold-start fallback.
-        const cached = getCachedClaudeHeaders();
-        if (cached) {
-          // Remove Title-Case static keys that conflict with incoming lowercase cached keys
-          for (const lcKey of Object.keys(cached)) {
-            // Build the Title-Case equivalent: "anthropic-version" → "Anthropic-Version"
-            const titleKey = lcKey.replace(/(^|-)([a-z])/g, (_, sep, c) => sep + c.toUpperCase());
-
-            // Special handling for Anthropic-Beta to preserve required flags like OAuth
-            if (lcKey === "anthropic-beta") {
-              const staticBetaStr = headers[titleKey] || headers[lcKey] || "";
-              const staticFlags = new Set(staticBetaStr.split(",").map(f => f.trim()).filter(Boolean));
-              const cachedFlags = new Set(cached[lcKey].split(",").map(f => f.trim()).filter(Boolean));
-
-              // Merge all static flags (which contain oauth, thinking, etc) into the cached ones
-              for (const flag of staticFlags) {
-                cachedFlags.add(flag);
-              }
-
-              cached[lcKey] = Array.from(cachedFlags).join(",");
-            }
-
-            if (titleKey !== lcKey && headers[titleKey] !== undefined) {
-              delete headers[titleKey];
-            }
-          }
-          Object.assign(headers, cached);
-        }
-        credentials.apiKey
-          ? (headers["x-api-key"] = credentials.apiKey)
-          : (headers["Authorization"] = `Bearer ${credentials.accessToken}`);
-        break;
-      }
-      case "glm":
-      case "kimi":
-      case "minimax":
-      case "minimax-cn":
-      case "kimi-coding":
-        headers["x-api-key"] = credentials.apiKey || credentials.accessToken;
-        if (this.provider === "kimi-coding") Object.assign(headers, buildKimiHeaders());
-        break;
-      default:
-        if (this.provider?.startsWith?.("anthropic-compatible-")) {
-          if (credentials.apiKey) {
-            headers["x-api-key"] = credentials.apiKey;
-          } else if (credentials.accessToken) {
-            headers["Authorization"] = `Bearer ${credentials.accessToken}`;
-          }
-          if (!headers["anthropic-version"]) {
-            headers["anthropic-version"] = "2023-06-01";
-          }
-        } else if (this.provider === "gitlab") {
-          // GitLab Duo uses Bearer token (PAT with ai_features scope, or OAuth access token)
-          headers["Authorization"] = `Bearer ${credentials.apiKey || credentials.accessToken}`;
-        } else if (this.provider === "codebuddy") {
-          const requestId = codeBuddyRequestId();
-          const conversationId = codeBuddyRequestId();
-          headers["Authorization"] = `Bearer ${credentials.apiKey || credentials.accessToken}`;
-          headers["Accept"] = "text/event-stream";
-          headers["Content-Type"] = "application/json; charset=utf-8";
-          headers["User-Agent"] = "CLI/2.105.2 CodeBuddy/2.105.2";
-          // CLI spoofing headers for restricted account bypass
-          headers["X-App"] = "cli";
-          headers["X-Stainless-Runtime"] = "node";
-          headers["X-Stainless-Lang"] = "js";
-          headers["X-Stainless-Helper-Method"] = "stream";
-          headers["X-Stainless-Retry-Count"] = "0";
-          headers["X-Requested-With"] = "XMLHttpRequest";
-          headers["X-Domain"] = credentials.providerSpecificData?.domain || "www.codebuddy.ai";
-          headers["X-Request-ID"] = requestId;
-          headers["X-Conversation-ID"] = conversationId;
-          headers["X-Conversation-Request-ID"] = conversationId;
-          headers["X-Conversation-Message-ID"] = requestId;
-          headers["X-Agent-Intent"] = "craft";
-          headers["X-IDE-Type"] = "CLI";
-          headers["X-IDE-Name"] = "CLI";
-          headers["X-IDE-Version"] = "2.105.2";
-          headers["X-Private-Data"] = "false";
-        } else if (this.provider === "kilocode") {
-          headers["Authorization"] = `Bearer ${credentials.apiKey || credentials.accessToken}`;
-          if (credentials.providerSpecificData?.orgId) {
-            headers["X-Kilocode-OrganizationID"] = credentials.providerSpecificData.orgId;
-          }
-        } else if (this.provider === "cline") {
-          Object.assign(headers, buildClineHeaders(credentials.apiKey || credentials.accessToken));
-        } else if (this.config?.format === "claude") {
-          // Generic claude-format provider (e.g. agentrouter): x-api-key + anthropic-version
-          headers["x-api-key"] = credentials.apiKey || credentials.accessToken;
-          if (!headers["anthropic-version"]) headers["anthropic-version"] = "2023-06-01";
-        } else {
-          headers["Authorization"] = `Bearer ${credentials.apiKey || credentials.accessToken}`;
-        }
-    }
+    const rt = credentials?.runtimeTransport;
+    const headers = { "Content-Type": "application/json", ...(rt ? rt.headers : this.config.headers) };
+    const desc = rt?.auth || AUTH_DESCRIPTORS[this.provider] || this.resolveAuthDescriptor();
+    // Hooks run BEFORE auth so dynamic overlays (claude cached headers) can't clobber the token.
+    for (const hook of desc.hooks || []) HEADER_HOOKS[hook]?.(headers, credentials);
+    applyAuth(headers, desc, credentials);
 
     // Strip first-party Claude Code identity headers for non-Anthropic anthropic-compatible upstreams
     if (this.provider?.startsWith?.("anthropic-compatible-")) {
       const baseUrl = credentials?.providerSpecificData?.baseUrl || "";
       const isOfficialAnthropic = baseUrl === "" || baseUrl.includes("api.anthropic.com");
       if (!isOfficialAnthropic) {
+        // Some third-party Anthropic-compatible gateways require Bearer auth in
+        // addition to x-api-key. Send both (x-api-key already set above) so
+        // gateways that read either header succeed.
+        if (credentials.apiKey && !headers["Authorization"]) {
+          headers["Authorization"] = `Bearer ${credentials.apiKey}`;
+        }
         delete headers["anthropic-dangerous-direct-browser-access"];
         delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
         delete headers["x-app"];
@@ -341,20 +203,49 @@ export class DefaultExecutor extends BaseExecutor {
     }
 
     if (stream) headers["Accept"] = "text/event-stream";
+    // Keep the legacy public DefaultExecutor contract for callers/tests that
+    // instantiate it directly. Runtime routing uses CodeBuddyGlobalExecutor.
+    if (this.provider === "codebuddy") {
+      const requestId = randomUUID().replace(/-/g, "");
+      const conversationId = randomUUID().replace(/-/g, "");
+      Object.assign(headers, {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-Helper-Method": "stream",
+        "X-Stainless-Retry-Count": "0",
+        "X-Request-ID": requestId,
+        "X-Conversation-ID": conversationId,
+        "X-Conversation-Request-ID": conversationId,
+        "X-Conversation-Message-ID": requestId,
+        "X-Agent-Intent": "craft",
+        "X-Private-Data": "false",
+        "X-Domain": credentials.providerSpecificData?.domain || "www.codebuddy.ai",
+      });
+    }
     return headers;
+  }
+
+  // Generic OAuth refresh for the common {grant_type, refresh_token, client_id[, ...]} shape.
+  // grant = REFRESH_GRANTS[provider]; client creds resolved from PROVIDERS or this.config.
+  refreshFromGrant(credentials, proxyOptions) {
+    const grant = REFRESH_GRANTS[this.provider];
+    const params = { grant_type: "refresh_token", refresh_token: credentials.refreshToken, ...grant.params(this) };
+    return grant.encoding === "json"
+      ? this.refreshWithJSON(grant.url(), params, proxyOptions)
+      : this.refreshWithForm(grant.url(), params, proxyOptions);
   }
 
   async refreshCredentials(credentials, log, proxyOptions = null) {
     if (!credentials.refreshToken) return null;
 
     const refreshers = {
-      claude: () => this.refreshWithJSON(OAUTH_ENDPOINTS.anthropic.token, { grant_type: "refresh_token", refresh_token: credentials.refreshToken, client_id: PROVIDERS.claude.clientId }, proxyOptions),
-      codex: () => this.refreshWithForm(OAUTH_ENDPOINTS.openai.token, { grant_type: "refresh_token", refresh_token: credentials.refreshToken, client_id: PROVIDERS.codex.clientId, scope: "openid profile email offline_access" }, proxyOptions),
+      claude: () => this.refreshFromGrant(credentials, proxyOptions),
+      codex: () => this.refreshFromGrant(credentials, proxyOptions),
       qwen: () => this.refreshWithForm(OAUTH_ENDPOINTS.qwen.token, { grant_type: "refresh_token", refresh_token: credentials.refreshToken, client_id: PROVIDERS.qwen.clientId }, proxyOptions),
       iflow: () => this.refreshIflow(credentials.refreshToken, proxyOptions),
-      gemini: () => this.refreshGoogle(credentials.refreshToken, proxyOptions),
+      gemini: () => this.refreshFromGrant(credentials, proxyOptions),
       kiro: () => this.refreshKiro(credentials.refreshToken, proxyOptions),
-      codebuddy: () => this.refreshCodeBuddy(credentials.refreshToken, proxyOptions),
       cline: () => this.refreshCline(credentials.refreshToken, proxyOptions),
       "kimi-coding": () => this.refreshKimiCoding(credentials.refreshToken, proxyOptions),
       kilocode: () => this.refreshKilocode(credentials.refreshToken, proxyOptions)
@@ -407,17 +298,6 @@ export class DefaultExecutor extends BaseExecutor {
     return { accessToken: tokens.access_token, refreshToken: tokens.refresh_token || refreshToken, expiresIn: tokens.expires_in };
   }
 
-  async refreshGoogle(refreshToken, proxyOptions = null) {
-    const response = await proxyAwareFetch(OAUTH_ENDPOINTS.google.token, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: this.config.clientId, client_secret: this.config.clientSecret })
-    }, proxyOptions);
-    if (!response.ok) return null;
-    const tokens = await response.json();
-    return { accessToken: tokens.access_token, refreshToken: tokens.refresh_token || refreshToken, expiresIn: tokens.expires_in };
-  }
-
   async refreshKiro(refreshToken, proxyOptions = null) {
     const response = await proxyAwareFetch(PROVIDERS.kiro.tokenUrl, {
       method: "POST",
@@ -429,65 +309,30 @@ export class DefaultExecutor extends BaseExecutor {
     return { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken || refreshToken, expiresIn: tokens.expiresIn };
   }
 
-  async refreshCodeBuddy(refreshToken, proxyOptions = null) {
-    const response = await proxyAwareFetch(PROVIDERS.codebuddy.refreshUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
-        "X-Requested-With": "XMLHttpRequest",
-        "X-Domain": "www.codebuddy.ai",
-        "X-Refresh-Token": refreshToken,
-        "X-Auth-Refresh-Source": "plugin",
-        "X-Product": "SaaS",
-      },
-      body: "{}"
-    }, proxyOptions);
-    if (!response.ok) return null;
-    const payload = await response.json();
-    const data = payload?.data || payload;
-    const accessToken = data?.accessToken || data?.access_token;
-    if (!accessToken) return null;
-    return {
-      accessToken,
-      refreshToken: data?.refreshToken || data?.refresh_token || refreshToken,
-      expiresIn: data?.expiresIn || data?.expires_in || 86400,
-    };
-  }
-
   async refreshCline(refreshToken, proxyOptions = null) {
-    console.log('[DEBUG] Refreshing Cline token, refreshToken length:', refreshToken?.length);
-    const response = await proxyAwareFetch("https://api.cline.bot/api/v1/auth/refresh", {
+    const response = await proxyAwareFetch(PROVIDERS.cline.refreshUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify({ refreshToken, grantType: "refresh_token", clientType: "extension" })
     }, proxyOptions);
-    console.log('[DEBUG] Cline refresh response status:', response.status);
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log('[DEBUG] Cline refresh error:', errorText);
-      return null;
-    }
+    if (!response.ok) return null;
     const payload = await response.json();
-    console.log('[DEBUG] Cline refresh payload:', JSON.stringify(payload).substring(0, 200));
     const data = payload?.data || payload;
     const expiresAtIso = data?.expiresAt;
     const expiresIn = expiresAtIso ? Math.max(1, Math.floor((new Date(expiresAtIso).getTime() - Date.now()) / 1000)) : undefined;
-    console.log('[DEBUG] Cline refresh success, expiresIn:', expiresIn);
     return { accessToken: data?.accessToken, refreshToken: data?.refreshToken || refreshToken, expiresIn };
   }
 
   async refreshKimiCoding(refreshToken, proxyOptions = null) {
     const kimiHeaders = buildKimiHeaders();
-    const response = await proxyAwareFetch("https://auth.kimi.com/api/oauth/token", {
+    const response = await proxyAwareFetch(PROVIDERS["kimi-coding"].refreshUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
         ...kimiHeaders
       },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: "17e5f671-d194-4dfb-9706-5516cb48c098" })
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: PROVIDERS["kimi-coding"].clientId })
     }, proxyOptions);
     if (!response.ok) return null;
     const tokens = await response.json();

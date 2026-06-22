@@ -48,12 +48,6 @@ next-env.d.ts
 data/
 logs/*
 source/*
-
-# opencode / development scratch directory
-.omo/
-
-# Discord announce workflow temp output
-discord-payload.json
 .cursor/*
 docs/*
 !docs/ARCHITECTURE.md
@@ -79,11 +73,5 @@ scripts/agSniffer/*
 gitbooks/*
 gitbook/README.md
 
-# OmO / OpenCode artifacts
-.OMO_*
-.CLEANUP_REPORT.md
-.opencode-status.md
-*-results.json
-*-test.mjs
-pw-test.mjs
-repo.tar
+# Refactor backup reference (do not bundle/lint)
+open-sse.old/

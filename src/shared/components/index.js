@@ -7,7 +7,6 @@ export { default as Modal, ConfirmModal } from "./Modal";
 export { default as Loading, Spinner, PageLoading, Skeleton, CardSkeleton } from "./Loading";
 export { default as Avatar } from "./Avatar";
 export { default as Badge } from "./Badge";
-export { default as BulkAccountAutomationModal } from "./BulkAccountAutomationModal";
 export { default as Toggle } from "./Toggle";
 export { default as ThemeToggle } from "./ThemeToggle";
 export { ThemeProvider } from "./ThemeProvider";
@@ -30,7 +29,6 @@ export { default as KiroOAuthWrapper } from "./KiroOAuthWrapper";
 export { default as KiroSocialOAuthModal } from "./KiroSocialOAuthModal";
 export { default as CursorAuthModal } from "./CursorAuthModal";
 export { default as IFlowCookieModal } from "./IFlowCookieModal";
-export { default as CodeBuddyQuotaCookieModal } from "./CodeBuddyQuotaCookieModal";
 export { default as GitLabAuthModal } from "./GitLabAuthModal";
 export { default as EditConnectionModal } from "./EditConnectionModal";
 export { default as AddCustomEmbeddingModal } from "./AddCustomEmbeddingModal";
@@ -38,8 +36,11 @@ export { default as NoAuthProxyCard } from "./NoAuthProxyCard";
 export { default as SegmentedControl } from "./SegmentedControl";
 export { default as Tooltip } from "./Tooltip";
 export { default as ProviderInfoCard } from "./ProviderInfoCard";
-export { default as Pagination } from "./Pagination";
+export { default as CapacityBadges } from "./CapacityBadges";
+export { default as BulkAccountAutomationModal } from "./BulkAccountAutomationModal";
+export { default as CodeBuddyQuotaCookieModal } from "./CodeBuddyQuotaCookieModal";
 export { default as MergeConnectionsModal } from "./MergeConnectionsModal";
+export { default as Pagination } from "./Pagination";
 
 // Layouts
 export * from "./layouts";

@@ -15,13 +15,30 @@
  * fiction. The suffix is stripped before the request leaves this process.
  */
 
+import { extractThinking } from "../translator/concerns/thinkingUnified.js";
+import { effortToBudget } from "../translator/concerns/thinking.js";
+
 export const KIRO_AGENTIC_SUFFIX = "-agentic";
 export const KIRO_THINKING_SUFFIX = "-thinking";
 
-export const KIRO_THINKING_BUDGET_DEFAULT = 16000;
+// Public default CodeWhisperer profile ARNs (us-east-1), keyed by auth method.
+// Used when an account cannot resolve its own profileArn. Builder ID and social
+// (Google/GitHub) sign-ins map to different shared profiles.
+export const KIRO_DEFAULT_PROFILE_ARNS = {
+  "builder-id": "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX",
+  social: "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK",
+};
 
-const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
-const FALSE_VALUES = new Set(["0", "false", "no", "off"]);
+// Back-compat single default (Builder ID).
+export const KIRO_DEFAULT_PROFILE_ARN = KIRO_DEFAULT_PROFILE_ARNS["builder-id"];
+
+/** Resolve the shared default profileArn for a given auth method. */
+export function resolveDefaultProfileArn(authMethod) {
+  const social = authMethod === "google" || authMethod === "github";
+  return social ? KIRO_DEFAULT_PROFILE_ARNS.social : KIRO_DEFAULT_PROFILE_ARNS["builder-id"];
+}
+
+export const KIRO_THINKING_BUDGET_DEFAULT = 16000;
 
 export const KIRO_AGENTIC_SYSTEM_PROMPT = `
 # CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)
@@ -75,16 +92,48 @@ REMEMBER: When in doubt, write LESS per operation. Multiple small operations > o
 `.trim();
 
 /**
- * Detect whether an inbound request is asking for reasoning / thinking output.
+ * Resolve the Kiro thinking budget requested by a client.
  *
- * Sources of intent (any one is enough):
- *   - HTTP header `Anthropic-Beta: ...interleaved-thinking...`
- *   - JSON `thinking.type === "enabled"` (Claude Messages API)
- *   - JSON `reasoning_effort` in {low, medium, high, auto} (OpenAI o1/o3)
- *   - JSON `reasoning.effort` in {low, medium, high, auto} (OpenAI Responses)
- *   - System prompt contains `<thinking_mode>enabled</thinking_mode>` or
- *     `<thinking_mode>interleaved</thinking_mode>` (AMP / Cursor)
- *   - Model name contains `thinking` or `-reason`
+ * Reuses the shared thinkingUnified parser (extractThinking) so every client
+ * shape (Claude output_config.effort / thinking.budget_tokens, OpenAI
+ * reasoning_effort / reasoning.effort, Gemini, Qwen) maps consistently. Explicit
+ * `none`/`off`/disabled wins and returns null (no prefix injected).
+ * buildThinkingSystemPrefix performs Kiro's final 1..32000 clamp.
+ *
+ * @param {object} body OpenAI/Claude-shaped request body
+ * @param {object} [headers] Original inbound HTTP headers (case-insensitive)
+ * @param {string} [model] Model id the caller asked for
+ * @returns {number|null} budget to inject, or null when thinking is disabled
+ */
+export function resolveKiroThinkingBudget(body, headers, model) {
+  const cfg = extractThinking(body);
+  if (cfg) {
+    if (cfg.mode === "none") return null;
+    if (cfg.mode === "budget") return cfg.budget;
+    if (cfg.mode === "level") return effortToBudget(cfg.level) ?? KIRO_THINKING_BUDGET_DEFAULT;
+    return KIRO_THINKING_BUDGET_DEFAULT;
+  }
+
+  if (headers) {
+    const beta = pickHeader(headers, "anthropic-beta");
+    if (typeof beta === "string" && beta.toLowerCase().includes("interleaved-thinking")) {
+      return KIRO_THINKING_BUDGET_DEFAULT;
+    }
+  }
+
+  if (containsThinkingModeTag(body)) return KIRO_THINKING_BUDGET_DEFAULT;
+
+  if (typeof model === "string" && model) {
+    const m = model.toLowerCase();
+    if (m.includes("thinking") || m.includes("-reason")) return KIRO_THINKING_BUDGET_DEFAULT;
+  }
+
+  return null;
+}
+
+/**
+ * Detect whether an inbound request is asking for reasoning / thinking output.
+ * Thin wrapper over resolveKiroThinkingBudget (single source of truth).
  *
  * @param {object} body OpenAI-shaped request body (post-translation)
  * @param {object} [headers] Original inbound HTTP headers (case-insensitive)
@@ -92,87 +141,7 @@ REMEMBER: When in doubt, write LESS per operation. Multiple small operations > o
  * @returns {boolean}
  */
 export function isThinkingEnabled(body, headers, model) {
-  if (isThinkingExplicitlyDisabled(body)) {
-    return false;
-  }
-
-  if (headers) {
-    const beta = pickHeader(headers, "anthropic-beta");
-    if (typeof beta === "string" && beta.toLowerCase().includes("interleaved-thinking")) {
-      return true;
-    }
-  }
-
-  if (body && typeof body === "object") {
-    const thinking = body.thinking;
-    if (thinking && typeof thinking === "object" && thinking.type === "enabled") {
-      const budget = Number(thinking.budget_tokens);
-      if (!Number.isFinite(budget) || budget > 0) {
-        return true;
-      }
-    }
-
-    const effort = body.reasoning_effort
-      ?? (body.reasoning && typeof body.reasoning === "object" ? body.reasoning.effort : null);
-    if (typeof effort === "string") {
-      const v = effort.toLowerCase();
-      if (v && v !== "none" && (v === "low" || v === "medium" || v === "high" || v === "auto")) {
-        return true;
-      }
-    }
-
-    if (containsThinkingModeTag(body)) {
-      return true;
-    }
-  }
-
-  if (typeof model === "string" && model) {
-    const m = model.toLowerCase();
-    if (m.includes("thinking") || m.includes("-reason")) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function isThinkingExplicitlyDisabled(body) {
-  if (!body || typeof body !== "object") return false;
-  const thinking = body.thinking;
-  if (thinking && typeof thinking === "object" && thinking.type === "disabled") {
-    return true;
-  }
-  const effort = body.reasoning_effort
-    ?? (body.reasoning && typeof body.reasoning === "object" ? body.reasoning.effort : null);
-  return typeof effort === "string" && effort.toLowerCase() === "none";
-}
-
-/**
- * Decide whether Kiro reasoning chunks should be forwarded to the client.
- *
- * Kiro's reasoning stream is useful for debugging, but most downstream clients
- * display it as user-visible "thinking" progress. Keep the default quiet and
- * let power users opt in per request or by environment variable.
- */
-export function shouldExposeKiroReasoning(body) {
-  const explicit = firstDefined(
-    body?.kiro_expose_reasoning,
-    body?.kiroExposeReasoning,
-    body?.metadata?.kiro_expose_reasoning,
-    body?.metadata?.kiroExposeReasoning,
-    body?.extra_body?.kiro_expose_reasoning,
-    body?.extra_body?.kiroExposeReasoning
-  );
-  const parsedExplicit = parseBooleanLike(explicit);
-  if (parsedExplicit !== null) return parsedExplicit;
-
-  const envSource = typeof process !== "undefined" ? process.env : {};
-  const env = firstDefined(
-    envSource.KIRO_EXPOSE_REASONING,
-    envSource.NINE_ROUTER_EXPOSE_REASONING
-  );
-  const parsedEnv = parseBooleanLike(env);
-  return parsedEnv === true;
+  return resolveKiroThinkingBudget(body, headers, model) !== null;
 }
 
 /**
@@ -305,18 +274,4 @@ function containsTagInText(text) {
   if (!text.includes("<thinking_mode>")) return false;
   return text.includes("<thinking_mode>enabled</thinking_mode>")
     || text.includes("<thinking_mode>interleaved</thinking_mode>");
-}
-
-function firstDefined(...values) {
-  return values.find(value => value !== undefined && value !== null);
-}
-
-function parseBooleanLike(value) {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1 ? true : value === 0 ? false : null;
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  if (TRUE_VALUES.has(normalized)) return true;
-  if (FALSE_VALUES.has(normalized)) return false;
-  return null;
 }

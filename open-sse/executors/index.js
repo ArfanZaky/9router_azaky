@@ -16,6 +16,9 @@ import { PerplexityWebExecutor } from "./perplexity-web.js";
 import { OllamaLocalExecutor } from "./ollama-local.js";
 import { CommandCodeExecutor } from "./commandcode.js";
 import { XiaomiTokenplanExecutor } from "./xiaomi-tokenplan.js";
+import { MimoFreeExecutor } from "./mimo-free.js";
+import { CodeBuddyExecutor } from "./codebuddy-cn.js";
+import { CodeBuddyGlobalExecutor } from "./codebuddy.js";
 import { DefaultExecutor } from "./default.js";
 
 const executors = {
@@ -39,6 +42,10 @@ const executors = {
   "ollama-local": new OllamaLocalExecutor(),
   commandcode: new CommandCodeExecutor(),
   "xiaomi-tokenplan": new XiaomiTokenplanExecutor(),
+  "mimo-free": new MimoFreeExecutor(),
+  mmf: new MimoFreeExecutor(), // Alias for mimo-free
+  "codebuddy-cn": new CodeBuddyExecutor(),
+  codebuddy: new CodeBuddyGlobalExecutor(),
 };
 
 const defaultCache = new Map();
@@ -73,3 +80,6 @@ export { PerplexityWebExecutor } from "./perplexity-web.js";
 export { OllamaLocalExecutor } from "./ollama-local.js";
 export { CommandCodeExecutor } from "./commandcode.js";
 export { XiaomiTokenplanExecutor } from "./xiaomi-tokenplan.js";
+export { MimoFreeExecutor } from "./mimo-free.js";
+export { CodeBuddyExecutor } from "./codebuddy-cn.js";
+export { CodeBuddyGlobalExecutor } from "./codebuddy.js";

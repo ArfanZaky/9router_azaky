@@ -1,239 +1,99 @@
-# v0.4.86-7 (2026-06-15)
+# v0.5.8 (2026-06-21)
 
-## Release Highlights
-- [FIX] Bulk-import gak stuck lagi di Google login dengan email field kosong — selector diperluas (10 + 7 variant), retry 15s, dan fallback `click+type` untuk React/Vue controlled input
-- [FIX] Qoder bulk login Live Browser Preview gak freeze/stuck lagi — screenshot capture sekarang punya hard timeout 2.5s dan gak bisa poison persist queue (Kiro/CodeBuddy juga ikut benefit)
-- [FIX] Codex output gak lagi truncated jadi "Bac Sek P L" (cuma 1-3 huruf per kata) — SSE peek refactor pakai single reader, stop pola release/re-acquire body reader yang bocor di Node 24/undici
-- [FEAT] Bulk login (Kiro/CodeBuddy/Qoder) sekarang bisa pakai proxy via Proxy Pool dropdown atau custom URL di automation modal
-- [BACKEND] API route bulk-import nerima `proxyPoolId`/`proxyUrl` di body, plus opt-in fallback ke `settings.outboundProxyUrl` lewat flag baru `useOutboundProxyForAutomation`
-- [UI] Codex CLI tool card: hapus section "Gateway" (3 button Auto Codex / Router Pool / Original) + dropdown "Pin specific Codex account". Sekarang user tinggal isi Model + Subagent Model langsung seperti tool CLI lain (Cursor/OpenCode/dll). Backend prefix masih bisa diketik manual untuk power user.
+## Features
+- **Antigravity**: native image generation support (image models tagged kind:image, hiển thị trong media-providers UI)
+- **CodeBuddy CN**: API key auth + credit quota tracker
+- **CodeBuddy CN**: short model prefix alias "cbcn"
 
-## Technical Notes
+## Fixes
+- **MiniMax-M3**: enable vision capability
+- **Headroom**: support Docker sidecar proxy
+- **Antigravity**: image executor fixes
+- **mimo-free**: Chrome User-Agent rotation to bypass anti-abuse gate
+- **cloudflare-ai**: flatten content-part arrays to string to avoid oneOf 400 (#1926)
+- **Translator**: normalize tools to Anthropic-native shape for non-Anthropic providers
+- **CLI**: handle Next.js 16 nested standalone output path (#1940)
+- **Codex**: preserve custom tools during request normalization
+- **next.config**: add new route for responses endpoint to API
 
-### Google login email/password field resilience
-- Symptom: setelah v0.4.86-3 fix browser launch, beberapa worker stuck di `needs_manual` karena Google Sign-in dialog muncul tapi email field gak ke-fill (user lihat "Email or phone" kosong di Live Browser Preview).
-- Root cause #1 — selector terlalu sempit. `EMAIL_INPUT_SELECTOR` cuma cover `input[type="email"], input[autocomplete="username"]`. Google's actual form pakai `input#identifierId` (stable ID), `input[name="identifier"]` (mobile variant), kadang `input[type="text"][autofocus]` (A/B test). Plus `aria-label` berbeda per locale ("Email or phone" / "Email atau nomor telepon" / dll).
-- Root cause #2 — `getFirstVisibleLocator` cuma single-shot check. Kalau form belum render waktu polling pertama (SPA hydration ~1-3s), function return null → email skipped → loop eventually hit `MANUAL_ASSIST_MARKERS` → status `needs_manual`.
-- Root cause #3 — `locator.fill()` kadang bypass React/Vue onChange wiring di Google's controlled input, value snap-back ke empty saat form re-render.
-- Fix: (a) `EMAIL_INPUT_SELECTOR` & `PASSWORD_INPUT_SELECTOR` diperluas jadi 10 + 7 selectors mencakup semua variant + i18n aria-label English/Indonesian. (b) Helper baru `waitForFirstVisibleLocator(page, selector, { timeout: 15000, pollInterval: 500 })` polling sampai elemen visible atau timeout. (c) Helper baru `fillInputResilient(locator, value)` panggil `fill()`, verify via `inputValue()`, kalau mismatch fallback ke `click → fill('') → type(delay: 50)`. (d) Kedua helper dipakai di 3 call sites: initial email entry, polling-loop email re-entry, password entry.
-- Test coverage: 16 vitest cases di `tests/unit/kiroGoogleAutomation.email.test.js`.
+# v0.5.6 (2026-06-20)
 
-### Qoder Live Browser Preview stuck
-- Symptom: di Qoder bulk login, Live Browser Preview kadang stuck di frame lama atau gak listening sama sekali. User harus close+reopen modal supaya preview update lagi. Kiro/CodeBuddy gak kena ini.
-- Root cause: `capturePreview()` di `kiroBulkImportManager.js` (parent class) panggil `await page.screenshot(...)` tanpa timeout. Qoder's `processAccount` jalanin `page.evaluate('https://qoder.com/api/v1/me/userplan')` sambil status masih `running` — kalau request itu lambat/hang, screenshot ikut blocked. Worse: `persistJobSnapshot` chain semua call lewat `job.persistPromise` yang await-nya serial. Sekali screenshot hang, semua persist call berikutnya nyangkut → snapshot file gak pernah update → modal polling baca data stale forever.
-- Why Kiro/CodeBuddy aman: mereka gak punya `page.evaluate` panjang sambil status masih `running`. Saving connection di Kiro lewat `socialExchange` (network call ke server sendiri, bukan dari dalam Playwright page).
-- Fix: (a) `capturePreview` di-race dengan `setTimeout(2500ms)`; kalau timeout, return null tapi `lastPreview` lama dipertahankan. (b) `persistJobSnapshot` runPersist catch capturePreview reject + capturePreview itself return previous imageData on inner failure. (c) `writeJsonFile` dibungkus try/catch supaya disk error gak break worker. (d) `capturePreviewAccount` jadi method tersendiri, fallback search lebih permissive (any account dengan page hidup, bukan cuma `status === "running"`).
-- Test coverage: vitest case "does not let a hung capturePreview block persistJobSnapshot" stub `capturePreview` jadi never-resolving promise dan assert `persistJobSnapshot` selesai <4s, file persisted, `lastPreview` lama bertahan.
+## Features
+- **Ponytail**: minimalist code generation feature
+- **Headroom**: proxy lifecycle management + dashboard UI (one-click start/stop, install detection, status probing, token saver, claude↔openai shape conversion)
+- **CodeBuddy CN**: new OAuth provider (copilot.tencent.com) — 15-model catalog, /v2 inference, forced streaming, OpenAI-style reasoning
+- **OpenCode-Go**: align models with official endpoints; route Qwen 3.7 MiniMax via /v1/messages, GLM/Kimi/DeepSeek/MiMo via /chat/completions
 
-### Bulk login proxy support
-- API route `src/app/api/oauth/{kiro,codebuddy,qoder}/bulk-import/route.js` sekarang baca optional `proxyPoolId`/`proxyUrl` di body, lalu resolve via `bulkImportProxyResolver.js` baru. Pool tipe Vercel/Cloudflare/Deno (URL-rewriting relay) ditolak dengan 400 — relay gak bisa dipakai untuk launch browser.
-- Fallback ke `settings.outboundProxyUrl` cuma kalau `settings.useOutboundProxyForAutomation === true`. Default OFF supaya user existing zero-impact.
-- `proxyUrl` di-thread melalui `manager.startJob({ accounts, concurrency, engine, proxyUrl })`, disimpan di `job.proxyUrl`, lalu `defaultBrowserLauncher(job)` pass ke `launchBulkImportBrowser({ proxyUrl })` yang udah support sejak v0.4.86-2.
-- UI: section "Network Proxy (optional)" baru di `BulkAccountAutomationModal` — Proxy Pool dropdown (filter: aktif + bukan relay) + Custom Proxy URL input. Mutually exclusive (pilih pool → URL field ke-clear).
+## Fixes
+- **Anthropic-compatible validation**: use POST /v1/messages (GET /models not spec, false "invalid" for valid keys)
+- **CLI tools**: tolerate JSONC configs in all 8 settings routes (opencode, openclaw, kilo, droid, cowork, copilot, claude, cline)
+- **Gemini/Antigravity**: preserve 'pattern' in tool schema translation (glob/grep)
+- **Combo/Fusion**: flatten Anthropic-style tool messages in panel calls (prevent 503)
+- **Models**: store provider custom models by provider scope
+- **Perplexity**: use /v1/models endpoint for key validation
 
-### Codex output truncation "Bac Sek P L"
-- Symptom: tiap response Codex stream keluar terpotong, "Background Sekarang Process Loading" jadi "Bac Sek P L". User pikir kena limit output, padahal stream-nya kacau di tengah jalan.
-- Root cause: `_peekSseOverloaded` di `open-sse/executors/codex.js` panggil `response.body.getReader()` untuk peek 4096 byte pertama (cek SSE error pattern), lalu `releaseLock()`, lalu di dalam `start()` callback `ReadableStream` yang baru re-acquire `upstream.getReader()` lagi. Di Node 24/undici, kombinasi release-then-reacquire pada body fetch yang sudah dibaca sebagian kadang bikin reader kedua kehilangan offset → subset byte di-emit ulang sambil sebagian byte tengah hilang → SSE parser di sisi client dapat event corrupt → cuma render 1-3 huruf pertama tiap text delta.
-- Fix: refactor `_peekSseOverloaded` jadi single-reader lifecycle. Reader diacquire sekali di awal, peek loop pakai reader itu, replacement `ReadableStream`'s `start()` enqueue prefix chunks tanpa `getReader()` ulang, `pull()` baca dari reader yang sama sampai stream selesai. Kalau pattern overload kedeteksi, reader di-cancel dan return tanpa replacementBody.
-- Test coverage: 5 vitest case di `tests/unit/codex-sse-peek.test.js`. Termasuk regression khusus "many small chunks no truncation" yang reproduce pattern "Bac Sek P L".
+# v0.5.4 (2026-06-18)
 
-### Codex Gateway UI cleanup
-- User report: 3-button Gateway mode (Auto Codex / Router Pool / Original) + Pin Account dropdown bikin user bingung dan ngarahin ke flow yang dulu memicu truncation.
-- Fix: hapus `gatewayAccounts` state, `fetchGatewayAccounts`, `applyGatewayPreset`, dan seluruh "Gateway" UI section dari `src/app/(dashboard)/dashboard/cli-tools/components/CodexToolCard.js`. Sekarang sama seperti tool CLI lain — user tinggal isi Model + Subagent Model.
-- Backend `parseCodexGatewayModel` di `src/sse/services/codexGateway.js` dan API `/api/cli-tools/codex-gateway/accounts` dibiarkan utuh — power user yang hafal prefix `auto-codex`/`router/`/`original/`/`account/` masih bisa ngetik manual di field Model. UI cuma berhenti suggest.
+## Fixes
+- **Kiro**: honor thinking effort budgets
+- **AG/Kiro/Xiaomi**: provider fixes
+- **Combo/Fusion**: flatten tool history in panel calls to prevent 503
+- **LLM selector**: show custom vision models in selector and model list
+- **Image**: prevent compatible nodes from shadowing provider aliases
 
-### Files changed
-- `open-sse/executors/codex.js`
-- `src/lib/oauth/services/kiroBulkImportManager.js`
-- `src/lib/oauth/services/qoderBulkImportManager.js`
-- `src/lib/oauth/services/kiroGoogleAutomation.js`
-- `src/lib/oauth/services/bulkImportProxyResolver.js` (new)
-- `src/app/api/oauth/{kiro,codebuddy,qoder}/bulk-import/route.js`
-- `src/app/(dashboard)/dashboard/cli-tools/components/CodexToolCard.js`
-- `src/shared/components/BulkAccountAutomationModal.js`
-- `tests/unit/kiroGoogleAutomation.email.test.js` (new, 16 cases)
-- `tests/unit/kiro-bulk-import-manager.test.js` (+1 case)
-- `tests/unit/kiro-bulk-import-routes.test.js` (+1 case)
-- `tests/unit/codex-sse-peek.test.js` (new, 5 cases)
+# v0.5.2 (2026-06-17)
 
-# v0.4.86-3 (2026-06-14)
+## Features
+- **Combo Fusion strategy** — fans the prompt out to all member models in parallel, then a configurable judge model synthesizes one final answer (quorum-grace, anonymized sources, graceful degradation)
+- **Per-combo strategy selector** — pick `fallback` / `round-robin` / `fusion` / `capacity` per combo (replaces the old round-robin toggle), with a judge picker for fusion
+- **Capacity auto-switch** — reorders models per request so images/PDFs route to capable models first
+- **Kiro headless API-key auth** (`ksk_`) + direct `claude↔kiro` route that avoids the lossy OpenAI two-hop pivot
+- **Claude auto-ping** — warms the 5h quota window right after reset so a fresh window starts immediately (per-connection toggle)
 
-## Release Highlights
-- [FIX] Bulk-import (Kiro/CodeBuddy/Qoder) gak fail lagi dengan "Playwright not available" — chromium dan camoufox engine sekarang langsung jalan setelah auto-install
-- [FIX] Camoufox engine yang sebelumnya kena bug yang sama sekarang juga bisa launch normal di Linux dan Windows
+## Fixes
+- **Claude 429**: stop hammering the OAuth usage endpoint — cache resetAt, throttle quota refresh to 3 min, cool down after a 429 (chat unaffected)
+- **Usage logs always empty**: missing `await` on `getAdapter()` in `getRecentLogs` made `/api/usage/logs` & `/api/usage/request-logs` return nothing
+- **Executors**: strip params unsupported by the provider/model (drops deprecated `temperature` for claude-opus-4 → Anthropic 400)
+- **Translator**: derive deterministic tool_call ids for gemini/antigravity → OpenAI so function call/response pair correctly (fixes tool-pairing 400s)
+- **Antigravity**: strip `optional` from tool schemas before sending to Gemini
+- **Claude-to-OpenAI**: handle OpenAI-format responses in the non-streaming path (e.g. xiaomi-tokenplan)
+- **Usage views**: show edited connection names consistently across Providers & Quota Tracker
+- **Security**: hardened reverse-proxy local-access trust
+- **Security**: SSRF hardening on web fetch
 
-## Technical Notes
-- Root cause: webpack-bundled playwrightRuntime/camoufoxRuntime helpers had `require(<variable>)` calls. Webpack rewrote them to a stub module (id 51029) that always throws MODULE_NOT_FOUND, so all 3 resolution strategies in v0.4.86-2 failed even after npm install succeeded.
-- Fix: bulkImportBrowserEngine.launchChromium / launchCamoufox now try `await import("playwright")` (literal string, treated as serverExternalPackages by webpack → native Node resolution) FIRST. Only on failure do they invoke a NEW install-only helper that runs npm install + binary fetch via child processes (no require() inside helper). After install, the dynamic import succeeds via NODE_PATH from buildEnvWithRuntime.
-- New helpers: installPlaywrightOnly() in cli/hooks/playwrightRuntime.js, installCamoufoxOnly() in cli/hooks/camoufoxRuntime.js. Old ensurePlaywrightRuntime / ensureCamoufoxRuntime kept for backward compat.
-- Verified end-to-end on VPS sandbox 134.209.102.0 with /tmp/repro3.sh — prior to fix: 2/2 accounts failed at preflight in 2.88s. After fix: workers reach login step.
+## Internal
+- Large **open-sse / translator refactor** (~40 commits): unified provider/model registry (LiteLLM-style `models[]` + `kind` field, 100 co-located registry files), single-sourced media/OAuth/refresh/token URLs, registry-based dispatch for usage & token-refresh, DRY translator concerns (buildUsage, encodeDataUri, finishReasonMap, chunkBuilder, reasoningDelta…), ESM-safe registry init, large-file splits, dead-code removal, and golden/no-regression test gates
 
-# v0.4.86-2 (2026-06-14)
+# v0.4.80 (2026-06-13)
 
-## Hotfix — Bulk-Import Playwright Resolution
-- Bulk-import otomatis (CodeBuddy / Kiro / Qoder) failed dengan pesan **"Playwright not available. playwright installed but cannot be required"** padahal Playwright dan Chromium binary sebenarnya udah ke-bundle dengan `wyxrouter` global install.
-- Root cause: `cli/hooks/playwrightRuntime.js` cuma probe dua lokasi (`require('playwright')` walking up dari `wyxrouter/hooks/`, plus `%APPDATA%/9router/runtime/node_modules/playwright`). Lokasi bundled di npm-published package (`<wyxrouter-pkg-root>/app/node_modules/playwright`) gak pernah dicek, jadi setiap kali user trigger bulk-import pertama kali, code coba `npm install playwright` ke runtime dir — yang sering silent-fail di webpack/Next.js standalone context.
-- Fix: tambahkan helper `findBundledPlaywrightDirs()` yang walk up dari `cli/hooks/` dan probe baik `node_modules/playwright` maupun `app/node_modules/playwright` di tiap level (max 6 level). Bundled Playwright sekarang langsung dipakai tanpa harus install ulang.
-- Bonus: error message kalau install bener-bener gagal sekarang lebih informatif — include exit code, stderr summary (network / permission / disk space / npm error), dan diagnostic kalau npm sukses tapi resolution masih fail (suggest set `NODE_PATH` atau reinstall wyxrouter).
+## Features
+- Vercel AI Gateway: support embeddings, images and credit usage (#1183)
+- Add MiMo Free no-auth provider (#1789)
+- Vertex: support ADC `authorized_user` credential
+- Cowork: re-enable Claude Cowork with preset-only stdio MCP
+- Codex: bulk add accounts via JSON (#1719)
+- Kiro: enable multi-endpoint failover for GenerateAssistantResponse (#1722)
 
-# v0.4.86-1 (2026-06-14)
+## Fixes
+- Security: re-auth on DB export/import + SSRF guard on web fetch
+- Auth: real client IP rate-limiting + remote default-password guard
+- Cerebras/Mistral: strip unsupported `client_metadata` from downstream requests (#1742)
+- SiliconFlow: update baseUrl `.cn` -> `.com` + curate verified model list (#1760)
+- Gemini-to-OpenAI: route unsigned thought parts to `reasoning_content` (#1752)
+- Claude-to-OpenAI: strip Anthropic billing header from system prompt (#1765)
+- Anthropic-compatible: send Bearer auth for third-party gateways (#1795)
+- Usage-stats: avoid partial stats on initial SSE race (#1767)
+- Proxy: use `export default` in proxy.js for Next.js 16 middleware detection
+- Claude passthrough: add body normalization
+- GitHub Copilot: refresh missing/expired token on models discovery (#1727) + add mappable gpt-5-mini/gpt-5.4-nano slots for Copilot MITM (#1653)
+- Kiro: auto-resolve profileArn to prevent 403 on IDC login, enhance profile ARN resolution, update endpoint to `runtime.us-east-1.kiro.dev` (#1713)
+- Tunnel: detect system-installed Tailscale via dual-socket probe (#1723) + non-blocking probes to prevent UI freeze
+- CommandCode: force `stream=true` in transformRequest (#1706)
+- Qoder: increase timeouts for reasoning models and improve stream handling
+- Dashboard: show provider node name instead of connection name in topology (#1770) + show explicit `kind="llm"` combos on combos page (#1684)
 
-## Hotfix — Discord Announce Reliability
-- Discord Changelog Announce workflow sebelumnya silent-skip kalau secret `DISCORD_WEBHOOK_URL` kosong (exit 0 dengan warning), sehingga release v0.4.85 dan v0.4.86 awalnya gak nge-publish ke Discord channel walau workflow report success.
-- Workflow sekarang **fail-loud**: kalau secret kosong, step exit 1 dengan error message jelas. Status workflow merah di Actions tab supaya gak luput lagi.
-- Tambah `workflow_dispatch` trigger dengan optional `version` input. Maintainer bisa re-trigger announce manual dari Actions tab tanpa harus push commit baru atau bump version.
-
-## CHANGELOG Fix
-- v0.4.86 release entry awalnya cuma highlight worker auto-detect (PR #8) padahal release juga include cross-instance connection merge (PR #7 by @Akfiss). Entry untuk v0.4.86 tetap dipertahankan as-is (history fidelity), tapi v0.4.86-1 ini juga me-list ulang highlight gabungannya supaya Discord announce v0.4.86-1 mencerminkan apa yang user dapat kalau mereka `npm update -g wyxrouter` ke versi terbaru.
-
-## Release Highlights (Combined v0.4.86 + v0.4.86-1)
-- [NEW] **Cross-instance connection merge**: transfer provider connections antar dua instance 9router lokal di mesin yang sama, dua arah (Push / Pull), dengan dry-run preview, target backup otomatis, dan dedup berbasis fingerprint (PR #7 by @Akfiss)
-- [NEW] **Per-account checkbox** di merge preview + plan tier column untuk Qoder (Pro/Trial/Failed) dengan opsi "Probe live" via NDJSON streaming
-- [NEW] **Bulk-import worker count auto-detect by spec** (CPU + RAM). Toggle "Auto-detect by system spec" default ON di semua provider modal (Kiro, CodeBuddy, Qoder)
-- [NEW] Endpoint `GET /api/system/specs` yang expose recommended worker count plus alasan limit (CPU/RAM)
-- [FIX] Discord announce workflow sekarang fail-loud + manual dispatch, sehingga secret yang lupa di-set gak silent-skip lagi
-
-# v0.4.86 (2026-06-14)
-
-## Release Highlights
-- [NEW] Bulk-import worker count sekarang auto-detect by spec (CPU + RAM). Toggle "Auto-detect by system spec" default ON di semua provider modal (Kiro, CodeBuddy, Qoder)
-- [NEW] Endpoint baru `GET /api/system/specs` yang expose recommended worker count plus alasan limit (CPU/RAM)
-- [NEW] Backend `clampConcurrency` menerima nilai `"auto"` selain angka — frontend cuma kirim `"auto"` dan backend resolve sendiri pakai `os.cpus()` + `os.totalmem()`
-
-## Worker Auto-Detection by System Spec
-- Hybrid formula: `min(floor(cpuCount / 2), floor(totalRamGb / 4))`, clamp 1–8. CPU side menjaga responsivitas, RAM side mencegah Playwright bikin swap. Whichever resource paling sempit menang.
-- Modal automation menampilkan ringkasan deteksi: `"Recommended N workers for this machine (X-core CPU, Y GB RAM, limited by CPU/RAM)"`. Uncheck toggle untuk kembali ke manual input 1–8.
-- Manager `kiroBulkImportManager` jadi single source of truth — `codebuddyBulkImportManager` & `qoderBulkImportManager` re-export dari sini, jadi semua provider otomatis dapat fitur tanpa kode duplikat.
-- Util baru `src/lib/systemSpecs.js` punya fallback aman: kalau `os.cpus()` / `os.totalmem()` blocked, kembali ke default 4 workers (perilaku lama). Boolean `true` & string `"AUTO"` (case-insensitive) juga di-treat sebagai auto.
-
-# v0.4.85 (2026-06-14)
-
-## Release Highlights
-- [NEW] CodeBuddy bulk-import sekarang support 3 format token: access only, access + refresh, dan access + refresh + API key (365 hari)
-- [NEW] Pilih browser engine di bulk-import: Chromium (default) atau Camoufox (stealth Firefox)
-- [NEW] Donate modal baru via Paymenku — 5 nominal preset (Rp 10k–250k), bayar QRIS/VA/E-Wallet
-- [NEW] Auto-announce changelog ke Discord setiap version bump
-- [FIX] Build error "Module not found: better-sqlite3" di Linux/CI sudah clear — install di GitHub Actions tidak fail lagi
-- [FIX] Auto-install Playwright Chromium saat first bulk-import — no more "Executable doesn't exist" untuk user yang baru `npm install -g wyxrouter`
-- [FIX] Bulk login akun Google Workspace (custom domain) tidak stuck lagi di consent "Welcome to your new account"
-
-## Bulk Token Import — Flexible Formats (PR #6 by Tentoxa)
-- `/api/oauth/codebuddy/bulk-token` now accepts three line formats: `accessToken` (24h OAuth-only, backward compatible), `accessToken:refreshToken` (auto-refresh enabled), and `accessToken:refreshToken:apiKey` (365-day API-key path).
-- Smart JWT validation by structural check (presence of dots) — no false positives on valid JWTs, rejects malformed lines early.
-- Format counts returned in the API response so the dashboard can show how many entries used each path.
-- Connections imported with `apiKey` set use it as the primary credential for chat requests; the OAuth `accessToken` is still kept for upstream quota lookups.
-
-# v0.4.84-1 (2026-06-14)
-
-## Hotfix — Donate Tier Mapping
-- Corrected the Paymenku tier list: every amount was paired with the link code one slot below it (Rp 10k pointed at the Rp 250k link, Rp 250k at Rp 100k, etc.). Verified codes against the merchant dashboard and re-aligned each tier with its real Payment Link.
-
-# v0.4.84 (2026-06-14)
-
-## Donate via Paymenku
-- Replaced the legacy donate modal (which fetched a JSON channel list from upstream 9router.com) with a Paymenku Payment Link picker. Five fixed-amount tiers are exposed: Rp 10k / 25k / 50k / 100k / 250k.
-- Each button opens the corresponding Paymenku Payment Link in a new tab — payment supports QRIS, Virtual Account, and E-Wallet at Paymenku's checkout page.
-- Removed `GITHUB_CONFIG.donateUrl` and the QR-card render path. Paymenku tier list lives in `shared/constants/config.js` (`PAYMENKU_DONATE_TIERS`) for easy editing.
-
-## Build Fix — Optional Native Dependencies
-- Fixed `Module not found: Can't resolve 'better-sqlite3'` build failure that hit Linux CI runners (and any environment without native build tools, where `optionalDependencies` install is silently skipped).
-- `next.config.mjs` now registers a webpack externals callback for `better-sqlite3` and `camoufox-js`, plus an extended `serverExternalPackages` list covering both packages and `playwright` / `playwright-core`. The bundler emits `commonjs` requires without resolving the path, so a missing optional package no longer breaks `next build`.
-- Adapter / route loaders swapped static imports for `createRequire(import.meta.url)` lazy resolution. Runtime still surfaces a clean `MODULE_NOT_FOUND` if the package is genuinely needed but absent.
-
-## Bulk Import Browser Engine Selection
-- Added a Browser Engine dropdown to the bulk-import modal: **Chromium (default)** or **Camoufox (stealth Firefox)**. The job carries the engine choice all the way to the launcher, and the UI persists nothing extra — pick at start time per job.
-- Camoufox is shipped via `optionalDependencies` so users on locked-down npm registries don't fail `npm install -g wyxrouter`. The package and its ~150MB Firefox binary install lazily into the user's data dir on first Camoufox-engine job, mirroring the sqlite/playwright runtime pattern.
-- Both engine paths now route through `bulkImportBrowserEngine.js`, which wraps `ensurePlaywrightRuntime` + `ensureCamoufoxRuntime` and converts every install/missing-binary failure into an actionable error string ("Run X manually, then retry. You can also switch back to the Chromium engine."). The job error propagates to every queued account so the modal renders it instead of silently sitting on a blank Live Browser Preview.
-
-## Hotfix — Auto-install Playwright Chromium on First Bulk Import
-- Fixed `browserType.launch: Executable doesn't exist at .../chrome-headless-shell.exe` error that hit users right after `npm install -g wyxrouter`.
-- Playwright doesn't ship a Chromium binary by default through npm global installs; the package-level postinstall has to download it. We now do that lazily on the first bulk-import attempt instead of eagerly at install time so users who never touch automation aren't billed ~150MB of disk.
-- Added `cli/hooks/playwrightRuntime.js` mirroring the existing sqlite runtime helper. The helper also lazy-installs the `playwright` npm package itself into the user data dir if it's missing, so a failed `npm install -g wyxrouter --omit=optional` doesn't leave the worker with no engine at all.
-- Affects Kiro / Qoder / CodeBuddy bulk-import managers (they all share the same launcher path).
-
-# v0.4.83 (2026-06-14)
-
-## Hotfix — Workspace Welcome Click Reliability
-- Added `#confirm` and `form#tos_form input[type="submit"]` to the approve selector list (Google's speedbump form uses these stable identifiers).
-- When Playwright's click is rejected because the input fails the visibility heuristic, fall back to a DOM-level `scrollIntoView + click` via `page.evaluate`, then to `form.submit()` as a last resort.
-- Fixes residual cases where v0.4.82 detected the Workspace welcome page but couldn't actuate the "Saya mengerti" / "I understand" submit input.
-
-# v0.4.82 (2026-06-14)
-
-## Hotfix — Bulk Login Stuck on Google Workspace Welcome
-- Fixed bulk-import workers getting stuck in an infinite "polling token / waiting for next screen" loop when a Google Workspace account (`@custom-domain.com`) hits the "Welcome to your new account" consent screen.
-- The screen has only one valid action (the primary "I understand" button) and no skip option. The previous handler tried `Skip / Not now / No thanks` selectors first, found none, and never fell through to the primary action because subsequent loop iterations re-raced with the polling promise.
-- Added a Workspace-specific marker check that prioritises the primary action selector for that screen, so the worker clicks "I understand" on the first iteration that detects the page.
-- Affects Kiro, Qoder, and CodeBuddy bulk-import flows (they all share the Google automation path).
-
-# Unreleased
-
-## Qoder Plan Awareness
-- Executor now refuses pre-flight when the requested model has `enable: false` for the connected account, returning HTTP 403 with a pricing URL hint instead of letting the upstream return a generic `code: 112` error.
-- Free-plan Qoder accounts effectively only get `qmodel_latest` (Qwen3.7-Max) enabled; every other catalog key (`auto`, `ultimate`, `performance`, `efficient`, `qmodel`, `dmodel`, `dfmodel`, `gm51model`, `kmodel`, `mmodel`) reports `enable: false` and 403s server-side.
-- Bulk-import progress message renamed from "Checking plan & activating trial" to "Reading plan tier" — Qoder web has no Pro Trial activation flow, so the previous wording was misleading.
-
-## Provider Bulk Delete
-- Replaced the "Delete Terminal" button on the provider detail page with "Delete Selected".
-- The new bulk action removes every checkbox-selected connection regardless of status — active, rate-limited, cooldown, connection-error, and terminal accounts are all eligible.
-- Users can now multi-select connections via the existing row checkboxes ("Select visible" toggle still works) and delete them in one click.
-
-## Bulk Import Manual Session
-- "Open Manual Session" now actually opens a visible browser window. Bulk-import workers run headless by default; when a worker stalls on CAPTCHA / 2FA / recovery prompts and is marked `needs_manual`, clicking the button launches a fresh headed Chromium with the same cookies and storage state and navigates to the last URL the headless context was on.
-- Affects Kiro, Qoder, and CodeBuddy bulk-import managers.
-- The headed browser is closed automatically once the polling promise resolves (success, failure, or cancel), so no leaked windows after the followup completes.
-- Fallback: if relaunching the headed browser fails (e.g. Playwright cannot spawn), the code reverts to the previous `bringToFront` / `setWindowBounds` behavior so the click is never silently a no-op.
-
-# v0.4.81 (2026-06-14)
-
-## Qoder Auto Login
-- Added Qoder bulk auto-login via Google SSO and device flow (PKCE + poll).
-- New automation panel in Dashboard → Automation with bulk account and device OAuth options.
-- API routes: `/api/oauth/qoder/bulk-import` with job tracking, cancel, and manual session support.
-- Reuses the same Google SSO automation engine as Kiro and CodeBuddy.
-
-## Bulk Account Normalization
-- `parseKiroBulkAccounts` now supports multiple separators: `email:password`, `email|password`, and tab-separated.
-- Lines starting with `#` are treated as comments and skipped.
-- Colon separator only activates when the part before `:` contains `@` (prevents false splits on passwords with colons).
-- Updated UI placeholder and help text to reflect new format support.
-
-## Auto-Disable on Terminal Auth Errors
-- Accounts that receive 3 consecutive terminal auth errors (token expired, banned, quota exhausted) are automatically disabled (`isActive: false`).
-- New fields: `autoDisabledAt`, `autoDisabledReason`, `consecutiveAuthFailures`.
-- Failure counter resets on successful requests.
-- Dashboard shows auto-disable reason and date; re-enabling clears the auto-disable state.
-
-## Proxy for Login
-- Browser automation (Playwright) now accepts proxy configuration via the bulk import manager.
-- Qoder bulk import manager supports `proxyUrl` for HTTP/SOCKS proxy passthrough to Playwright.
-
-## Code Structure
-- Extracted `googleAutomation.js` and `codebuddyAutomation.js` as re-export modules for cleaner imports.
-- CodeBuddy bulk import manager now imports from dedicated modules instead of `kiroGoogleAutomation.js`.
-
----
-
-# Unreleased
-
-## Automation
-- CodeBuddy bulk automation now continues from Google login and onboarding through Access Key creation.
-- A worker is successful only after the generated Access Key is saved to the provider connection.
-- Existing Access Keys are reused to avoid duplicate key creation.
-- Restricted pages no longer trigger an immediate skip; automation attempts key creation with the authenticated browser session and records the upstream API result.
-- Added explicit states for invalid key sessions, key limits, duplicate key-name retry, and missing key secrets.
-
-## CodeBuddy
-- Generated Access Keys are the primary credential for chat/model calls.
-- OAuth tokens, web session metadata, `uid`, and enterprise identity are retained in the same connection.
-- Upstream quota is queried only with a valid IDE OAuth access token plus `uid`/enterprise identity headers.
-- Restricted/generated-key sessions no longer retry quota through stale web cookies after OAuth rejection.
-- When upstream quota authentication is unavailable, Quota Tracker reports the limitation and directs users to 9router Usage for locally observed request/token tracking.
-
-## Distribution
-- Synced the root npm package and CLI package at `0.4.78`.
-- Removed the legacy `9router` CLI binary alias so npm installs expose only `wyxrouter`.
-- Documented `npx wyxrouter`, global npm installation, source development, and CLI bundle packaging.
+## Docs
+- README: add Indonesian 9Router tutorial video (#1709)
 
 # v0.4.71 (2026-06-06)
 

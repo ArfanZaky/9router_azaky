@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Card, Button, Toggle, Input, MergeConnectionsModal } from "@/shared/components";
-import { ConfirmModal } from "@/shared/components/Modal";
+import { Card, Button, Toggle, Input } from "@/shared/components";
+import Modal, { ConfirmModal } from "@/shared/components/Modal";
 import LanguageSwitcher from "@/shared/components/LanguageSwitcher";
 import { useTheme } from "@/shared/hooks/useTheme";
 import { cn } from "@/shared/utils/cn";
@@ -26,7 +26,6 @@ export default function ProfilePage() {
   const [locale, setLocale] = useState("en");
   const [langOpen, setLangOpen] = useState(false);
   const [shutdownOpen, setShutdownOpen] = useState(false);
-  const [mergeOpen, setMergeOpen] = useState(false);
   const [isShuttingDown, setIsShuttingDown] = useState(false);
   const [settings, setSettings] = useState({ fallbackStrategy: "fill-first" });
   const [loading, setLoading] = useState(true);
@@ -35,6 +34,8 @@ export default function ProfilePage() {
   const [passLoading, setPassLoading] = useState(false);
   const [dbLoading, setDbLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
+  const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "" });
+  const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
     authMode: "password",
     oidcIssuerUrl: "",
@@ -472,11 +473,13 @@ export default function ProfilePage() {
     }
   };
 
-  const handleExportDatabase = async () => {
+  const handleExportDatabase = async (password) => {
     setDbLoading(true);
     setDbStatus({ type: "", message: "" });
     try {
-      const res = await fetch("/api/settings/database");
+      const res = await fetch("/api/settings/database", {
+        headers: { "x-9r-password": password },
+      });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to export database");
@@ -503,13 +506,19 @@ export default function ProfilePage() {
     }
   };
 
-  const handleImportDatabase = async (event) => {
+  const handleImportDatabase = (event) => {
     const file = event.target.files?.[0];
+    if (importFileRef.current) importFileRef.current.value = "";
     if (!file) return;
-
-    setDbLoading(true);
+    pendingImportRef.current = file;
     setDbStatus({ type: "", message: "" });
+    setDbAuth({ open: true, mode: "import", password: "" });
+  };
 
+  const runImportDatabase = async (password) => {
+    const file = pendingImportRef.current;
+    if (!file) return;
+    setDbLoading(true);
     try {
       const raw = await file.text();
       const payload = JSON.parse(raw);
@@ -517,7 +526,7 @@ export default function ProfilePage() {
       const res = await fetch("/api/settings/database", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, password }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -530,11 +539,17 @@ export default function ProfilePage() {
     } catch (err) {
       setDbStatus({ type: "error", message: err.message || "Invalid backup file" });
     } finally {
-      if (importFileRef.current) {
-        importFileRef.current.value = "";
-      }
+      pendingImportRef.current = null;
       setDbLoading(false);
     }
+  };
+
+  // Confirm password modal, then run export or import.
+  const handleDbAuthConfirm = async () => {
+    const { mode, password } = dbAuth;
+    setDbAuth({ open: false, mode: "", password: "" });
+    if (mode === "export") await handleExportDatabase(password);
+    else if (mode === "import") await runImportDatabase(password);
   };
 
   const observabilityEnabled = settings.enableObservability === true;
@@ -609,7 +624,7 @@ export default function ProfilePage() {
               <Button
                 variant="secondary"
                 icon="download"
-                onClick={handleExportDatabase}
+                onClick={() => setDbAuth({ open: true, mode: "export", password: "" })}
                 loading={dbLoading}
                 className="w-full sm:w-auto"
               >
@@ -623,14 +638,6 @@ export default function ProfilePage() {
                 className="w-full sm:w-auto"
               >
                 Import Backup
-              </Button>
-              <Button
-                variant="outline"
-                icon="merge_type"
-                onClick={() => setMergeOpen(true)}
-                className="w-full sm:w-auto"
-              >
-                Merge to Instance
               </Button>
               <input
                 ref={importFileRef}
@@ -1144,10 +1151,35 @@ export default function ProfilePage() {
         variant="danger"
         loading={isShuttingDown}
       />
-      <MergeConnectionsModal
-        isOpen={mergeOpen}
-        onClose={() => setMergeOpen(false)}
-      />
+
+      <Modal
+        isOpen={dbAuth.open}
+        onClose={() => setDbAuth({ open: false, mode: "", password: "" })}
+        title="Confirm Password"
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDbAuth({ open: false, mode: "", password: "" })} disabled={dbLoading}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={handleDbAuthConfirm} loading={dbLoading} disabled={!dbAuth.password}>
+              Confirm
+            </Button>
+          </>
+        }
+      >
+        <p className="text-text-muted mb-3 text-sm">
+          Enter your current password to {dbAuth.mode === "export" ? "export" : "import"} the database.
+        </p>
+        <Input
+          type="password"
+          value={dbAuth.password}
+          onChange={(e) => setDbAuth((s) => ({ ...s, password: e.target.value }))}
+          onKeyDown={(e) => { if (e.key === "Enter" && dbAuth.password) handleDbAuthConfirm(); }}
+          placeholder="Current password"
+          autoFocus
+        />
+      </Modal>
     </div>
   );
 }

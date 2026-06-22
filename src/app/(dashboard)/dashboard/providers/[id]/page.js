@@ -4,13 +4,14 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, CodeBuddyQuotaCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal, Pagination } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, CodeBuddyQuotaCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
-import { getModelsByProviderId } from "@/shared/constants/models";
+import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
-import { classifyConnectionStatus, CONNECTION_STATUS_FILTERS, filterConnectionByStatus } from "@/shared/utils/connectionStatus";
+import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -18,64 +19,19 @@ import ConnectionRow from "./ConnectionRow";
 import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
+import BulkImportCodexModal from "./BulkImportCodexModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
-const KIRO_BULK_JOB_STORAGE_KEY = "kiro-bulk-import-active-job";
-const KIRO_BULK_JOB_EXPIRED_MESSAGE = "Bulk import progress expired or was cleared.";
-const CONNECTIONS_DEFAULT_PAGE_SIZE = 20;
-const MODELS_DEFAULT_PAGE_SIZE = 20;
-const PROVIDER_DETAIL_FETCH_TIMEOUT_MS = 8000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isBulkJobTerminal(status) {
-  return ["completed", "cancelled", "failed"].includes(status);
-}
-
-function isBulkJobActive(status) {
-  return ["queued", "running", "needs_manual"].includes(status);
-}
-
-async function fetchBulkJobById(jobId) {
-  if (!jobId) return null;
-  const res = await fetch(`/api/oauth/kiro/bulk-import/${jobId}`, { cache: "no-store" });
-  const data = await res.json();
-  return { res, data };
-}
-
-async function fetchLatestBulkJob(scope = "active") {
-  const res = await fetch(`/api/oauth/kiro/bulk-import/latest?scope=${encodeURIComponent(scope)}`, { cache: "no-store" });
-  const data = await res.json();
-  return { res, data };
-}
-
-async function fetchJsonWithTimeout(url) {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), PROVIDER_DETAIL_FETCH_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(url, {
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    let data = null;
-    try {
-      data = await response.json();
-    } catch {
-      data = null;
-    }
-    return { response, data };
-  } finally {
-    window.clearTimeout(timeout);
-  }
 }
 
 export default function ProviderDetailPage() {
   const params = useParams();
   const router = useRouter();
   const providerId = params.id;
+  const { getCaps } = useModelCaps();
   const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(true);
   const [providerNode, setProviderNode] = useState(null);
@@ -85,15 +41,17 @@ export default function ProviderDetailPage() {
   const [showCodeBuddyQuotaCookieModal, setShowCodeBuddyQuotaCookieModal] = useState(false);
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [addConnectionError, setAddConnectionError] = useState("");
+  const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
   const [showBulkProxyModal, setShowBulkProxyModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [modelAliases, setModelAliases] = useState({});
+  const [customModels, setCustomModels] = useState([]);
   const [headerImgError, setHeaderImgError] = useState(false);
   const [modelTestResults, setModelTestResults] = useState({});
   const [modelsTestError, setModelsTestError] = useState("");
-  const [testingModelId, setTestingModelId] = useState(null);
+  const [testingModelIds, setTestingModelIds] = useState(() => new Set());
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
@@ -101,6 +59,7 @@ export default function ProviderDetailPage() {
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
+  const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
   const [disabledModelIds, setDisabledModelIds] = useState([]);
@@ -113,27 +72,9 @@ export default function ProviderDetailPage() {
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
-  const [kiroBulkJob, setKiroBulkJob] = useState(null);
-  const [kiroBulkNotice, setKiroBulkNotice] = useState("");
-  const [connectionsPage, setConnectionsPage] = useState(1);
-  const [connectionsPageSize, setConnectionsPageSize] = useState(CONNECTIONS_DEFAULT_PAGE_SIZE);
-  const [connectionStatusFilter, setConnectionStatusFilter] = useState("all");
-  const [modelsPage, setModelsPage] = useState(1);
-  const [modelsPageSize, setModelsPageSize] = useState(MODELS_DEFAULT_PAGE_SIZE);
   const { copied, copy } = useCopyToClipboard();
-  const kiroBulkSuccessRef = useRef(0);
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
-
-  const clearKiroBulkProgress = useCallback(() => {
-    setKiroBulkJob(null);
-    setKiroBulkNotice("");
-    kiroBulkSuccessRef.current = 0;
-
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(KIRO_BULK_JOB_STORAGE_KEY);
-    }
-  }, []);
 
   const openOAuthConnection = () => {
     setShowOAuthModal(true);
@@ -143,9 +84,6 @@ export default function ProviderDetailPage() {
     if (providerId === "kiro" || providerId === "codebuddy") {
       router.push(`/dashboard/automation?provider=${providerId}`);
       return;
-    }
-    if (providerId === "kiro" && kiroBulkJob?.jobId && isBulkJobTerminal(kiroBulkJob.status)) {
-      clearKiroBulkProgress();
     }
     if (providerId === "antigravity" && typeof window !== "undefined") {
       const confirmed = window.localStorage.getItem(AG_RISK_STORAGE_KEY) === "true";
@@ -294,6 +232,18 @@ export default function ProviderDetailPage() {
     }
   }, []);
 
+  const fetchCustomModels = useCallback(async () => {
+    try {
+      const res = await fetch("/api/models/custom", { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok) {
+        setCustomModels(data.models || []);
+      }
+    } catch (error) {
+      console.log("Error fetching custom models:", error);
+    }
+  }, []);
+
   // Fetch free models from Kilo API for kilocode provider
   useEffect(() => {
     if (providerId !== "kilocode") return;
@@ -305,27 +255,21 @@ export default function ProviderDetailPage() {
 
   const fetchConnections = useCallback(async () => {
     try {
-      const [connectionsResult, nodesResult, proxyPoolsResult, settingsResult] = await Promise.allSettled([
-        fetchJsonWithTimeout("/api/providers"),
-        fetchJsonWithTimeout("/api/provider-nodes"),
-        fetchJsonWithTimeout("/api/proxy-pools?isActive=true"),
-        fetchJsonWithTimeout("/api/settings"),
+      const [connectionsRes, nodesRes, proxyPoolsRes, settingsRes] = await Promise.all([
+        fetch("/api/providers", { cache: "no-store" }),
+        fetch("/api/provider-nodes", { cache: "no-store" }),
+        fetch("/api/proxy-pools?isActive=true", { cache: "no-store" }),
+        fetch("/api/settings", { cache: "no-store" }),
       ]);
-
-      const connectionsRes = connectionsResult.status === "fulfilled" ? connectionsResult.value.response : null;
-      const connectionsData = connectionsResult.status === "fulfilled" ? connectionsResult.value.data : {};
-      const nodesRes = nodesResult.status === "fulfilled" ? nodesResult.value.response : null;
-      const nodesData = nodesResult.status === "fulfilled" ? nodesResult.value.data : {};
-      const proxyPoolsRes = proxyPoolsResult.status === "fulfilled" ? proxyPoolsResult.value.response : null;
-      const proxyPoolsData = proxyPoolsResult.status === "fulfilled" ? proxyPoolsResult.value.data : {};
-      const settingsRes = settingsResult.status === "fulfilled" ? settingsResult.value.response : null;
-      const settingsData = settingsRes?.ok ? (settingsResult.value.data || {}) : {};
-
-      if (connectionsRes?.ok) {
+      const connectionsData = await connectionsRes.json();
+      const nodesData = await nodesRes.json();
+      const proxyPoolsData = await proxyPoolsRes.json();
+      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+      if (connectionsRes.ok) {
         const filtered = (connectionsData.connections || []).filter(c => c.provider === providerId);
         setConnections(filtered);
       }
-      if (proxyPoolsRes?.ok) {
+      if (proxyPoolsRes.ok) {
         setProxyPools(proxyPoolsData.proxyPools || []);
       }
       // Load per-provider strategy override
@@ -335,7 +279,9 @@ export default function ProviderDetailPage() {
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
-      if (nodesRes?.ok) {
+      const apCfg = settingsData.claudeAutoPing || {};
+      setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
+      if (nodesRes.ok) {
         let node = (nodesData.nodes || []).find((entry) => entry.id === providerId) || null;
 
         // Newly created compatible nodes can be briefly unavailable on one worker.
@@ -343,8 +289,9 @@ export default function ProviderDetailPage() {
         if (!node && isCompatible) {
           for (let attempt = 0; attempt < 3; attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 150));
-            const { response: retryRes, data: retryData } = await fetchJsonWithTimeout("/api/provider-nodes");
+            const retryRes = await fetch("/api/provider-nodes", { cache: "no-store" });
             if (!retryRes.ok) continue;
+            const retryData = await retryRes.json();
             node = (retryData.nodes || []).find((entry) => entry.id === providerId) || null;
             if (node) break;
           }
@@ -446,116 +393,29 @@ export default function ProviderDetailPage() {
     saveThinkingConfig(mode);
   };
 
+  const saveAutoPing = async (next) => {
+    setAutoPing(next);
+    try {
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claudeAutoPing: next }),
+      });
+    } catch (error) {
+      console.log("Error saving auto-ping config:", error);
+    }
+  };
+
+  const handleAutoPingConnection = (connectionId, on) => {
+    saveAutoPing({ ...autoPing, connections: { ...autoPing.connections, [connectionId]: on } });
+  };
+
   useEffect(() => {
     fetchConnections();
     fetchAliases();
+    fetchCustomModels();
     fetchDisabledModels();
-  }, [fetchConnections, fetchAliases, fetchDisabledModels]);
-
-  useEffect(() => {
-    setConnectionsPage(1);
-    setModelsPage(1);
-    setConnectionStatusFilter("all");
-  }, [providerId]);
-
-  useEffect(() => {
-    setConnectionsPage(1);
-  }, [connectionStatusFilter, connectionsPageSize]);
-
-  useEffect(() => {
-    setModelsPage(1);
-  }, [modelsPageSize, disabledModelIds.length, models.length, kiloFreeModels.length]);
-
-  useEffect(() => {
-    if (providerId !== "kiro" || typeof window === "undefined") return;
-    const storedJobId = window.localStorage.getItem(KIRO_BULK_JOB_STORAGE_KEY);
-
-    let cancelled = false;
-
-    const restoreJob = async () => {
-      try {
-        setKiroBulkNotice("");
-
-        if (kiroBulkJob?.jobId) return;
-
-        const latest = await fetchLatestBulkJob();
-        if (!cancelled && latest.res.ok && latest.data?.job) {
-          setKiroBulkJob(latest.data.job);
-          kiroBulkSuccessRef.current = latest.data.job.summary?.success || 0;
-          window.localStorage.setItem(KIRO_BULK_JOB_STORAGE_KEY, latest.data.job.jobId);
-          return;
-        }
-
-        if (storedJobId) {
-          const direct = await fetchBulkJobById(storedJobId);
-          if (!cancelled && direct?.res.ok && direct.data?.job && isBulkJobActive(direct.data.job.status)) {
-            setKiroBulkJob(direct.data.job);
-            kiroBulkSuccessRef.current = direct.data.job.summary?.success || 0;
-            return;
-          }
-
-          clearKiroBulkProgress();
-          setKiroBulkNotice(KIRO_BULK_JOB_EXPIRED_MESSAGE);
-        }
-      } catch {
-        if (!cancelled) {
-          setKiroBulkNotice(KIRO_BULK_JOB_EXPIRED_MESSAGE);
-        }
-      }
-    };
-
-    void restoreJob();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [clearKiroBulkProgress, kiroBulkJob?.jobId, providerId]);
-
-  useEffect(() => {
-    if (providerId !== "kiro" || !kiroBulkJob?.jobId || isBulkJobTerminal(kiroBulkJob.status)) return undefined;
-
-    const interval = window.setInterval(async () => {
-      try {
-        const current = await fetchBulkJobById(kiroBulkJob.jobId);
-        if (current?.res.ok && current.data?.job) {
-          const nextSuccessCount = current.data.job.summary?.success || 0;
-          if (nextSuccessCount > kiroBulkSuccessRef.current) {
-            kiroBulkSuccessRef.current = nextSuccessCount;
-            await fetchConnections();
-          }
-
-          setKiroBulkNotice("");
-          setKiroBulkJob(current.data.job);
-          return;
-        }
-
-        if (current?.res.status === 404) {
-          const latest = await fetchLatestBulkJob();
-          if (latest.res.ok && latest.data?.job) {
-            const nextSuccessCount = latest.data.job.summary?.success || 0;
-            if (nextSuccessCount > kiroBulkSuccessRef.current) {
-              kiroBulkSuccessRef.current = nextSuccessCount;
-              await fetchConnections();
-            }
-
-            setKiroBulkNotice("");
-            setKiroBulkJob(latest.data.job);
-            if (typeof window !== "undefined") {
-              window.localStorage.setItem(KIRO_BULK_JOB_STORAGE_KEY, latest.data.job.jobId);
-            }
-            return;
-          }
-
-          clearKiroBulkProgress();
-          setKiroBulkNotice(KIRO_BULK_JOB_EXPIRED_MESSAGE);
-        }
-      } catch {
-        // Keep the last snapshot visible and allow the user to reopen the modal.
-      }
-    }, 2000);
-
-    return () => window.clearInterval(interval);
-  }, [clearKiroBulkProgress, fetchConnections, kiroBulkJob?.jobId, kiroBulkJob?.status, providerId]);
+  }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
 
   // Fetch suggested models from provider's public API (if configured)
   useEffect(() => {
@@ -596,6 +456,38 @@ export default function ProviderDetailPage() {
     }
   };
 
+  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias) => {
+    try {
+      const res = await fetch("/api/models/custom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerAlias: providerAliasOverride, id: modelId, type }),
+      });
+      if (res.ok) {
+        await fetchCustomModels();
+        if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to add custom model");
+      }
+    } catch (error) {
+      console.log("Error adding custom model:", error);
+    }
+  };
+
+  const handleDeleteCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias) => {
+    try {
+      const params = new URLSearchParams({ providerAlias: providerAliasOverride, id: modelId, type });
+      const res = await fetch(`/api/models/custom?${params}`, { method: "DELETE" });
+      if (res.ok) {
+        await fetchCustomModels();
+        if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("customModelChanged"));
+      }
+    } catch (error) {
+      console.log("Error deleting custom model:", error);
+    }
+  };
+
   // Fetch Qoder model list and automatically add to available models
   const handleImportQoderModels = async () => {
     if (importingQoderModels) return;
@@ -626,20 +518,14 @@ export default function ProviderDetailPage() {
         
         // Qoder model ID format may be "qoder/auto" or "auto", need to remove prefix
         const cleanModelId = modelId.replace(/^qoder\//, "");
-        const fullModel = `${providerStorageAlias}/${cleanModelId}`;
-        
-        // Check if already exists
-        if (Object.values(modelAliases).includes(fullModel)) {
+        const alreadyExists = customModels.some(
+          (entry) => entry.providerAlias === providerStorageAlias && entry.id === cleanModelId && (entry.kind || entry.type || "llm") === "llm"
+        ) || Object.values(modelAliases).includes(`${providerStorageAlias}/${cleanModelId}`);
+        if (alreadyExists) {
           continue;
         }
-        
-        // Use model ID as alias
-        const alias = cleanModelId;
-        if (modelAliases[alias]) {
-          continue;
-        }
-        
-        await handleSetAlias(cleanModelId, alias, providerStorageAlias);
+
+        await handleAddCustomModel(cleanModelId, "llm", providerStorageAlias);
         importedCount += 1;
       }
       
@@ -771,24 +657,6 @@ export default function ProviderDetailPage() {
     setShowOAuthModal(false);
   };
 
-  const handleKiroBulkJobChange = useCallback((job) => {
-    setKiroBulkJob(job);
-    setKiroBulkNotice("");
-
-    if (typeof window === "undefined") return;
-
-    if (!job?.jobId) {
-      clearKiroBulkProgress();
-      return;
-    }
-
-    window.localStorage.setItem(KIRO_BULK_JOB_STORAGE_KEY, job.jobId);
-    kiroBulkSuccessRef.current = Math.max(
-      kiroBulkSuccessRef.current,
-      job.summary?.success || 0,
-    );
-  }, [clearKiroBulkProgress]);
-
   const handleIFlowCookieSuccess = () => {
     fetchConnections();
     setShowIFlowCookieModal(false);
@@ -849,16 +717,10 @@ export default function ProviderDetailPage() {
       const res = await fetch(`/api/providers/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(isActive
-          ? { isActive, autoDisabledAt: null, autoDisabledReason: null, consecutiveAuthFailures: 0 }
-          : { isActive }
-        ),
+        body: JSON.stringify({ isActive }),
       });
       if (res.ok) {
-        setConnections(prev => prev.map(c => c.id === id
-          ? { ...c, isActive, ...(isActive ? { autoDisabledAt: null, autoDisabledReason: null, consecutiveAuthFailures: 0 } : {}) }
-          : c
-        ));
+        setConnections(prev => prev.map(c => c.id === id ? { ...c, isActive } : c));
       }
     } catch (error) {
       console.log("Error updating connection status:", error);
@@ -890,27 +752,8 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const filteredConnections = connections.filter((conn) => filterConnectionByStatus(conn, connectionStatusFilter));
-  const connectionStatusCounts = CONNECTION_STATUS_FILTERS.reduce((acc, filter) => {
-    acc[filter.id] = filter.id === "all"
-      ? connections.length
-      : connections.filter((conn) => filterConnectionByStatus(conn, filter.id)).length;
-    return acc;
-  }, {});
-  const effectiveSelectedConnectionIds = selectedConnectionIds.filter((id) => connections.some((conn) => conn.id === id));
-  const selectedConnections = connections.filter((conn) => effectiveSelectedConnectionIds.includes(conn.id));
-  const codeBuddyQuotaCookieConnectionIds = providerId === "codebuddy"
-    ? (selectedConnections.length > 0 ? selectedConnections : connections).map((conn) => conn.id)
-    : [];
-  const allSelected = filteredConnections.length > 0 && filteredConnections.every((conn) => effectiveSelectedConnectionIds.includes(conn.id));
-
-  const openCodeBuddyQuotaCookieModal = () => {
-    if (connections.length > 1 && selectedConnections.length === 0) {
-      alert("Select the CodeBuddy connection(s) that should use this quota cookie first.");
-      return;
-    }
-    setShowCodeBuddyQuotaCookieModal(true);
-  };
+  const selectedConnections = connections.filter((conn) => selectedConnectionIds.includes(conn.id));
+  const allSelected = connections.length > 0 && selectedConnectionIds.length === connections.length;
 
   const toggleSelectConnection = (connectionId) => {
     setSelectedConnectionIds((prev) => (
@@ -922,16 +765,20 @@ export default function ProviderDetailPage() {
 
   const toggleSelectAllConnections = () => {
     if (allSelected) {
-      setSelectedConnectionIds((prev) => prev.filter((id) => !filteredConnections.some((conn) => conn.id === id)));
+      setSelectedConnectionIds([]);
       return;
     }
-    setSelectedConnectionIds((prev) => Array.from(new Set([...prev, ...filteredConnections.map((conn) => conn.id)])));
+    setSelectedConnectionIds(connections.map((conn) => conn.id));
   };
 
   const clearSelection = () => {
     setSelectedConnectionIds([]);
     setBulkProxyPoolId("__none__");
   };
+
+  useEffect(() => {
+    setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
+  }, [connections]);
 
   const selectedProxySummary = (() => {
     if (selectedConnections.length === 0) return "";
@@ -983,7 +830,7 @@ export default function ProviderDetailPage() {
   };
 
   const handleApplySinglePool = (proxyPoolId) => {
-    const targets = selectedConnections.map((c) => ({ connectionId: c.id, proxyPoolId }));
+    const targets = connections.map((c) => ({ connectionId: c.id, proxyPoolId }));
     return applyProxyAssignments(targets);
   };
 
@@ -993,74 +840,35 @@ export default function ProviderDetailPage() {
       alert("No active proxy pools available.");
       return;
     }
-    const targets = selectedConnections.map((c, i) => ({
+    const targets = connections.map((c, i) => ({
       connectionId: c.id,
       proxyPoolId: activePools[i % activePools.length].id,
     }));
     return applyProxyAssignments(targets);
   };
 
-  const handleDeleteSelectedConnections = () => {
-    if (selectedConnections.length === 0) return;
-    setConfirmState({
-      title: "Delete Selected Connections",
-      message: `Delete ${selectedConnections.length} selected connection(s)? Any status is eligible — active, rate-limited, cooldown, connection-error, and terminal accounts will all be removed.`,
-      onConfirm: async () => {
-        setConfirmState(null);
-        const targets = selectedConnections.slice();
-        for (const conn of targets) {
-          try {
-            await fetch(`/api/providers/${conn.id}`, { method: "DELETE" });
-          } catch (error) {
-            console.log("Error deleting connection:", error);
-          }
-        }
-        setSelectedConnectionIds((prev) => prev.filter((id) => !targets.some((conn) => conn.id === id)));
-        await fetchConnections();
-      },
-    });
-  };
 
-  const isSelected = (connectionId) => effectiveSelectedConnectionIds.includes(connectionId);
-
-  const totalConnectionPages = Math.max(1, Math.ceil(filteredConnections.length / connectionsPageSize));
-  const activeConnectionsPage = Math.min(connectionsPage, totalConnectionPages);
-  const paginatedConnections = filteredConnections.slice(
-    (activeConnectionsPage - 1) * connectionsPageSize,
-    activeConnectionsPage * connectionsPageSize
-  );
-  const totalKiroPages = totalConnectionPages;
-  const activeKiroConnectionsPage = activeConnectionsPage;
-  const kiroConnectionsPage = activeConnectionsPage;
-  const KIRO_CONNECTIONS_PER_PAGE = connectionsPageSize;
-  const setKiroConnectionsPage = setConnectionsPage;
+  const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
-      {paginatedConnections
-        .map((conn, index) => {
-          const globalIndex = connections.findIndex((item) => item.id === conn.id);
-          return (
+      {connections
+        .map((conn, index) => (
           <div key={conn.id} className="flex min-w-0 items-stretch">
-            <label className="flex w-8 shrink-0 items-center justify-center">
-              <input
-                type="checkbox"
-                checked={isSelected(conn.id)}
-                onChange={() => toggleSelectConnection(conn.id)}
-                className="size-4 rounded border-black/20 dark:border-white/20"
-                aria-label={`Select ${conn.name || conn.email || conn.id}`}
-              />
-            </label>
             <div className="flex-1 min-w-0">
               <ConnectionRow
                 connection={conn}
                 proxyPools={proxyPools}
                 isOAuth={isOAuth}
-                isFirst={globalIndex === 0}
-                isLast={globalIndex === connections.length - 1}
-                onMoveUp={() => handleSwapPriority(globalIndex, globalIndex - 1)}
-                onMoveDown={() => handleSwapPriority(globalIndex, globalIndex + 1)}
+                isFirst={index === 0}
+                isLast={index === connections.length - 1}
+                onMoveUp={() => handleSwapPriority(index, index - 1)}
+                onMoveDown={() => handleSwapPriority(index, index + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
+                autoPing={providerId === "claude" && conn.authType === "oauth" ? {
+                  on: autoPing.connections[conn.id] === true,
+                  onToggle: (on) => handleAutoPingConnection(conn.id, on),
+                } : null}
                 onUpdateProxy={async (proxyPoolId) => {
                   try {
                     const res = await fetch(`/api/providers/${conn.id}`, {
@@ -1088,8 +896,7 @@ export default function ProviderDetailPage() {
               />
             </div>
           </div>
-          );
-        })}
+        ))}
     </div>
   );
 
@@ -1099,7 +906,7 @@ export default function ProviderDetailPage() {
     <Modal
       isOpen={showBulkProxyModal}
       onClose={closeBulkProxyModal}
-      title={`Apply Proxy (${selectedConnections.length} selected)`}
+      title={`Apply Proxy (${connections.length} connections)`}
     >
       <div className="flex flex-col gap-3">
         <div className="flex flex-col">
@@ -1145,8 +952,8 @@ export default function ProviderDetailPage() {
   );
 
   const handleTestModel = async (modelId) => {
-    if (testingModelId) return;
-    setTestingModelId(modelId);
+    if (testingModelIds.has(modelId)) return;
+    setTestingModelIds((prev) => new Set(prev).add(modelId));
     try {
       const res = await fetch("/api/models/test", {
         method: "POST",
@@ -1160,7 +967,7 @@ export default function ProviderDetailPage() {
       setModelTestResults((prev) => ({ ...prev, [modelId]: "error" }));
       setModelsTestError("Network error");
     } finally {
-      setTestingModelId(null);
+      setTestingModelIds((prev) => { const n = new Set(prev); n.delete(modelId); return n; });
     }
   };
 
@@ -1171,10 +978,13 @@ export default function ProviderDetailPage() {
           providerStorageAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
           modelAliases={modelAliases}
+          customModels={customModels}
           copied={copied}
           onCopy={copy}
           onSetAlias={handleSetAlias}
           onDeleteAlias={handleDeleteAlias}
+          onAddCustomModel={(modelId) => handleAddCustomModel(modelId, "llm", providerStorageAlias)}
+          onDeleteCustomModel={(modelId) => handleDeleteCustomModel(modelId, "llm", providerStorageAlias)}
           connections={connections}
           isAnthropic={isAnthropicCompatible}
         />
@@ -1185,55 +995,47 @@ export default function ProviderDetailPage() {
     const allModels = [
       ...models,
       ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-    ].filter((m) => !m.type || m.type === "llm");
+    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
     const disabledSet = new Set(disabledModelIds);
     const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
     const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
-    // Custom models added by user (stored as aliases: modelId → providerAlias/modelId)
-    const customModels = Object.entries(modelAliases)
-      .filter(([alias, fullModel]) => {
-        const prefix = `${providerStorageAlias}/`;
-        if (!fullModel.startsWith(prefix)) return false;
-        const modelId = fullModel.slice(prefix.length);
-        // Only show if not already in hardcoded list
-        // For passthroughModels, include all aliases (model IDs may contain slashes like "anthropic/claude-3")
-        if (providerInfo.passthroughModels) return !models.some((m) => m.id === modelId);
-        return !models.some((m) => m.id === modelId) && alias === modelId;
-      })
-      .map(([alias, fullModel]) => ({
-        id: fullModel.slice(`${providerStorageAlias}/`.length),
-        alias,
-        fullModel,
-      }));
-    const totalModelPages = Math.max(1, Math.ceil(displayModels.length / modelsPageSize));
-    const activeModelsPage = Math.min(modelsPage, totalModelPages);
-    const paginatedDisplayModels = displayModels.slice(
-      (activeModelsPage - 1) * modelsPageSize,
-      activeModelsPage * modelsPageSize
-    );
+    const customModelRows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models,
+      type: "llm",
+    });
 
     return (
       <div className="flex flex-wrap gap-3">
         {/* Custom models first */}
-        {customModels.map((model) => (
+        {customModelRows.map((model) => (
           <ModelRow
-            key={model.id}
-            model={{ id: model.id }}
+            key={`${model.source}-${model.fullModel}`}
+            model={{ id: model.id, name: model.name }}
             fullModel={`${providerDisplayAlias}/${model.id}`}
             alias={model.alias}
             copied={copied}
             onCopy={copy}
             onSetAlias={() => {}}
-            onDeleteAlias={() => handleDeleteAlias(model.alias)}
+            onDeleteAlias={() => {
+              if (model.source === "custom") {
+                handleDeleteCustomModel(model.id, "llm", providerStorageAlias);
+              } else {
+                handleDeleteAlias(model.alias);
+              }
+            }}
             testStatus={modelTestResults[model.id]}
             onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
-            isTesting={testingModelId === model.id}
+            isTesting={testingModelIds.has(model.id)}
             isCustom
             isFree={false}
+            caps={getCaps(`${providerId}/${model.id}`)}
           />
         ))}
 
-        {paginatedDisplayModels.map((model) => {
+        {displayModels.map((model) => {
           const fullModel = `${providerStorageAlias}/${model.id}`;
           const oldFormatModel = `${providerId}/${model.id}`;
           const existingAlias = Object.entries(modelAliases).find(
@@ -1251,29 +1053,15 @@ export default function ProviderDetailPage() {
               onDeleteAlias={() => handleDeleteAlias(existingAlias)}
               testStatus={modelTestResults[model.id]}
               onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
-              isTesting={testingModelId === model.id}
+              isTesting={testingModelIds.has(model.id)}
               isFree={model.isFree}
               onDisable={() => handleDisableModel(model.id)}
+              caps={getCaps(`${providerId}/${model.id}`)}
             />
           );
         })}
 
         {/* Add model button — inline, same style as model chips */}
-        {displayModels.length > modelsPageSize && (
-          <div className="w-full">
-            <Pagination
-              currentPage={activeModelsPage}
-              pageSize={modelsPageSize}
-              totalItems={displayModels.length}
-              onPageChange={setModelsPage}
-              onPageSizeChange={(size) => {
-                setModelsPageSize(size);
-                setModelsPage(1);
-              }}
-            />
-          </div>
-        )}
-
         <button
           onClick={() => setShowAddCustomModel(true)}
           className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto"
@@ -1298,7 +1086,10 @@ export default function ProviderDetailPage() {
 
         {/* Suggested models from provider API — show only models not yet added */}
         {suggestedModels.length > 0 && (() => {
-          const addedFullModels = new Set(Object.values(modelAliases));
+          const addedFullModels = new Set([
+            ...Object.values(modelAliases),
+            ...customModelRows.map((model) => model.fullModel),
+          ]);
           const hardcodedIds = new Set(models.map((m) => m.id));
           const notAdded = suggestedModels.filter(
             (m) => !addedFullModels.has(`${providerStorageAlias}/${m.id}`) && !hardcodedIds.has(m.id)
@@ -1312,8 +1103,7 @@ export default function ProviderDetailPage() {
                   <button
                     key={m.id}
                     onClick={async () => {
-                      const alias = m.id.split("/").pop();
-                      await handleSetAlias(m.id, alias, providerStorageAlias);
+                      await handleAddCustomModel(m.id, "llm", providerStorageAlias);
                     }}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
                     title={`${m.name} · ${(m.contextLength / 1000).toFixed(0)}k ctx`}
@@ -1533,8 +1323,7 @@ export default function ProviderDetailPage() {
                   size="sm"
                   variant="secondary"
                   icon="lan"
-                  onClick={openBulkProxyModal}
-                  disabled={selectedConnections.length === 0}
+                  onClick={() => setShowBulkProxyModal(true)}
                 >
                   Apply Proxy
                 </Button>
@@ -1602,141 +1391,59 @@ export default function ProviderDetailPage() {
             </div>
           </div>
 
-          {connections.length > 0 && (
-            <div className="mb-4 flex flex-col gap-3 rounded-lg border border-black/5 bg-black/[0.02] p-3 dark:border-white/5 dark:bg-white/[0.02]">
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="flex items-center gap-1.5 text-xs text-text-muted">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    onChange={toggleSelectAllConnections}
-                    className="size-4 rounded border-black/20 dark:border-white/20"
-                  />
-                  {allSelected ? "Unselect visible" : "Select visible"}
-                </label>
-                <Badge variant="default">{filteredConnections.length} visible</Badge>
-                {selectedConnections.length > 0 && (
-                  <Badge variant="default">{selectedConnections.length} selected</Badge>
-                )}
-                {selectedProxySummary && (
-                  <span className="text-xs text-text-muted">{selectedProxySummary}</span>
-                )}
-                {selectedConnections.length > 0 && (
-                  <Button size="sm" variant="ghost" onClick={clearSelection}>
-                    Clear
-                  </Button>
-                )}
-                {selectedConnections.length > 0 && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    icon="delete"
-                    onClick={handleDeleteSelectedConnections}
-                  >
-                    Delete Selected ({selectedConnections.length})
-                  </Button>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {CONNECTION_STATUS_FILTERS.map((filter) => (
-                  <button
-                    key={filter.id}
-                    type="button"
-                    onClick={() => setConnectionStatusFilter(filter.id)}
-                    className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
-                      connectionStatusFilter === filter.id
-                        ? "border-primary/50 bg-primary/10 text-primary"
-                        : "border-border text-text-muted hover:border-primary/30 hover:text-text-main"
-                    }`}
-                  >
-                    {filter.label}
-                    <span className="ml-1 text-[10px] opacity-70">{connectionStatusCounts[filter.id] || 0}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           {connections.length === 0 ? (
-            <>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0">
-                    <span className="material-symbols-outlined text-[18px]">{isOAuth ? "lock" : "key"}</span>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm text-text-muted">No connections yet</p>
-                    {hasDualAuthModes && (
-                      <p className="text-xs text-text-muted">
-                        Choose {oauthConnectionLabel} or {apiKeyConnectionLabel}.
-                      </p>
-                    )}
-                  </div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 text-primary shrink-0">
+                  <span className="material-symbols-outlined text-[18px]">{isOAuth ? "lock" : "key"}</span>
                 </div>
-                <div className="flex gap-2">
-                  {hasDualAuthModes ? (
-                    <>
-                      <Button size="sm" icon="lock" variant="secondary" onClick={triggerOAuthConnection}>
-                        {oauthConnectionLabel}
-                      </Button>
-                      <Button size="sm" icon="key" onClick={triggerApiKeyConnection}>
-                        {apiKeyConnectionLabel}
-                      </Button>
-                    </>
-                  ) : (
-                    <>
-                      {!isCompatible && providerId === "iflow" && (
-                        <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
-                          Cookie
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        icon={usesAutomationLogin ? "automation" : "add"}
-                        onClick={triggerAddConnection}
-                      >
-                      {usesAutomationLogin ? "Open Automation" : (isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection"))}
-                      </Button>
-                    </>
+                <div className="min-w-0">
+                  <p className="text-sm text-text-muted">No connections yet</p>
+                  {hasDualAuthModes && (
+                    <p className="text-xs text-text-muted">
+                      Choose {oauthConnectionLabel} or {apiKeyConnectionLabel}.
+                    </p>
                   )}
                 </div>
               </div>
-              {providerId === "kiro" && kiroBulkJob?.jobId && (
-                <div className="mt-4 flex flex-col gap-3 rounded-lg border border-primary/20 bg-primary/[0.06] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-text-main">Bulk import progress is still available</p>
-                    <p className="text-xs text-text-muted">
-                      Status: {kiroBulkJob.status} | Success: {kiroBulkJob.summary?.success || 0} | Running: {kiroBulkJob.summary?.running || 0} | Queued: {kiroBulkJob.summary?.queued || 0}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      icon="monitoring"
-                      variant="secondary"
-                      onClick={() => router.push("/dashboard/automation?provider=kiro")}
-                    >
-                      Resume Bulk Progress
+              <div className="flex gap-2">
+                {hasDualAuthModes ? (
+                  <>
+                    <Button size="sm" icon="lock" variant="secondary" onClick={triggerOAuthConnection}>
+                      {oauthConnectionLabel}
                     </Button>
-                    {isBulkJobTerminal(kiroBulkJob.status) && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon="close"
-                        onClick={clearKiroBulkProgress}
-                      >
-                        Clear
+                    <Button size="sm" icon="key" onClick={triggerApiKeyConnection}>
+                      {apiKeyConnectionLabel}
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    {!isCompatible && providerId === "iflow" && (
+                      <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowIFlowCookieModal(true)}>
+                        Cookie
                       </Button>
                     )}
-                  </div>
-                </div>
-              )}
-              {providerId === "kiro" && !kiroBulkJob?.jobId && kiroBulkNotice && (
-                <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-                  {kiroBulkNotice}
-                </div>
-              )}
-            </>
+                    {providerId === "codex" && (
+                      <Button size="sm" icon="playlist_add" variant="secondary" onClick={() => setShowBulkImportCodex(true)}>
+                        {translate("Bulk Add")}
+                      </Button>
+                    )}
+                    {providerId === "codebuddy" && (
+                      <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowCodeBuddyQuotaCookieModal(true)}>
+                        Quota Cookie
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      icon={usesAutomationLogin ? "automation" : "add"}
+                      onClick={triggerAddConnection}
+                    >
+                      {usesAutomationLogin ? "Open Automation" : (isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection"))}
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
           ) : (
             <>
               {oneByOneSummary && (
@@ -1755,86 +1462,7 @@ export default function ProviderDetailPage() {
                   </div>
                 </div>
               )}
-              {providerId === "kiro" && kiroBulkJob?.jobId && (
-                <div className="mb-4 flex flex-col gap-3 rounded-lg border border-primary/20 bg-primary/[0.06] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-text-main">Bulk import progress is still available</p>
-                    <p className="text-xs text-text-muted">
-                      Status: {kiroBulkJob.status} | Success: {kiroBulkJob.summary?.success || 0} | Running: {kiroBulkJob.summary?.running || 0} | Queued: {kiroBulkJob.summary?.queued || 0}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      icon="monitoring"
-                      variant="secondary"
-                      onClick={() => router.push("/dashboard/automation?provider=kiro")}
-                    >
-                      Resume Bulk Progress
-                    </Button>
-                    {isBulkJobTerminal(kiroBulkJob.status) && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon="close"
-                        onClick={clearKiroBulkProgress}
-                      >
-                        Clear
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
-              {providerId === "kiro" && !kiroBulkJob?.jobId && kiroBulkNotice && (
-                <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-                  {kiroBulkNotice}
-                </div>
-              )}
               {connectionsList}
-              {providerId === "kiro" && totalKiroPages > 1 && (
-                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm text-text-muted">
-                    Page {kiroConnectionsPage} of {totalKiroPages} • Showing {(kiroConnectionsPage - 1) * KIRO_CONNECTIONS_PER_PAGE + 1}-
-                    {Math.min(kiroConnectionsPage * KIRO_CONNECTIONS_PER_PAGE, filteredConnections.length)} of {filteredConnections.length} connections
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={activeKiroConnectionsPage <= 1}
-                      onClick={() => setKiroConnectionsPage((prev) => Math.max(1, prev - 1))}
-                    >
-                      Previous
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={activeKiroConnectionsPage >= totalKiroPages}
-                      onClick={() => setKiroConnectionsPage((prev) => Math.min(totalKiroPages, prev + 1))}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              )}
-              {providerId !== "kiro" && filteredConnections.length > 0 && (
-                <Pagination
-                  currentPage={activeConnectionsPage}
-                  pageSize={connectionsPageSize}
-                  totalItems={filteredConnections.length}
-                  onPageChange={setConnectionsPage}
-                  onPageSizeChange={(size) => {
-                    setConnectionsPageSize(size);
-                    setConnectionsPage(1);
-                  }}
-                  className="mt-2"
-                />
-              )}
-              {connections.length > 0 && filteredConnections.length === 0 && (
-                <div className="py-8 text-center text-sm text-text-muted">
-                  No connections match this status filter.
-                </div>
-              )}
               {!isCompatible && (
                 <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
                   {providerId === "iflow" && (
@@ -1849,12 +1477,24 @@ export default function ProviderDetailPage() {
                       Cookie
                     </Button>
                   )}
+                  {providerId === "codex" && (
+                    <Button
+                      size="sm"
+                      icon="playlist_add"
+                      variant="secondary"
+                      onClick={() => setShowBulkImportCodex(true)}
+                      title={translate("Bulk import codex accounts from JSON")}
+                      className="w-full sm:w-auto"
+                    >
+                      {translate("Bulk Add")}
+                    </Button>
+                  )}
                   {providerId === "codebuddy" && (
                     <Button
                       size="sm"
                       icon="cookie"
                       variant="secondary"
-                      onClick={openCodeBuddyQuotaCookieModal}
+                      onClick={() => setShowCodeBuddyQuotaCookieModal(true)}
                       title="Attach CodeBuddy web cookie for quota tracking"
                       className="w-full sm:w-auto"
                     >
@@ -1908,7 +1548,7 @@ export default function ProviderDetailPage() {
             const allIds = [
               ...models,
               ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-            ].filter((m) => !m.type || m.type === "llm").map((m) => m.id);
+            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
             const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
             return (
               <div className="flex gap-2">
@@ -1940,9 +1580,6 @@ export default function ProviderDetailPage() {
           isOpen={showOAuthModal}
           providerInfo={providerInfo}
           onSuccess={handleOAuthSuccess}
-          onRefresh={fetchConnections}
-          initialBulkJobId={kiroBulkJob?.jobId || null}
-          onBulkJobChange={handleKiroBulkJobChange}
           onClose={() => setShowOAuthModal(false)}
         />
       ) : providerId === "cursor" ? (
@@ -1977,7 +1614,9 @@ export default function ProviderDetailPage() {
       {providerId === "codebuddy" && (
         <CodeBuddyQuotaCookieModal
           isOpen={showCodeBuddyQuotaCookieModal}
-          connectionIds={codeBuddyQuotaCookieConnectionIds}
+          connectionIds={(selectedConnectionIds.length > 0
+            ? selectedConnectionIds
+            : connections.map((connection) => connection.id))}
           onSuccess={handleCodeBuddyQuotaCookieSuccess}
           onClose={() => setShowCodeBuddyQuotaCookieModal(false)}
         />
@@ -2022,14 +1661,18 @@ export default function ProviderDetailPage() {
           providerAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
           onSave={async (modelId) => {
-            // For passthrough providers (OpenRouter), use last segment as alias to avoid slash conflicts
-            const alias = providerInfo?.passthroughModels
-              ? modelId.split("/").pop()
-              : modelId;
-            await handleSetAlias(modelId, alias, providerStorageAlias);
+            await handleAddCustomModel(modelId, "llm", providerStorageAlias);
             setShowAddCustomModel(false);
           }}
           onClose={() => setShowAddCustomModel(false)}
+        />
+      )}
+
+      {providerId === "codex" && (
+        <BulkImportCodexModal
+          isOpen={showBulkImportCodex}
+          onClose={() => setShowBulkImportCodex(false)}
+          onSuccess={fetchConnections}
         />
       )}
 

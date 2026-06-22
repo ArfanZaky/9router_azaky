@@ -1,28 +1,8 @@
 {
-  "name": "wyxrouter",
-  "version": "0.4.86-9",
-  "description": "WYx0 fork of 9Router - AI Router with Kiro/CodeBuddy automation and quota tracking",
-  "bin": {
-    "wyxrouter": "./cli/cli.js"
-  },
-  "files": [
-    "cli/",
-    "src/",
-    "public/",
-    "scripts/",
-    "i18n/",
-    "assets/",
-    "images/",
-    "open-sse/",
-    "next.config.mjs",
-    "postcss.config.mjs",
-    "jsconfig.json",
-    "start.sh",
-    "package.json",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
-  ],
+  "name": "wyxrouter-app",
+  "version": "0.5.8-wyx0.1",
+  "description": "WYx0 fork of 9Router with provider automation and quota tracking",
+  "private": true,
   "scripts": {
     "dev": "next dev --webpack --port 20128",
     "build": "next build --webpack",
@@ -30,7 +10,8 @@
     "dev:bun": "bun --bun next dev --webpack --port 20128",
     "build:bun": "bun --bun next build --webpack",
     "start:bun": "bun ./.next/standalone/server.js",
-    "prepack": "echo 'Ensure cli/app is built before publishing: node cli/scripts/build-cli.js'",
+    "cli:pack": "npm --prefix cli run pack:cli",
+    "cli:publish": "npm --prefix cli run publish:cli",
     "postinstall": "node cli/hooks/postinstall.js"
   },
   "dependencies": {
@@ -39,6 +20,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@monaco-editor/react": "^4.7.0",
+    "@next/third-parties": "^16.2.9",
     "@xyflow/react": "^12.10.1",
     "bcryptjs": "^3.0.3",
     "confbox": "^0.2.4",
@@ -71,7 +53,7 @@
     "camoufox-js": "^0.11.0"
   },
   "comment_better_sqlite3": "kept in optionalDependencies so npm install doesn't fail on systems without build tools — sql.js is used as fallback at runtime",
-  "comment_camoufox_js": "optional stealth-Firefox engine for bulk-import; runtime auto-installs to user data dir if user picks Camoufox in the modal but the package is missing — Chromium remains the default and works without this dep",
+  "comment_camoufox_js": "optional stealth browser for bulk import; Chromium remains the default",
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.18",
     "eslint": "^9",
@@ -79,21 +61,7 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "keywords": [
-    "ai",
-    "router",
-    "proxy",
-    "kiro",
-    "codebuddy",
-    "claude",
-    "openai",
-    "api",
-    "quota",
-    "automation"
-  ],
+  "engines": { "node": ">=18.0.0" },
   "license": "MIT",
   "repository": {
     "type": "git",

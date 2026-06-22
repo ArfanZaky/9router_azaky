@@ -13,7 +13,16 @@ const proxyClientMaxBodySize = process.env.NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE
 const nextConfig = {
   distDir: process.env.NEXT_DIST_DIR || ".next",
   output: "standalone",
-  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "camoufox-js", "playwright", "playwright-core"],
+  serverExternalPackages: [
+    "better-sqlite3",
+    "sql.js",
+    "node:sqlite",
+    "bun:sqlite",
+    "camoufox-js",
+    "impit",
+    "playwright",
+    "playwright-core",
+  ],
   turbopack: {
     root: tracingRoot
   },
@@ -28,8 +37,11 @@ const nextConfig = {
   experimental: {
     // #1529/#1572: LLM clients can send long context or base64 image payloads through /v1 rewrites.
     proxyClientMaxBodySize,
+    // Cache fetch responses across HMR refreshes for faster dev reloads.
+    serverComponentsHmrCache: true,
   },
   webpack: (config, { isServer }) => {
+    // Ignore fs/path modules in browser bundle
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -37,28 +49,12 @@ const nextConfig = {
         path: false,
       };
     }
-    if (isServer) {
-      // Optional native modules. They live in optionalDependencies so
-      // `npm install` succeeds on machines without build tools, which means
-      // they may be MISSING from node_modules at build time. Treating them
-      // as commonjs externals tells webpack to emit a `require()` call and
-      // not try to resolve the path itself, so a missing package no longer
-      // fails the build. Runtime adapter loaders (createRequire) still
-      // surface a clean MODULE_NOT_FOUND if the user really needs it.
-      const optionalNativeExternals = [
-        "better-sqlite3",
-        "camoufox-js",
-      ];
-      const externals = Array.isArray(config.externals) ? config.externals : [config.externals].filter(Boolean);
-      externals.push(({ request }, callback) => {
-        if (optionalNativeExternals.includes(request)) {
-          return callback(null, `commonjs ${request}`);
-        }
-        callback();
-      });
-      config.externals = externals;
-    }
-    config.watchOptions = { ...config.watchOptions, ignored: /[\\/](logs|\.next|gitbook|cli)[\\/]/ };
+    // Exclude non-source dirs from watcher to reduce inotify load
+    config.watchOptions = {
+      ...config.watchOptions,
+      aggregateTimeout: 300,
+      ignored: /[\\/](node_modules|\.git|logs|\.next|\.next-cli-build|gitbook|cli|open-sse\.old|tests|docs)[\\/]/,
+    };
     return config;
   },
   async rewrites() {
@@ -73,6 +69,10 @@ const nextConfig = {
       },
       {
         source: "/codex/:path*",
+        destination: "/api/v1/responses"
+      },
+      {
+        source: "/responses",
         destination: "/api/v1/responses"
       },
       {
