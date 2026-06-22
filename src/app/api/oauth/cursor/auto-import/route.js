@@ -79,7 +79,7 @@ const normalize = (value) => {
  */
 function extractTokensViaBetterSqlite(dbPath) {
   const requireFromHere = createRequire(import.meta.url);
-  const mod = requireFromHere("better-sqlite3");
+  const mod = requireFromHere(["better", "sqlite3"].join("-"));
   const Database = mod.default || mod;
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 

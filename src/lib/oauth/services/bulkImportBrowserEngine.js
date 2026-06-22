@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 
 const requireFromHere = createRequire(import.meta.url);
+const importRuntimePackage = (name) => new Function("specifier", "return import(specifier)")(name);
 
 const SUPPORTED_ENGINES = new Set(["chromium", "camoufox"]);
 export const DEFAULT_BULK_IMPORT_ENGINE = "chromium";
@@ -22,7 +23,7 @@ function loadRuntimeHelper(name) {
 async function launchChromium({ proxyUrl } = {}) {
   let chromium;
   try {
-    const playwright = await import("playwright");
+    const playwright = await importRuntimePackage("playwright");
     chromium = playwright.chromium;
   } catch (firstErr) {
     const runtime = loadRuntimeHelper("playwrightRuntime");
@@ -41,7 +42,7 @@ async function launchChromium({ proxyUrl } = {}) {
       err.code = "PLAYWRIGHT_INSTALL_FAILED";
       throw err;
     }
-    const playwright = await import("playwright");
+    const playwright = await importRuntimePackage("playwright");
     chromium = playwright.chromium;
   }
   const options = { headless: true };
@@ -52,7 +53,7 @@ async function launchChromium({ proxyUrl } = {}) {
 async function launchCamoufox({ proxyUrl } = {}) {
   let camoufox;
   try {
-    camoufox = await import("camoufox-js");
+    camoufox = await importRuntimePackage(["camoufox", "js"].join("-"));
   } catch (firstErr) {
     const runtime = loadRuntimeHelper("camoufoxRuntime");
     if (!runtime?.installCamoufoxOnly) {
@@ -70,7 +71,7 @@ async function launchCamoufox({ proxyUrl } = {}) {
       err.code = "CAMOUFOX_INSTALL_FAILED";
       throw err;
     }
-    camoufox = await import("camoufox-js");
+    camoufox = await importRuntimePackage(["camoufox", "js"].join("-"));
   }
 
   if (!camoufox?.launchOptions) {
@@ -83,11 +84,11 @@ async function launchCamoufox({ proxyUrl } = {}) {
 
   let firefox;
   try {
-    const pwCore = await import("playwright-core");
+    const pwCore = await importRuntimePackage(["playwright", "core"].join("-"));
     firefox = pwCore.firefox;
   } catch {
     try {
-      const pw = await import("playwright");
+      const pw = await importRuntimePackage("playwright");
       firefox = pw.firefox;
     } catch (err) {
       const friendly = new Error(

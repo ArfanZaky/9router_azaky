@@ -5,7 +5,7 @@ const CHECKPOINT_INTERVAL_MS = 60 * 1000;
 
 function loadDatabase() {
   const requireFromHere = createRequire(import.meta.url);
-  const mod = requireFromHere("better-sqlite3");
+  const mod = requireFromHere(["better", "sqlite3"].join("-"));
   return mod.default || mod;
 }
 

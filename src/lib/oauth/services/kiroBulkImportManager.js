@@ -293,7 +293,7 @@ async function relaunchAsHeaded(account) {
     lastUrl = "";
   }
 
-  const { chromium } = await import("playwright");
+  const { chromium } = await new Function("specifier", "return import(specifier)")("playwright");
   let newBrowser;
   try {
     newBrowser = await chromium.launch({ headless: false, args: ["--start-maximized"] });

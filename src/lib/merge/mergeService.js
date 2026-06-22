@@ -107,7 +107,7 @@ export function inferPlanHeuristic(conn) {
 async function openExternalDb(dbPath, { readonly = false } = {}) {
   let Database;
   try {
-    const mod = await import("better-sqlite3");
+    const mod = await new Function("specifier", "return import(specifier)")(["better", "sqlite3"].join("-"));
     Database = mod.default || mod;
   } catch {
     throw new Error("better-sqlite3 is required for merge. Install it: npm install better-sqlite3");
