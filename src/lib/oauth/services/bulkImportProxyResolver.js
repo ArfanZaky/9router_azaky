@@ -2,7 +2,7 @@ import { getProxyPoolById } from "../../../models/index.js";
 import { getSettings } from "../../db/repos/settingsRepo.js";
 
 const RELAY_POOL_TYPES = new Set(["vercel", "cloudflare", "deno"]);
-const VALID_PROXY_PREFIXES = ["http://", "https://", "socks4://", "socks5://"];
+const VALID_PROXY_PROTOCOLS = new Set(["http:", "https:", "socks4:", "socks5:"]);
 
 export function splitBulkImportProxyUrls(value) {
   return String(value || "")
@@ -13,10 +13,16 @@ export function splitBulkImportProxyUrls(value) {
 
 function validateProxyUrls(proxyUrls) {
   for (const proxyUrl of proxyUrls) {
-    const hasValidPrefix = VALID_PROXY_PREFIXES.some((prefix) => proxyUrl.startsWith(prefix));
-    if (!hasValidPrefix) {
+    let parsed;
+    try {
+      parsed = new URL(proxyUrl);
+    } catch {
+      return "proxyUrl must be a valid URL";
+    }
+    if (!VALID_PROXY_PROTOCOLS.has(parsed.protocol)) {
       return "proxyUrl must start with http://, https://, socks4://, or socks5://";
     }
+    if (!parsed.hostname) return "proxyUrl must include a host";
   }
   return null;
 }

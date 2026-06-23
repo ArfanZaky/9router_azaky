@@ -10,6 +10,7 @@ import { getProxyPools } from "@/models";
 export const dynamic = "force-dynamic";
 
 const MAX_QUOTE_ATTEMPTS = 8;
+const FETCH_PROXY_PROTOCOLS = new Set(["http:", "https:", "socks4:", "socks5:"]);
 
 function parseRequestedCount(value) {
   const parsed = Number.parseInt(value, 10);
@@ -28,7 +29,13 @@ function normalizeProxyUrl(value) {
 
 function canFetchThroughProxy(proxyUrl) {
   const clean = normalizeProxyUrl(proxyUrl);
-  return /^https?:\/\//i.test(clean) || /^socks[45]:\/\//i.test(clean);
+  if (!clean) return false;
+  try {
+    const parsed = new URL(clean);
+    return FETCH_PROXY_PROTOCOLS.has(parsed.protocol) && Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 function pushAttempt(attempts, seen, attempt) {
@@ -101,6 +108,15 @@ async function buildQuoteAttempts(resolvedProxy, body) {
   const autoAttempts = await getActivePoolAttempts(seen);
   autoAttempts.forEach((attempt) => pushAttempt(attempts, seen, attempt));
 
+  pushAttempt(attempts, seen, {
+    proxyUrl: null,
+    proxyMode: "none",
+    proxyPoolId: null,
+    proxySource: null,
+    proxyCount: 0,
+    proxyRoute: "direct",
+  });
+
   if (!attempts.length) {
     pushAttempt(attempts, seen, {
       proxyUrl: null,
@@ -125,8 +141,8 @@ async function getQuoteWithFallback({
   let lastError = null;
   for (let index = 0; index < attempts.length; index += 1) {
     const attempt = attempts[index];
-    const client = fiveSimClientFactory({ token, proxyUrl: attempt.proxyUrl });
     try {
+      const client = fiveSimClientFactory({ token, proxyUrl: attempt.proxyUrl });
       const quote = await client.getActivationQuote({
         country: body?.country,
         operator: body?.operator,

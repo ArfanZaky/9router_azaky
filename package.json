@@ -1,6 +1,6 @@
 {
   "name": "wyxrouter-app",
-  "version": "0.5.9-wyx0.3",
+  "version": "0.5.9-wyx0.4",
   "description": "WYx0 fork of 9Router with provider automation and quota tracking",
   "private": true,
   "scripts": {

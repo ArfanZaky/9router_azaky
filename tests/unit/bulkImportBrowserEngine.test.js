@@ -25,6 +25,7 @@ vi.mock("../../../../cli/hooks/camoufoxRuntime", () => ({
 }));
 
 import {
+  buildBrowserProxyOption,
   launchBulkImportBrowser,
   normalizeBulkImportEngine,
   DEFAULT_BULK_IMPORT_ENGINE,
@@ -49,6 +50,16 @@ describe("normalizeBulkImportEngine", () => {
 
   it("DEFAULT_BULK_IMPORT_ENGINE is chromium", () => {
     expect(DEFAULT_BULK_IMPORT_ENGINE).toBe("chromium");
+  });
+});
+
+describe("buildBrowserProxyOption", () => {
+  it("splits credentials from the browser proxy server URL", () => {
+    expect(buildBrowserProxyOption("socks5://user:pa;ss,word@134.209.102.0:10000")).toEqual({
+      server: "socks5://134.209.102.0:10000",
+      username: "user",
+      password: "pa;ss,word",
+    });
   });
 });
 

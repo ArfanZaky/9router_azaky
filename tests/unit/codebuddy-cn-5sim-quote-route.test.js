@@ -146,4 +146,48 @@ describe("CodeBuddy CN 5sim quote route", () => {
       proxyRoute: "selected proxy pool #1",
     });
   });
+
+  it("tries another route when a selected proxy cannot create a 5sim client", async () => {
+    mocks.getProxyPools.mockResolvedValue([
+      {
+        id: "pool-2",
+        name: "Backup Proxy",
+        type: "http",
+        isActive: true,
+        proxyUrl: "http://good-proxy.local:8080",
+      },
+    ]);
+    const quoteCalls = [];
+    const { __test__ } = await import("../../src/app/api/oauth/codebuddy-cn/5sim-quote/route.js");
+
+    const result = await __test__.getQuoteWithFallback({
+      token: "five-token",
+      body: { country: "hongkong", operator: "any", product: "codebuddy", proxyPoolId: "pool-1" },
+      resolvedProxy: {
+        proxyUrl: "socks5://bad-proxy.local:10000",
+        proxyUrls: ["socks5://bad-proxy.local:10000"],
+        proxyMode: "single",
+        proxyPoolId: "pool-1",
+        proxySource: "pool",
+        error: null,
+      },
+      fiveSimClientFactory: ({ proxyUrl }) => {
+        if (proxyUrl?.startsWith("socks5://bad-proxy")) {
+          throw new Error("File URL path must be absolute");
+        }
+        return {
+          async getActivationQuote() {
+            quoteCalls.push(proxyUrl || "direct");
+            return createQuote();
+          },
+        };
+      },
+    });
+
+    expect(quoteCalls).toEqual(["http://good-proxy.local:8080"]);
+    expect(result.route.proxySource).toBe("auto-pool");
+    expect(result.route.proxyRoute).toBe("auto proxy pool Backup Proxy #1");
+    expect(result.route.fallbackUsed).toBe(true);
+    expect(result.route.attemptedRoutes).toBe(2);
+  });
 });

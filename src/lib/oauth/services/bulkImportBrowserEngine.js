@@ -14,6 +14,22 @@ export function normalizeBulkImportEngine(value) {
   return SUPPORTED_ENGINES.has(lower) ? lower : DEFAULT_BULK_IMPORT_ENGINE;
 }
 
+export function buildBrowserProxyOption(proxyUrl) {
+  const clean = String(proxyUrl || "").trim();
+  if (!clean) return null;
+  let parsed;
+  try {
+    parsed = new URL(clean);
+  } catch {
+    return { server: clean };
+  }
+  const server = `${parsed.protocol}//${parsed.host}`;
+  const proxy = { server };
+  if (parsed.username) proxy.username = decodeURIComponent(parsed.username);
+  if (parsed.password) proxy.password = decodeURIComponent(parsed.password);
+  return proxy;
+}
+
 async function tryLoadRuntimeHelper(filePath) {
   try {
     const mod = await importRuntimeModule(pathToFileURL(filePath).href);
@@ -126,7 +142,8 @@ async function launchChromium({ proxyUrl, headless = true, args = [] } = {}) {
   }
   const options = { headless };
   if (args.length) options.args = args;
-  if (proxyUrl) options.proxy = { server: proxyUrl };
+  const proxy = buildBrowserProxyOption(proxyUrl);
+  if (proxy) options.proxy = proxy;
   return chromium.launch(options);
 }
 
@@ -200,7 +217,8 @@ async function launchCamoufox({ proxyUrl, headless = true, args = [] } = {}) {
   const camoufoxOptions = await camoufox.launchOptions({ headless });
   const launchOptions = { ...camoufoxOptions };
   if (args.length) launchOptions.args = [...(launchOptions.args || []), ...args];
-  if (proxyUrl) launchOptions.proxy = { server: proxyUrl };
+  const proxy = buildBrowserProxyOption(proxyUrl);
+  if (proxy) launchOptions.proxy = proxy;
 
   return firefox.launch(launchOptions);
 }

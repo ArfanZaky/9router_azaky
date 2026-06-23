@@ -106,7 +106,11 @@ function createFetchDispatcher(proxyUrl) {
     return null;
   }
   if (!FETCH_PROXY_PROTOCOLS.has(parsed.protocol)) return null;
-  return new ProxyAgent(clean);
+  try {
+    return new ProxyAgent(clean);
+  } catch {
+    return null;
+  }
 }
 
 function isRetryableBuyError(error) {
