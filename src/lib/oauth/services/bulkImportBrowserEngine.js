@@ -2,7 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const currentDir = path.dirname(fileURLToPath(import.meta.url));
+export function resolveRuntimeModuleDir(metaUrl = import.meta.url) {
+  try {
+    return path.dirname(fileURLToPath(metaUrl));
+  } catch {
+    return process.cwd();
+  }
+}
+
+const currentDir = resolveRuntimeModuleDir();
 const importRuntimeModule = Function("specifier", "return import(specifier)");
 
 const SUPPORTED_ENGINES = new Set(["chromium", "camoufox"]);

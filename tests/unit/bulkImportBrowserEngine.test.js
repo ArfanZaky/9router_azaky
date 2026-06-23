@@ -28,6 +28,7 @@ import {
   buildBrowserProxyOption,
   launchBulkImportBrowser,
   normalizeBulkImportEngine,
+  resolveRuntimeModuleDir,
   DEFAULT_BULK_IMPORT_ENGINE,
 } from "../../src/lib/oauth/services/bulkImportBrowserEngine.js";
 
@@ -50,6 +51,12 @@ describe("normalizeBulkImportEngine", () => {
 
   it("DEFAULT_BULK_IMPORT_ENGINE is chromium", () => {
     expect(DEFAULT_BULK_IMPORT_ENGINE).toBe("chromium");
+  });
+});
+
+describe("resolveRuntimeModuleDir", () => {
+  it("falls back when Next standalone exposes a virtual file URL on Windows", () => {
+    expect(resolveRuntimeModuleDir("file:///_next/server/chunks/route.js")).toBe(process.cwd());
   });
 });
 
