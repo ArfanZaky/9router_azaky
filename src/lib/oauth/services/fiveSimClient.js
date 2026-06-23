@@ -10,7 +10,7 @@ const GUEST_RETRY_DELAYS_MS = [250, 750];
 const PROFILE_RETRY_DELAYS_MS = [250, 750, 1500];
 const DEFAULT_CHECK_RETRY_COUNT = 5;
 const CHECK_RETRY_DELAY_MS = 1_000;
-const FETCH_PROXY_PROTOCOLS = new Set(["http:", "https:"]);
+const FETCH_PROXY_PROTOCOLS = new Set(["http:", "https:", "socks4:", "socks5:"]);
 const priceCacheByFetch = new WeakMap();
 
 function wait(ms) {

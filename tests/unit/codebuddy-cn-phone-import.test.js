@@ -88,6 +88,29 @@ describe("FiveSimClient", () => {
     expect(calls[0].init.headers.Authorization).toBe("Bearer five-token");
   });
 
+  it("sends 5sim API requests through the configured SOCKS proxy", async () => {
+    const calls = [];
+    const client = new FiveSimClient({
+      token: "five-token",
+      proxyUrl: "socks5://user:pa;ss,word@134.209.102.0:10000",
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({ balance: 100 });
+          },
+        };
+      },
+    });
+
+    await client.getProfile();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init.dispatcher).toBeTruthy();
+  });
+
   it("retries transient 5sim profile gateway errors before failing readiness", async () => {
     const calls = [];
     const waits = [];

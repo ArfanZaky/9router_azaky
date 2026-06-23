@@ -28,7 +28,7 @@ function normalizeProxyUrl(value) {
 
 function canFetchThroughProxy(proxyUrl) {
   const clean = normalizeProxyUrl(proxyUrl);
-  return clean.startsWith("http://") || clean.startsWith("https://");
+  return /^https?:\/\//i.test(clean) || /^socks[45]:\/\//i.test(clean);
 }
 
 function pushAttempt(attempts, seen, attempt) {
