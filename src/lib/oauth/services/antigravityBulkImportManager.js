@@ -1,4 +1,3 @@
-import crypto from "crypto";
 import {
   KiroBulkImportManager,
   buildLookupResponse,
@@ -12,16 +11,17 @@ import {
   createOAuthCallbackMonitor,
   runGoogleAccountAutomation,
 } from "./googleAutomation.js";
+import { generateAuthData } from "../providers.js";
 import { ANTIGRAVITY_CONFIG, getOAuthClientMetadata } from "../constants/oauth.js";
 
 const ANTIGRAVITY_PROVIDER_ID = "antigravity";
 const ANTIGRAVITY_LABEL = "Antigravity";
 const ANTIGRAVITY_CALLBACK_TIMEOUT_MS = 8 * 60_000;
 const ANTIGRAVITY_SHORT_TIMEOUT_MS = 3 * 60_000;
+const ANTIGRAVITY_DASHBOARD_CALLBACK_PORT = process.env.PORT || "2026";
 
 function buildLoopbackRedirectUri() {
-  const port = 41000 + Math.floor(Math.random() * 20000);
-  return `http://localhost:${port}/callback`;
+  return `http://localhost:${ANTIGRAVITY_DASHBOARD_CALLBACK_PORT}/callback`;
 }
 
 function isLoopbackCallbackForState(rawUrl, expectedState) {
@@ -49,6 +49,32 @@ function createAntigravityAuthUrl(redirectUri, state) {
   });
 
   return `${ANTIGRAVITY_CONFIG.authorizeUrl}?${params.toString()}`;
+}
+
+async function buildDashboardAntigravityAuthData(redirectUri) {
+  const appPort = ANTIGRAVITY_DASHBOARD_CALLBACK_PORT;
+  const authorizeUrl = new URL(`http://localhost:${appPort}/api/oauth/${ANTIGRAVITY_PROVIDER_ID}/authorize`);
+  authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+
+  try {
+    const response = await fetch(authorizeUrl, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Dashboard authorize failed: HTTP ${response.status}`);
+    const data = await response.json();
+    if (!data?.authUrl || !data?.state) throw new Error("Dashboard authorize response missing authUrl/state");
+    return data;
+  } catch {
+    return generateAuthData(ANTIGRAVITY_PROVIDER_ID, redirectUri);
+  }
+}
+
+async function defaultAntigravityBrowserLauncher(job) {
+  const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
+  return launchBulkImportBrowser({
+    engine: job?.engine || "chromium",
+    proxyUrl: job?.proxyUrl || undefined,
+    headless: false,
+    args: ["--start-maximized"],
+  });
 }
 
 async function exchangeAntigravityCode(code, redirectUri) {
@@ -218,14 +244,27 @@ async function exchangeAndSaveAntigravityConnection({
   const userInfo = await fetchAntigravityUserInfo(tokens.access_token);
 
   onStep?.("loading_antigravity_code_assist", "Loading Antigravity Code Assist project");
-  const { projectId, tierId } = await loadAntigravityCodeAssist(tokens.access_token);
-  if (!projectId) {
-    throw new Error("No Antigravity Code Assist project was returned for this account");
+  let projectId = "";
+  let tierId = "legacy-tier";
+  try {
+    const codeAssist = await loadAntigravityCodeAssist(tokens.access_token);
+    projectId = codeAssist.projectId || "";
+    tierId = codeAssist.tierId || tierId;
+  } catch {
+    projectId = "";
   }
-
-  onStep?.("onboarding_antigravity", "Onboarding Antigravity Code Assist");
-  const onboardResult = await onboardAntigravityUser(tokens.access_token, projectId, tierId);
-  const finalProjectId = onboardResult.projectId || projectId;
+  let finalProjectId = projectId || "";
+  if (projectId) {
+    onStep?.("onboarding_antigravity", "Onboarding Antigravity Code Assist");
+    try {
+      const onboardResult = await onboardAntigravityUser(tokens.access_token, projectId, tierId);
+      finalProjectId = onboardResult.projectId || projectId;
+    } catch {
+      finalProjectId = projectId;
+    }
+  } else {
+    onStep?.("saving_connection", "Saving Antigravity connection without project ID");
+  }
 
   onStep?.("saving_connection", "Saving Antigravity connection");
   return saveConnection({
@@ -238,7 +277,7 @@ async function exchangeAndSaveAntigravityConnection({
 
 export class AntigravityBulkImportManager extends KiroBulkImportManager {
   constructor({
-    browserLauncher,
+    browserLauncher = defaultAntigravityBrowserLauncher,
     googleAutomation = runGoogleAccountAutomation,
     saveConnection = defaultSaveAntigravityConnection,
     storageName = "antigravity-bulk-import",
@@ -323,9 +362,10 @@ export class AntigravityBulkImportManager extends KiroBulkImportManager {
       return;
     }
 
-    const state = crypto.randomBytes(32).toString("base64url");
     const redirectUri = buildLoopbackRedirectUri();
-    const authUrl = createAntigravityAuthUrl(redirectUri, state);
+    const authData = await buildDashboardAntigravityAuthData(redirectUri);
+    const state = authData.state;
+    const authUrl = authData.authUrl;
     const { context, page } = await createFreshContext(browser);
     const callbackPromise = createOAuthCallbackMonitor(context, page, {
       timeoutMs: ANTIGRAVITY_CALLBACK_TIMEOUT_MS,
@@ -445,6 +485,11 @@ export function getAntigravityBulkImportManager() {
 
 export {
   buildLookupResponse,
+  buildDashboardAntigravityAuthData,
+  defaultAntigravityBrowserLauncher,
+  exchangeAndSaveAntigravityConnection,
+  buildLoopbackRedirectUri,
+  createAntigravityAuthUrl,
   parseKiroBulkAccounts,
   KIRO_BULK_IMPORT_DEFAULT_CONCURRENCY,
   KIRO_BULK_IMPORT_MAX_CONCURRENCY,

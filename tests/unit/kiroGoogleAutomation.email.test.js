@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   EMAIL_INPUT_SELECTOR,
   PASSWORD_INPUT_SELECTOR,
+  runGoogleAccountAutomation,
   __test__,
 } from "../../src/lib/oauth/services/kiroGoogleAutomation.js";
 
@@ -69,6 +70,15 @@ describe("PASSWORD_INPUT_SELECTOR coverage", () => {
 
   it("covers aria-label variants for password fields", () => {
     expect(PASSWORD_INPUT_SELECTOR).toContain('aria-label');
+  });
+});
+
+describe("Google login provider-gate selectors", () => {
+  it("does not match generic Google marketing/header links", () => {
+    expect(__test__.GOOGLE_LOGIN_BUTTON_SELECTORS).not.toContain('a:has-text("Google")');
+    expect(__test__.GOOGLE_LOGIN_BUTTON_SELECTORS).not.toContain('button:has-text("Google")');
+    expect(__test__.GOOGLE_LOGIN_BUTTON_SELECTORS).not.toContain('span:has-text("Google")');
+    expect(__test__.GOOGLE_LOGIN_BUTTON_SELECTORS).not.toContain('[aria-label*="Google"]');
   });
 });
 
@@ -161,5 +171,33 @@ describe("parseSelectorList (regression-aid: ensures selector list is comma-join
     const list = parseSelectorList(EMAIL_INPUT_SELECTOR);
     expect(list.length).toBeGreaterThanOrEqual(5);
     expect(list).toContain('input[type="email"]');
+  });
+});
+
+describe("runGoogleAccountAutomation proxy failures", () => {
+  it("returns failed_proxy for Chromium tunnel failures before login handling", async () => {
+    const onStep = vi.fn();
+    const page = {
+      goto: vi.fn(async () => {
+        throw new Error("page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://accounts.google.com/o/oauth2/v2/auth");
+      }),
+      waitForTimeout: vi.fn(),
+    };
+
+    const result = await runGoogleAccountAutomation({
+      page,
+      authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      email: "user@example.com",
+      password: "secret",
+      successPromise: new Promise(() => {}),
+      shortTimeoutMs: 10,
+      serviceLabel: "Antigravity",
+      onStep,
+    });
+
+    expect(result.status).toBe("failed_proxy");
+    expect(result.error).toContain("Proxy tunnel failed");
+    expect(onStep).toHaveBeenCalledWith("proxy_tunnel_failed", expect.any(String));
+    expect(page.waitForTimeout).not.toHaveBeenCalled();
   });
 });

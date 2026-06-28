@@ -30,6 +30,7 @@ export async function POST(request) {
     const { proxyUrl, proxyUrls, proxyMode, proxyPoolId, proxySource, error: proxyError } = await resolveBulkImportProxy({
       proxyPoolId: body?.proxyPoolId,
       proxyUrl: body?.proxyUrl,
+      useSettingsFallback: false,
     });
     if (proxyError) {
       return NextResponse.json({ error: proxyError }, { status: 400 });

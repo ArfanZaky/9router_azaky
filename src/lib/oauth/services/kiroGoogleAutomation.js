@@ -94,15 +94,22 @@ const SKIP_BUTTON_SELECTORS = [
 const GOOGLE_LOGIN_BUTTON_SELECTORS = [
   '#social-google',
   'a#social-google',
+  'a:has-text("Continue with Google")',
+  'a:has-text("Sign in with Google")',
   'a:has-text("Sign up with Google")',
   'a:has-text("Log in with Google")',
+  'button:has-text("Continue with Google")',
+  'button:has-text("Sign in with Google")',
   'button:has-text("Sign up with Google")',
   'button:has-text("Log in with Google")',
-  'button:has-text("Google")',
-  'a:has-text("Google")',
-  'div[role="button"]:has-text("Google")',
-  'span:has-text("Google")',
-  '[aria-label*="Google"]',
+  'div[role="button"]:has-text("Continue with Google")',
+  'div[role="button"]:has-text("Sign in with Google")',
+  'div[role="button"]:has-text("Sign up with Google")',
+  'div[role="button"]:has-text("Log in with Google")',
+  '[aria-label*="Continue with Google"]',
+  '[aria-label*="Sign in with Google"]',
+  '[aria-label*="Sign up with Google"]',
+  '[aria-label*="Log in with Google"]',
   '[data-provider*="google" i]',
 ];
 
@@ -1281,12 +1288,25 @@ export async function runGoogleAccountAutomation({
   const reportStep = (step, message) => {
     onStep?.(step, message);
   };
+  const useProviderLoginGate = serviceLabel !== "Antigravity";
 
   reportStep(openingStep, openingMessage);
-  await page.goto(authUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  try {
+    await page.goto(authUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  } catch (error) {
+    const message = error?.message || String(error);
+    if (message.includes("ERR_TUNNEL_CONNECTION_FAILED")) {
+      reportStep("proxy_tunnel_failed", "Proxy tunnel failed while opening Google OAuth");
+      return {
+        status: "failed_proxy",
+        error: "Proxy tunnel failed while opening Google OAuth. Check/disable the selected automation proxy, proxy pool, or outbound automation proxy setting.",
+      };
+    }
+    throw error;
+  }
   await page.waitForTimeout(2_000);
 
-  await handleProviderLoginGate(page, reportStep);
+  if (useProviderLoginGate) await handleProviderLoginGate(page, reportStep);
 
   const emailInput = await waitForFirstVisibleLocator(page, EMAIL_INPUT_SELECTOR, { timeout: 15_000 });
   if (emailInput) {
@@ -1391,9 +1411,11 @@ export async function runGoogleAccountAutomation({
       continue;
     }
 
-    const handledProviderGate = await handleProviderLoginGate(page, reportStep);
-    if (handledProviderGate) {
-      continue;
+    if (useProviderLoginGate) {
+      const handledProviderGate = await handleProviderLoginGate(page, reportStep);
+      if (handledProviderGate) {
+        continue;
+      }
     }
 
     const clickedApprove = await clickFirstVisible(page, APPROVE_BUTTON_SELECTORS);
@@ -1451,4 +1473,5 @@ export const __test__ = {
   fillInputResilient,
   parseSelectorList,
   getFirstVisibleLocator,
+  GOOGLE_LOGIN_BUTTON_SELECTORS,
 };

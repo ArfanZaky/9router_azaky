@@ -7,6 +7,8 @@ const require = createRequire(import.meta.url);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const standaloneRoot = path.join(projectRoot, ".next", "standalone");
 
+process.env.PORT ||= "2026";
+
 function ensureLinkedDir(source, destination) {
   if (!fs.existsSync(source) || fs.existsSync(destination)) return;
 

@@ -50,7 +50,7 @@ function buildResolvedProxy(proxyUrls, source) {
  * Returns { proxyUrl, proxyUrls, proxyMode, proxyPoolId, proxySource, error }.
  * When error is non-null the caller should respond with 400.
  */
-export async function resolveBulkImportProxy({ proxyPoolId, proxyUrl } = {}) {
+export async function resolveBulkImportProxy({ proxyPoolId, proxyUrl, useSettingsFallback = true } = {}) {
   if (proxyPoolId) {
     const pool = await getProxyPoolById(proxyPoolId);
     if (!pool) {
@@ -95,18 +95,20 @@ export async function resolveBulkImportProxy({ proxyPoolId, proxyUrl } = {}) {
   }
 
   // Fallback: check settings for outbound proxy automation opt-in
-  try {
-    const settings = await getSettings();
-    if (settings.useOutboundProxyForAutomation === true && settings.outboundProxyUrl) {
-      const proxyUrls = splitBulkImportProxyUrls(settings.outboundProxyUrl);
-      const validationError = validateProxyUrls(proxyUrls);
-      if (validationError) {
-        return { proxyUrl: null, proxyUrls: [], proxyMode: "none", proxyPoolId: null, proxySource: "settings", error: validationError };
+  if (useSettingsFallback) {
+    try {
+      const settings = await getSettings();
+      if (settings.useOutboundProxyForAutomation === true && settings.outboundProxyUrl) {
+        const proxyUrls = splitBulkImportProxyUrls(settings.outboundProxyUrl);
+        const validationError = validateProxyUrls(proxyUrls);
+        if (validationError) {
+          return { proxyUrl: null, proxyUrls: [], proxyMode: "none", proxyPoolId: null, proxySource: "settings", error: validationError };
+        }
+        return buildResolvedProxy(proxyUrls, { proxySource: "settings" });
       }
-      return buildResolvedProxy(proxyUrls, { proxySource: "settings" });
+    } catch {
+      // Settings unavailable; proceed without proxy
     }
-  } catch {
-    // Settings unavailable; proceed without proxy
   }
 
   return buildResolvedProxy([], { proxySource: null });
