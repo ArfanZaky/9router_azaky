@@ -274,12 +274,32 @@ const GOOGLE_WORKSPACE_WELCOME_MARKERS = [
 const KIRO_CALLBACK_PREFIX = "kiro://kiro.kiroAgent/authenticate-success";
 
 function parseCallbackUrl(rawUrl) {
-  if (!rawUrl || !rawUrl.startsWith(KIRO_CALLBACK_PREFIX)) return null;
+  return parseOAuthCallbackUrl(rawUrl, { prefix: KIRO_CALLBACK_PREFIX });
+}
+
+function parseOAuthCallbackUrl(rawUrl, { prefix, predicate } = {}) {
+  if (!rawUrl) return null;
+  if (prefix && !rawUrl.startsWith(prefix)) return null;
+  if (typeof predicate === "function" && !predicate(rawUrl)) return null;
 
   const queryIndex = rawUrl.indexOf("?");
-  const params = new URLSearchParams(queryIndex >= 0 ? rawUrl.slice(queryIndex + 1) : "");
+  let query = queryIndex >= 0 ? rawUrl.slice(queryIndex + 1) : "";
+  const hashIndex = query.indexOf("#");
+  if (hashIndex >= 0) query = query.slice(0, hashIndex);
+  const params = new URLSearchParams(query);
   const code = params.get("code");
   const state = params.get("state");
+  const error = params.get("error");
+  const errorDescription = params.get("error_description");
+
+  if (error) {
+    return {
+      callbackUrl: rawUrl,
+      error,
+      errorDescription,
+      state,
+    };
+  }
 
   if (!code) return null;
 
@@ -1141,6 +1161,19 @@ async function handleProviderLoginGate(page, reportStep) {
 }
 
 export function createKiroCallbackMonitor(context, page, timeoutMs = DEFAULT_MANUAL_TIMEOUT_MS) {
+  return createOAuthCallbackMonitor(context, page, {
+    timeoutMs,
+    timeoutMessage: "Timed out waiting for Kiro callback",
+    prefix: KIRO_CALLBACK_PREFIX,
+  });
+}
+
+export function createOAuthCallbackMonitor(context, page, {
+  timeoutMs = DEFAULT_MANUAL_TIMEOUT_MS,
+  timeoutMessage = "Timed out waiting for OAuth callback",
+  prefix,
+  predicate,
+} = {}) {
   let resolveOuter;
   let rejectOuter;
   const promise = new Promise((resolve, reject) => {
@@ -1152,7 +1185,7 @@ export function createKiroCallbackMonitor(context, page, timeoutMs = DEFAULT_MAN
   const trackedPages = new Set();
   const contextCleanups = new Map();
   const timeoutHandle = setTimeout(() => {
-    settle(null, new Error("Timed out waiting for Kiro callback"));
+    settle(null, new Error(timeoutMessage));
   }, timeoutMs);
 
   function settle(result, error = null) {
@@ -1174,19 +1207,19 @@ export function createKiroCallbackMonitor(context, page, timeoutMs = DEFAULT_MAN
     trackedPages.add(trackedPage);
 
     const onFrame = (frame) => {
-      const parsed = parseCallbackUrl(frame?.url?.() || "");
+      const parsed = parseOAuthCallbackUrl(frame?.url?.() || "", { prefix, predicate });
       if (parsed) settle(parsed);
     };
     const onRequest = (request) => {
-      const parsed = parseCallbackUrl(request?.url?.() || "");
+      const parsed = parseOAuthCallbackUrl(request?.url?.() || "", { prefix, predicate });
       if (parsed) settle(parsed);
     };
     const onRequestFailed = (request) => {
-      const parsed = parseCallbackUrl(request?.url?.() || "");
+      const parsed = parseOAuthCallbackUrl(request?.url?.() || "", { prefix, predicate });
       if (parsed) settle(parsed);
     };
     const onLoadState = () => {
-      const parsed = parseCallbackUrl(trackedPage.url?.() || "");
+      const parsed = parseOAuthCallbackUrl(trackedPage.url?.() || "", { prefix, predicate });
       if (parsed) settle(parsed);
     };
 
@@ -1204,7 +1237,7 @@ export function createKiroCallbackMonitor(context, page, timeoutMs = DEFAULT_MAN
       trackedPage.off("load", onLoadState);
     });
 
-    const current = parseCallbackUrl(trackedPage.url?.() || "");
+    const current = parseOAuthCallbackUrl(trackedPage.url?.() || "", { prefix, predicate });
     if (current) settle(current);
   }
 

@@ -1,5 +1,6 @@
 export {
   runGoogleAccountAutomation,
+  createOAuthCallbackMonitor,
   createKiroCallbackMonitor,
   runKiroGoogleAutomation,
   handleCodeBuddyRegionPage,
