@@ -3,13 +3,25 @@
 import { useState, useEffect } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
+import BulkAccountAutomationModal from "./BulkAccountAutomationModal";
 
 /**
  * Kiro Auth Method Selection Modal
  * Auto-detects token from AWS SSO cache or allows manual import
  */
-export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
+export default function KiroAuthModal({
+  isOpen,
+  onMethodSelect,
+  onClose,
+  initialSelectedMethod,
+  initialImportMode,
+  initialFlowKey,
+  initialJobId,
+  onImportSuccess,
+  onBulkJobChange,
+}) {
   const [selectedMethod, setSelectedMethod] = useState(null);
+  const [importMode, setImportMode] = useState(null);
   const [idcStartUrl, setIdcStartUrl] = useState("");
   const [idcRegion, setIdcRegion] = useState("us-east-1");
   const [refreshToken, setRefreshToken] = useState("");
@@ -20,9 +32,19 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
   const [autoDetecting, setAutoDetecting] = useState(false);
   const [autoDetected, setAutoDetected] = useState(false);
 
-  // Auto-detect token when import method is selected
+  // Honor initialSelectedMethod / initialImportMode from parent (automation page)
+  useEffect(() => {
+    if (!isOpen) return;
+    if (initialSelectedMethod) {
+      setSelectedMethod(initialSelectedMethod);
+      if (initialImportMode) setImportMode(initialImportMode);
+    }
+  }, [isOpen, initialSelectedMethod, initialImportMode, initialFlowKey]);
+
+  // Auto-detect token when import method is selected (single-token only, not bulk)
   useEffect(() => {
     if (selectedMethod !== "import" || !isOpen) return;
+    if (importMode === "bulk-account" || importMode === "bulk-token") return;
 
     const autoDetect = async () => {
       setAutoDetecting(true);
@@ -135,6 +157,37 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
   const handleSocialLogin = (provider) => {
     onMethodSelect("social", { provider });
   };
+
+  // ── Bulk Account Automation ───────────────────────────────────────────────
+  // Renders the full BulkAccountAutomationModal (worker grid, progress, etc.)
+  if (selectedMethod === "import" && importMode === "bulk-account") {
+    return (
+      <BulkAccountAutomationModal
+        isOpen={isOpen}
+        provider="kiro"
+        title="Kiro Bulk Account Automation"
+        serviceName="kiro"
+        onClose={onClose}
+        onSuccess={() => {
+          onImportSuccess?.();
+          onClose?.();
+        }}
+      />
+    );
+  }
+
+  // ── Bulk Token Import (textarea, one token per line) ──────────────────────
+  if (selectedMethod === "import" && importMode === "bulk-token") {
+    return (
+      <BulkTokenView
+        isOpen={isOpen}
+        onClose={onClose}
+        onSuccess={onImportSuccess}
+        onBack={handleBack}
+      />
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   return (
     <Modal isOpen={isOpen} title="Connect Kiro" onClose={onClose} size="lg">
@@ -485,8 +538,91 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
   );
 }
 
+/**
+ * Bulk Token Import — textarea for pasting many Kiro refresh tokens, one per line.
+ */
+function BulkTokenView({ isOpen, onClose, onSuccess, onBack }) {
+  const [tokens, setTokens] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  const handleImport = async () => {
+    if (!tokens.trim()) return;
+    setLoading(true);
+    setResult(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/oauth/kiro/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          refreshTokens: tokens.trim().split("\n").map(t => t.trim()).filter(Boolean),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Import failed");
+      setResult(data);
+      onSuccess?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const count = tokens.trim() ? tokens.trim().split("\n").filter(Boolean).length : 0;
+
+  return (
+    <Modal isOpen={isOpen} title="Kiro Bulk Token Import" onClose={onClose} size="lg">
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-text-muted">
+          Paste Kiro refresh tokens below, one per line.
+        </p>
+        <textarea
+          value={tokens}
+          onChange={(e) => setTokens(e.target.value)}
+          placeholder={"paste-refresh-token-1\npaste-refresh-token-2\n..."}
+          rows={8}
+          className="w-full rounded-lg border border-border bg-surface p-3 font-mono text-sm outline-none focus:border-primary"
+        />
+        <p className="text-xs text-text-muted">{count} token{count !== 1 ? "s" : ""} detected</p>
+
+        {error && (
+          <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800">
+            <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+          </div>
+        )}
+
+        {result && (
+          <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded-lg border border-green-200 dark:border-green-800">
+            <p className="text-sm text-green-800 dark:text-green-200">
+              Imported {result.imported ?? result.count ?? count} token{(result.imported ?? count) !== 1 ? "s" : ""} successfully.
+            </p>
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <Button onClick={handleImport} fullWidth disabled={loading || !tokens.trim()}>
+            {loading ? "Importing..." : `Import ${count} Token${count !== 1 ? "s" : ""}`}
+          </Button>
+          <Button onClick={onBack || onClose} variant="ghost" fullWidth>
+            Back
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 KiroAuthModal.propTypes = {
   isOpen: PropTypes.bool.isRequired,
   onMethodSelect: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
+  initialSelectedMethod: PropTypes.string,
+  initialImportMode: PropTypes.string,
+  initialFlowKey: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+  initialJobId: PropTypes.string,
+  onImportSuccess: PropTypes.func,
+  onBulkJobChange: PropTypes.func,
 };
