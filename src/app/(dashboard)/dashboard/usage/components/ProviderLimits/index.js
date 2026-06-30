@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import QuotaTable from "./QuotaTable";
+import QuotaSummaryCard from "./QuotaSummaryCard";
 import Toggle from "@/shared/components/Toggle";
 import Tooltip from "@/shared/components/Tooltip";
 import {
@@ -113,6 +114,11 @@ export default function ProviderLimits() {
   const [quotaSortMode, setQuotaSortMode] = useState("default");
   const [expiringFirst, setExpiringFirst] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  const [summaryProvider, setSummaryProvider] = useState("none");
+  const [summaryMenuOpen, setSummaryMenuOpen] = useState(false);
+  const [summaryData, setSummaryData] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState(null);
   const [bulkToggling, setBulkToggling] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(CONNECTIONS_PAGE_SIZE);
@@ -177,15 +183,18 @@ export default function ProviderLimits() {
   );
 
   // Fetch quota for a specific connection
-  const fetchQuota = useCallback(async (connectionId, provider) => {
+  const fetchQuota = useCallback(async (connectionId, provider, force = false) => {
     setLoading((prev) => ({ ...prev, [connectionId]: true }));
     setErrors((prev) => ({ ...prev, [connectionId]: null }));
 
     try {
       console.log(
-        `[ProviderLimits] Fetching quota for ${provider} (${connectionId})`,
+        `[ProviderLimits] Fetching quota for ${provider} (${connectionId})${force ? " [force]" : ""}`,
       );
-      const response = await fetch(`/api/usage/${connectionId}`);
+      const url = force
+        ? `/api/usage/${connectionId}?force=true`
+        : `/api/usage/${connectionId}`;
+      const response = await fetch(url);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -253,14 +262,36 @@ export default function ProviderLimits() {
     }
   }, []);
 
-  // Refresh quota for a specific provider
+  // Refresh quota for a specific provider (manual — always force)
   const refreshProvider = useCallback(
     async (connectionId, provider) => {
-      await fetchQuota(connectionId, provider);
+      await fetchQuota(connectionId, provider, true);
       setLastUpdated(new Date());
     },
     [fetchQuota],
   );
+
+  // Fetch aggregated summary for a provider from /api/usage/summary
+  const fetchSummary = useCallback(async (provider) => {
+    if (!provider || provider === "none") {
+      setSummaryData(null);
+      setSummaryError(null);
+      return;
+    }
+    setSummaryLoading(true);
+    setSummaryError(null);
+    try {
+      const res = await fetch(`/api/usage/summary?provider=${encodeURIComponent(provider)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      setSummaryData(data);
+    } catch (err) {
+      setSummaryError(err.message || "Failed to fetch summary");
+      setSummaryData(null);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, []);
 
   const handleResetCodexLimit = useCallback(
     async (connectionId, provider) => {
@@ -278,7 +309,12 @@ export default function ProviderLimits() {
         }
 
         await fetchQuota(connectionId, provider);
-        setLastUpdated(new Date());
+      setLastUpdated(new Date());
+
+      // Re-fetch summary if one is active (after accounts have had quota refreshed)
+      if (summaryProvider && summaryProvider !== "none") {
+        fetchSummary(summaryProvider);
+      }
       } catch (error) {
         setErrors((prev) => ({ ...prev, [connectionId]: error.message || "Failed to reset Codex limit" }));
       } finally {
@@ -403,6 +439,11 @@ export default function ProviderLimits() {
     };
   }, []);
 
+  // Auto-fetch summary when summaryProvider selection changes
+  useEffect(() => {
+    fetchSummary(summaryProvider);
+  }, [summaryProvider, fetchSummary]);
+
   const refreshAll = useCallback(async (force = false) => {
     if (refreshingAll) return;
 
@@ -429,7 +470,7 @@ export default function ProviderLimits() {
       await Promise.all(
         visibleConnections
           .filter(shouldFetch)
-          .map((conn) => fetchQuota(conn.id, conn.provider)),
+          .map((conn) => fetchQuota(conn.id, conn.provider, force)),
       );
 
       setLastUpdated(new Date());
@@ -438,7 +479,7 @@ export default function ProviderLimits() {
     } finally {
       setRefreshingAll(false);
     }
-  }, [refreshingAll, fetchConnections, fetchQuota, page]);
+  }, [refreshingAll, fetchConnections, fetchQuota, page, summaryProvider, fetchSummary]);
 
   useEffect(() => {
     const initializeData = async () => {
@@ -456,7 +497,7 @@ export default function ProviderLimits() {
       );
 
       await Promise.all(
-        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider)),
+        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider, false)),
       );
       setLastUpdated(new Date());
     };
@@ -776,6 +817,104 @@ export default function ProviderLimits() {
               </>
             )}
           </div>
+
+          {/* ── Summary filter dropdown ─────────────────────────────── */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setSummaryMenuOpen((prev) => !prev)}
+              className={`flex h-8 items-center justify-between gap-1 rounded-lg border px-2 text-xs transition-colors ${
+                summaryProvider !== "none"
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-black/10 bg-black/[0.02] text-text-primary hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
+              }`}
+              aria-haspopup="menu"
+              aria-expanded={summaryMenuOpen}
+              title="Show aggregated summary for a provider"
+            >
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="material-symbols-outlined text-[14px] shrink-0">
+                  query_stats
+                </span>
+                <span className="truncate hidden lg:inline">
+                  {summaryProvider !== "none" ? (
+                    <span className="capitalize">{summaryProvider} · Summary</span>
+                  ) : (
+                    "Summary"
+                  )}
+                </span>
+              </span>
+              <span className="material-symbols-outlined text-[14px] text-text-muted">
+                expand_more
+              </span>
+            </button>
+
+            {summaryMenuOpen && (
+              <>
+                <button
+                  type="button"
+                  className="fixed inset-0 z-30 bg-transparent"
+                  aria-label="Close summary filter"
+                  onClick={() => setSummaryMenuOpen(false)}
+                />
+                <div className="absolute left-0 z-40 mt-2 w-64 overflow-hidden rounded-2xl border border-black/10 bg-surface/95 p-1.5 shadow-xl shadow-black/10 backdrop-blur dark:border-white/10 dark:bg-surface/95 sm:w-72">
+                  {/* None option */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSummaryProvider("none");
+                      setSummaryMenuOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${
+                      summaryProvider === "none"
+                        ? "bg-primary/10 text-primary"
+                        : "text-text-primary hover:bg-black/5 dark:hover:bg-white/10"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[22px]">
+                      do_not_disturb_on
+                    </span>
+                    <span className="font-medium">None</span>
+                    {summaryProvider === "none" && (
+                      <span className="material-symbols-outlined ml-auto text-[20px]">check</span>
+                    )}
+                  </button>
+                  <div className="my-1 h-px bg-black/10 dark:bg-white/10" />
+                  <div className="max-h-72 overflow-y-auto pr-1">
+                    {providerOptions.map((provider) => (
+                      <button
+                        key={provider}
+                        type="button"
+                        onClick={() => {
+                          setSummaryProvider(provider);
+                          setSummaryMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${
+                          summaryProvider === provider
+                            ? "bg-primary/10 text-primary"
+                            : "text-text-primary hover:bg-black/5 dark:hover:bg-white/10"
+                        }`}
+                      >
+                        <ProviderIcon
+                          src={`/providers/${provider}.png`}
+                          alt={provider}
+                          size={24}
+                          className="size-6 rounded-md object-contain"
+                          fallbackText={provider.slice(0, 2).toUpperCase()}
+                        />
+                        <span className="font-medium capitalize">{provider}</span>
+                        {summaryProvider === provider && (
+                          <span className="material-symbols-outlined ml-auto text-[20px]">check</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          {/* ─────────────────────────────────────────────────────────── */}
+
           <select
             value={accountFilter}
             onChange={(event) => {
@@ -897,6 +1036,18 @@ export default function ProviderLimits() {
           Cross-page ordering still follows backend pagination.
         </div>
       )}
+
+      {/* ── Summary card (always 1 box when a provider is selected) ── */}
+      {summaryProvider !== "none" && (
+        <QuotaSummaryCard
+          summary={summaryData}
+          loading={summaryLoading}
+          error={summaryError}
+          displayMode="avg"
+          onRefresh={() => fetchSummary(summaryProvider)}
+        />
+      )}
+      {/* ─────────────────────────────────────────────────────────────── */}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {sortedConnections.map((conn) => {

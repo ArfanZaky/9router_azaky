@@ -131,6 +131,18 @@ export const TABLES = {
       data: "TEXT NOT NULL",
     },
   },
+  quotaCache: {
+    columns: {
+      connectionId: "TEXT PRIMARY KEY",
+      provider: "TEXT NOT NULL",
+      data: "TEXT NOT NULL",
+      cachedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_qc_provider ON quotaCache(provider)",
+      "CREATE INDEX IF NOT EXISTS idx_qc_cachedAt ON quotaCache(cachedAt)",
+    ],
+  },
   requestDetails: {
     columns: {
       id: "TEXT PRIMARY KEY",

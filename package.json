@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --webpack --port 2026",
-    "build": "next build --webpack",
+    "build": "node ./scripts/build-next.mjs",
     "start": "node ./scripts/start-standalone.mjs",
     "dev:bun": "bun --bun next dev --webpack --port 2026",
     "build:bun": "bun --bun next build --webpack",

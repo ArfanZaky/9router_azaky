@@ -6,6 +6,12 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
+import {
+  getCachedQuota,
+  setCachedQuota,
+  QUOTA_CACHE_TTL_MS,
+  QUOTA_CACHE_TTL_CLAUDE_MS,
+} from "@/lib/db/repos/quotaCacheRepo";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -118,12 +124,15 @@ export async function refreshAndUpdateCredentials(connection, force = false, pro
 
 /**
  * GET /api/usage/[connectionId] - Get usage data for a specific connection
+ * Query params:
+ *   ?force=true  — bypass cache and always fetch fresh from upstream
  */
 export async function GET(request, { params }) {
   let connection;
   try {
     const { connectionId } = await params;
-
+    const url = new URL(request.url);
+    const force = url.searchParams.get("force") === "true";
 
     // Get connection from database
     connection = await getProviderConnectionById(connectionId);
@@ -143,6 +152,20 @@ export async function GET(request, { params }) {
     if (!isOAuth && !isApikeyEligible) {
       return Response.json({ message: "Usage not available for this connection" });
     }
+
+    // ── SQLite quota cache check ─────────────────────────────────────────────
+    // Skip if ?force=true (manual refresh from UI).
+    // Claude uses a longer TTL because its upstream rate-limits more aggressively.
+    if (!force) {
+      const ttl = connection.provider === "claude"
+        ? QUOTA_CACHE_TTL_CLAUDE_MS
+        : QUOTA_CACHE_TTL_MS;
+      const cached = await getCachedQuota(connectionId, ttl);
+      if (cached) {
+        return Response.json({ ...cached, _fromCache: true });
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // Resolve connection proxy config; force strictProxy=false so quota/refresh fall back to direct on failure
     const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
@@ -181,6 +204,13 @@ export async function GET(request, { params }) {
         console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
       }
     }
+
+    // ── Write to SQLite quota cache ──────────────────────────────────────────
+    // Only cache when we got a valid quota response (not an error/message-only).
+    if (usage && !usage.error) {
+      await setCachedQuota(connectionId, connection.provider, usage);
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     return Response.json(usage);
   } catch (error) {
