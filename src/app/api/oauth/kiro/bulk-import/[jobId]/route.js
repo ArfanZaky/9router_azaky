@@ -4,8 +4,9 @@ import { buildLookupResponse, getKiroBulkImportManager } from "@/lib/oauth/servi
 export const dynamic = "force-dynamic";
 
 export async function GET(_request, { params }) {
+  const { jobId } = await params;
   const manager = getKiroBulkImportManager();
-  const job = await manager.getJobWithPreview(params.jobId);
+  const job = await manager.getJobWithPreview(jobId);
 
   if (!job) {
     return NextResponse.json({
