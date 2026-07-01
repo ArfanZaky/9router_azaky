@@ -170,7 +170,6 @@ export default function KiroAuthModal({
         onClose={onClose}
         onSuccess={() => {
           onImportSuccess?.();
-          onClose?.();
         }}
       />
     );
