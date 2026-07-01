@@ -149,6 +149,7 @@ async function launchChromium({ proxyUrl, headless = true, args = [] } = {}) {
     chromium = installedRuntimePlaywright.chromium;
   }
   const options = { headless };
+  console.log("[BrowserEngine] launchChromium:", { headless, args });
   if (args.length) options.args = args;
   const proxy = buildBrowserProxyOption(proxyUrl);
   if (proxy) options.proxy = proxy;

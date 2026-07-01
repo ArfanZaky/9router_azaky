@@ -265,6 +265,7 @@ export function buildLookupResponse(job, extras = {}) {
 
 async function defaultBrowserLauncher(job) {
   const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
+  console.log("[KiroBulk] defaultBrowserLauncher called, passing headless:false");
   return launchBulkImportBrowser({
     engine: job?.engine || "chromium",
     proxyUrl: job?.proxyUrl || undefined,
