@@ -265,7 +265,12 @@ export function buildLookupResponse(job, extras = {}) {
 
 async function defaultBrowserLauncher(job) {
   const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
-  return launchBulkImportBrowser({ engine: job?.engine || "chromium", proxyUrl: job?.proxyUrl || undefined });
+  return launchBulkImportBrowser({
+    engine: job?.engine || "chromium",
+    proxyUrl: job?.proxyUrl || undefined,
+    headless: false,
+    args: ["--start-maximized"],
+  });
 }
 
 function normalizeProxyUrls(proxyUrl, proxyUrls) {
