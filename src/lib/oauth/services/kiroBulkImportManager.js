@@ -427,13 +427,15 @@ async function revealBrowserWindow(page, { account } = {}) {
 
 export class KiroBulkImportManager {
   constructor({
-    browserLauncher = defaultBrowserLauncher,
+    browserLauncher,
     googleAutomation = runKiroGoogleAutomation,
     socialExchange = defaultSocialExchange,
     kiroServiceFactory = () => new KiroService(),
     storageName = "kiro-bulk-import",
   } = {}) {
-    this.browserLauncher = browserLauncher;
+    // ponytail: closure-free default — always reads the current module-level fn
+    // so globalThis singletons pick up hot-reload changes.
+    this.browserLauncher = browserLauncher || ((job) => defaultBrowserLauncher(job));
     this.googleAutomation = googleAutomation;
     this.socialExchange = socialExchange;
     this.kiroServiceFactory = kiroServiceFactory;
