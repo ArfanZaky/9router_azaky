@@ -801,19 +801,24 @@ export class KiroBulkImportManager {
 
   async processAccount(job, account, workerId, browser = job.browser) {
     if (job.cancelRequested || !browser) {
+      console.log("[KiroBulk] processAccount: cancelled or no browser", { cancelRequested: job.cancelRequested, hasBrowser: !!browser });
       this.finalizeAccount(account, "cancelled", { error: "Job cancelled" });
       return;
     }
 
+    console.log("[KiroBulk] processAccount: starting", { workerId, email: account.email, hasBrowser: !!browser });
     const kiroService = this.kiroServiceFactory();
     const socialAuth = kiroService.createSocialAuthorization("google");
+    console.log("[KiroBulk] processAccount: creating context...");
     const { context, page } = await createFreshContext(browser);
+    console.log("[KiroBulk] processAccount: context created, setting up callback monitor...");
     const callbackPromise = createKiroCallbackMonitor(context, page);
     account.runtimeSession = { context, page, proxyUrl: browser.__ninerouterProxyUrl || job.proxyUrl || null };
 
     try {
       this.setAccountStep(account, "preparing_worker", `Worker ${workerId} is preparing a browser context`);
       await this.persistJobSnapshot(job, { forcePreview: true });
+      console.log("[KiroBulk] processAccount: starting googleAutomation, authUrl:", socialAuth.authUrl?.slice(0, 80));
       const automationResult = await this.googleAutomation({
         page,
         authUrl: socialAuth.authUrl,
@@ -927,7 +932,9 @@ export class KiroBulkImportManager {
     try {
       const useWorkerBrowsers = Array.isArray(job.proxyUrls) && job.proxyUrls.length > 1;
       if (!useWorkerBrowsers) {
+        console.log("[KiroBulk] Launching browser...", { engine: job.engine, headless: "should be false" });
         job.browser = await this.browserLauncher(job);
+        console.log("[KiroBulk] Browser launched OK:", !!job.browser);
         job.browser.__ninerouterProxyUrl = job.proxyUrl || null;
       }
       job.accounts.forEach((account) => {
