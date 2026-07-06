@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { KIRO_CONFIG, assertValidAwsRegion } from "../constants/oauth.js";
 
 /**
@@ -123,6 +124,21 @@ export class KiroService {
         tokenType: data.tokenType,
       },
     };
+  }
+
+  /**
+   * Generate PKCE params + social login URL in one call.
+   * Returns { authUrl, codeVerifier, state }
+   */
+  createSocialAuthorization(provider) {
+    const codeVerifier = crypto.randomBytes(32).toString("base64url");
+    const codeChallenge = crypto
+      .createHash("sha256")
+      .update(codeVerifier)
+      .digest("base64url");
+    const state = crypto.randomBytes(16).toString("hex");
+    const authUrl = this.buildSocialLoginUrl(provider, codeChallenge, state);
+    return { authUrl, codeVerifier, state };
   }
 
   /**
