@@ -546,7 +546,22 @@ export class KiroBulkImportManager {
 
   cancelJob(jobId) {
     const job = this.jobs.get(jobId);
-    if (!job) return readJsonFile(getJobFile(jobId, this.storageDir));
+
+    // Job only on disk (server restarted) — load, cancel in place, write back
+    if (!job) {
+      const persisted = readJsonFile(getJobFile(jobId, this.storageDir));
+      if (!persisted) return null;
+      persisted.cancelRequested = true;
+      persisted.status = "cancelled";
+      persisted.finishedAt = persisted.finishedAt || nowIso();
+      (persisted.accounts || []).forEach((account) => {
+        if (account.status === "queued" || account.status === "running" || account.status === "needs_manual") {
+          account.status = "cancelled";
+        }
+      });
+      writeJsonFile(getJobFile(jobId, this.storageDir), persisted);
+      return persisted;
+    }
 
     job.cancelRequested = true;
     job.status = "cancelled";
