@@ -789,11 +789,14 @@ export default function ProviderDetailPage() {
   };
 
   const toggleSelectAllConnections = () => {
-    if (allSelected) {
-      setSelectedConnectionIds([]);
+    const scope = statusFilter !== "all" ? filteredConnections : connections;
+    const allScopeSelected = scope.length > 0 && scope.every((conn) => selectedConnectionIds.includes(conn.id));
+    if (allScopeSelected) {
+      setSelectedConnectionIds((prev) => prev.filter((id) => !scope.some((conn) => conn.id === id)));
       return;
     }
-    setSelectedConnectionIds(connections.map((conn) => conn.id));
+    const newIds = scope.map((conn) => conn.id);
+    setSelectedConnectionIds((prev) => [...new Set([...prev, ...newIds])]);
   };
 
   const clearSelection = () => {
@@ -894,24 +897,7 @@ export default function ProviderDetailPage() {
     return true;
   });
 
-  const allSelected = filteredConnections.length > 0 && filteredConnections.every((conn) => selectedConnectionIds.includes(conn.id));
-
-  const toggleSelectAllConnections = () => {
-    if (allSelected) {
-      setSelectedConnectionIds((prev) => prev.filter((id) => !filteredConnections.some((conn) => conn.id === id)));
-    } else {
-      const newIds = filteredConnections.map((conn) => conn.id);
-      setSelectedConnectionIds((prev) => [...new Set([...prev, ...newIds])]);
-    }
-  };
-
-  const toggleSelectConnection = (connectionId) => {
-    setSelectedConnectionIds((prev) =>
-      prev.includes(connectionId)
-        ? prev.filter((id) => id !== connectionId)
-        : [...prev, connectionId],
-    );
-  };
+  const allFilteredSelected = filteredConnections.length > 0 && filteredConnections.every((conn) => selectedConnectionIds.includes(conn.id));
 
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
@@ -1549,7 +1535,7 @@ export default function ProviderDetailPage() {
                   <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
                     <input
                       type="checkbox"
-                      checked={allSelected}
+                      checked={allFilteredSelected}
                       onChange={toggleSelectAllConnections}
                       className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
                     />
