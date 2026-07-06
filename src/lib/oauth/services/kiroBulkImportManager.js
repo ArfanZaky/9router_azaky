@@ -549,13 +549,22 @@ export class KiroBulkImportManager {
     if (!job) return readJsonFile(getJobFile(jobId, this.storageDir));
 
     job.cancelRequested = true;
-    if (job.status === "queued") {
-      job.status = "cancelled";
-      job.finishedAt = nowIso();
-      job.accounts.forEach((account) => {
-        if (account.status === "queued") account.status = "cancelled";
-      });
-    }
+    job.status = "cancelled";
+    job.finishedAt = nowIso();
+    job.accounts.forEach((account) => {
+      if (account.status === "queued" || account.status === "running" || account.status === "needs_manual") {
+        // Close any open manual/runtime browser sessions
+        if (account.manualSession?.context) {
+          void account.manualSession.context.close().catch(() => null);
+          account.manualSession = null;
+        }
+        if (account.runtimeSession?.context) {
+          void account.runtimeSession.context.close().catch(() => null);
+          account.runtimeSession = null;
+        }
+        account.status = "cancelled";
+      }
+    });
 
     if (job.browser) {
       void job.browser.close().catch(() => null);
