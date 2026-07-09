@@ -20,6 +20,25 @@ export function mapStainlessArch() {
   }
 }
 
+// === Antigravity IDE fingerprint (v2.1.1) ===
+export const ANTIGRAVITY_IDE_VERSION = "2.1.1";
+
+export function mapPlatformForAntigravity() {
+  const p = platform();
+  if (p === "win32") return "windows";
+  return p;
+}
+
+export function mapArchForAntigravity() {
+  const a = arch();
+  if (a === "x64") return "amd64";
+  return a;
+}
+
+export function getAntigravityUserAgent() {
+  return `antigravity/ide/${ANTIGRAVITY_IDE_VERSION} ${mapPlatformForAntigravity()}/${mapArchForAntigravity()}`;
+}
+
 // Anthropic API version (single source — reused across claude-format providers/executors)
 export const ANTHROPIC_API_VERSION = "2023-06-01";
 

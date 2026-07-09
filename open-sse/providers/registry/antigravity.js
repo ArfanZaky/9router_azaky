@@ -1,5 +1,4 @@
-import { platform, arch } from "os";
-import { ANTIGRAVITY_OAUTH_CLIENT } from "../shared.js";
+import { ANTIGRAVITY_OAUTH_CLIENT, getAntigravityUserAgent } from "../shared.js";
 
 export default {
   id: "antigravity",
@@ -26,7 +25,7 @@ export default {
     ],
     format: "antigravity",
     headers: {
-      "User-Agent": "antigravity/1.107.0 darwin/arm64",
+      "User-Agent": getAntigravityUserAgent(), // Dynamic: matches real IDE v2.1.1
     },
     retry: {
       "429": {
@@ -72,8 +71,7 @@ export default {
     apiVersion: "v1internal",
     loadCodeAssistEndpoint: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
     onboardUserEndpoint: "https://cloudcode-pa.googleapis.com/v1internal:onboardUser",
-    loadCodeAssistUserAgent: "google-api-nodejs-client/9.15.1",
-    loadCodeAssistApiClient: "google-cloud-sdk vscode_cloudshelleditor/0.1",
+    loadCodeAssistUserAgent: getAntigravityUserAgent(), // PR #2471: Match real IDE v2.1.1
     refreshLeadMs: 300000,
   },
   features: {

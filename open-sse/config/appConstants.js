@@ -58,8 +58,15 @@ export function getPlatformEnum() {
   return PLATFORM.UNSPECIFIED;
 }
 
+// === Antigravity IDE fingerprint (v2.1.1) ===
+// Google's backend fingerprints User-Agent and silently rejects mismatches.
+// Real IDE format: "antigravity/ide/2.1.1 windows/amd64"
+import { getAntigravityUserAgent, ANTIGRAVITY_IDE_VERSION } from "../providers/shared.js";
+export { getAntigravityUserAgent, ANTIGRAVITY_IDE_VERSION };
+
+// Legacy function - kept for backward compatibility
 export function getPlatformUserAgent() {
-  return `antigravity/1.104.0 ${platform()}/${arch()}`;
+  return getAntigravityUserAgent();
 }
 
 export const CLIENT_METADATA = {
@@ -127,9 +134,9 @@ export const AG_DEFAULT_TOOLS = new Set([
   "write_to_file"
 ]);
 
-// Antigravity chat/stream headers
+// Antigravity chat/stream headers (must match real IDE v2.1.1)
 export const ANTIGRAVITY_HEADERS = {
-  "User-Agent": `antigravity/1.107.0 ${platform()}/${arch()}`
+  "User-Agent": getAntigravityUserAgent()
 };
 
 // Cloud Code Assist API
@@ -138,11 +145,11 @@ export const CLOUD_CODE_API = {
   onboardUser: "https://cloudcode-pa.googleapis.com/v1internal:onboardUser",
 };
 
+// loadCodeAssist/onboardUser headers (must match real IDE - no X-Goog-Api-Client, no Client-Metadata)
+// PR #2471: Google fingerprints these and silently rejects "Cloud Shell Editor" identity
 export const LOAD_CODE_ASSIST_HEADERS = {
   "Content-Type": "application/json",
-  "User-Agent": "google-api-nodejs-client/9.15.1",
-  "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-  "Client-Metadata": JSON.stringify({ ideType: IDE_TYPE.ANTIGRAVITY, platform: getPlatformEnum(), pluginType: PLUGIN_TYPE.GEMINI }),
+  "User-Agent": getAntigravityUserAgent(),
 };
 
 export const LOAD_CODE_ASSIST_METADATA = {

@@ -374,13 +374,12 @@ const PROVIDERS = {
       return await response.json();
     },
     postExchange: async (tokens) => {
-      // Numeric enums matching Antigravity binary ClientMetadata
+      // PR #2471: Match real IDE v2.1.1 - removed X-Goog-Api-Client and Client-Metadata
+      // Real IDE doesn't send these headers, Google fingerprints and rejects mismatch
       const loadHeaders = {
         "Authorization": `Bearer ${tokens.access_token}`,
         "Content-Type": "application/json",
         "User-Agent": ANTIGRAVITY_CONFIG.loadCodeAssistUserAgent,
-        "X-Goog-Api-Client": ANTIGRAVITY_CONFIG.loadCodeAssistApiClient,
-        "Client-Metadata": ANTIGRAVITY_CONFIG.loadCodeAssistClientMetadata,
         "x-request-source": "local",
       };
       const metadata = getOAuthClientMetadata();

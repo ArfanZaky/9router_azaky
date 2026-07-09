@@ -60,6 +60,7 @@ export class GeminiCLIService {
 
   /**
    * Fetch project ID from Google Cloud Code Assist
+   * PR #2471: Updated to match real IDE v2.1.1 - removed X-Goog-Api-Client and Client-Metadata
    */
   async fetchProjectId(accessToken) {
     const response = await fetch(
@@ -69,9 +70,7 @@ export class GeminiCLIService {
         headers: {
           "Authorization": `Bearer ${accessToken}`,
           "Content-Type": "application/json",
-          "User-Agent": "google-api-nodejs-client/9.15.1",
-          "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-          "Client-Metadata": JSON.stringify(getOAuthClientMetadata())
+          "User-Agent": "antigravity/ide/2.1.1 windows/amd64", // Match real IDE format
         },
         body: JSON.stringify({
           metadata: getOAuthClientMetadata(),

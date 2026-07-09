@@ -78,15 +78,14 @@ export class AntigravityService {
   }
 
   /**
-   * Get common headers for Antigravity API calls
+   * Get common headers for Antigravity API calls (must match real IDE v2.1.1)
+   * PR #2471: Removed X-Goog-Api-Client and Client-Metadata - real IDE doesn't send them
    */
   getApiHeaders(accessToken) {
     return {
       "Authorization": `Bearer ${accessToken}`,
       "Content-Type": "application/json",
-      "User-Agent": this.config.loadCodeAssistUserAgent,
-      "X-Goog-Api-Client": this.config.loadCodeAssistApiClient,
-      "Client-Metadata": this.config.loadCodeAssistClientMetadata,
+      "User-Agent": this.config.loadCodeAssistUserAgent || "antigravity/ide/2.1.1 windows/amd64",
     };
   }
 
