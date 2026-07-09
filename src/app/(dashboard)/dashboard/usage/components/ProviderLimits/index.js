@@ -182,8 +182,8 @@ export default function ProviderLimits() {
     [accountFilter, expiringFirst, page, pageSize, providerFilter],
   );
 
-  // Fetch quota for a specific connection
-  const fetchQuota = useCallback(async (connectionId, provider, force = false) => {
+  // Fetch quota for a specific connection (always direct hit, bypasses cache)
+  const fetchQuota = useCallback(async (connectionId, provider, force = true) => {
     setLoading((prev) => ({ ...prev, [connectionId]: true }));
     setErrors((prev) => ({ ...prev, [connectionId]: null }));
 
@@ -467,10 +467,11 @@ export default function ProviderLimits() {
         filterQuotaStateByConnections(prev, visibleConnections),
       );
 
+      // Always bypass cache (force=true), but respect throttling logic above
       await Promise.all(
         visibleConnections
           .filter(shouldFetch)
-          .map((conn) => fetchQuota(conn.id, conn.provider, force)),
+          .map((conn) => fetchQuota(conn.id, conn.provider, true)),
       );
 
       setLastUpdated(new Date());
@@ -487,7 +488,7 @@ export default function ProviderLimits() {
       const visibleConnections = await fetchConnections(page);
       setConnectionsLoading(false);
 
-      // Always fetch fresh quota on mount, no cache display
+      // Always fetch fresh quota on mount, bypassing cache
       setLoading(buildLoadingState(visibleConnections));
       setErrors((prev) =>
         filterQuotaStateByConnections(prev, visibleConnections),
@@ -497,7 +498,7 @@ export default function ProviderLimits() {
       );
 
       await Promise.all(
-        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider, false)),
+        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider)),
       );
       setLastUpdated(new Date());
     };
