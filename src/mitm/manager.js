@@ -17,7 +17,7 @@ const { DATA_DIR, MITM_DIR } = require("./paths");
 const { log, err } = require("./logger");
 const { LSOF_BIN } = require("./config");
 
-const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
+const DEFAULT_MITM_ROUTER_BASE = "http://localhost:2026";
 
 function shellQuoteSingle(str) {
   if (str == null || str === "") return "''";
@@ -41,6 +41,7 @@ async function resolveMitmRouterBaseUrl() {
 const MITM_PORT = 443;
 const MITM_WIN_NODE_PORT = 8443;
 const PID_FILE = path.join(MITM_DIR, ".mitm.pid");
+const LOCK_FILE = path.join(MITM_DIR, ".mitm.lock");
 
 const MITM_MAX_RESTARTS = 5;
 const MITM_RESTART_DELAYS_MS = [5000, 10000, 20000, 30000, 60000];
@@ -61,16 +62,45 @@ function resolveBundledServerPath() {
   return fromCwd;
 }
 
-// Copy bundled server.js into DATA_DIR so MITM doesn't lock node_modules
+// Resolve the complete source MITM directory (for copying all dependencies)
+function resolveSourceMitmDir() {
+  const candidates = [
+    __dirname,  // manager.js is in the mitm directory
+    path.join(process.cwd(), "src", "mitm"),
+    path.join(process.cwd(), "..", "src", "mitm"),
+  ];
+  for (const dir of candidates) {
+    const serverPath = path.join(dir, "server.js");
+    const loggerPath = path.join(dir, "logger.js");
+    // Validate it's a complete mitm directory (has both server.js and logger.js)
+    if (fs.existsSync(serverPath) && fs.existsSync(loggerPath)) {
+      return dir;
+    }
+  }
+  // Fallback if none found: just use the source path directly
+  const fallback = path.join(__dirname, '..', '..', '..', '..', 'src', 'mitm');
+  if (fs.existsSync(path.join(fallback, 'server.js'))) return fallback;
+  return null;
+}
+
+// Copy entire MITM directory into DATA_DIR so MITM doesn't lock node_modules
 // (prevents EBUSY on `npm i -g 9router@latest` while MITM is running).
+// Copies all dependencies: logger.js, config.js, paths.js, cert/, dns/, handlers/
 function ensureRuntimeServer(bundledPath) {
   try {
+    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] bundledPath: ${bundledPath}\n`, { flag: 'a' });
     if (!bundledPath || !fs.existsSync(bundledPath)) return bundledPath;
 
-    // Dev mode: source file has relative requires (./logger, ./config...),
-    // only the bundled file inside node_modules is self-contained + safe to copy.
-    if (!bundledPath.includes(`${path.sep}node_modules${path.sep}`)) {
-      return bundledPath;
+    // Copy to runtime for node_modules (avoid EBUSY) and standalone (incomplete build).
+    // Dev mode: use source files directly (complete dependencies already accessible).
+    const normalizedPath = bundledPath.replace(/\\/g, '/');
+    const isNodeModules = normalizedPath.includes('/node_modules/');
+    const isStandalone = normalizedPath.includes('/.next/standalone/');
+    
+    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] isStandalone: ${isStandalone}, isNodeModules: ${isNodeModules}\n`, { flag: 'a' });
+
+    if (!isNodeModules && !isStandalone) {
+      return bundledPath;  // Dev mode
     }
 
     const runtimeDir = path.join(DATA_DIR, "runtime", "mitm");
@@ -79,14 +109,57 @@ function ensureRuntimeServer(bundledPath) {
     // Skip copy if sizes match (bundle unchanged since last run)
     if (fs.existsSync(runtimeServer)) {
       try {
-        if (fs.statSync(bundledPath).size === fs.statSync(runtimeServer).size) return runtimeServer;
+        if (fs.statSync(bundledPath).size === fs.statSync(runtimeServer).size) {
+           fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] Skipped copy due to size match\n`, { flag: 'a' });
+           return runtimeServer;
+        }
       } catch { /* recopy */ }
     }
 
-    fs.mkdirSync(runtimeDir, { recursive: true });
-    fs.copyFileSync(bundledPath, runtimeServer);
+    // Find complete source MITM directory (standalone output is incomplete - missing dependencies)
+    const sourceMitmDir = resolveSourceMitmDir();
+    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] sourceMitmDir: ${sourceMitmDir}\n`, { flag: 'a' });
+    
+    if (!sourceMitmDir) {
+      return bundledPath;
+    }
+
+    
+    // Copy all .js files in root mitm directory
+    const rootFiles = fs.readdirSync(sourceMitmDir).filter(f => f.endsWith('.js'));
+    for (const file of rootFiles) {
+      fs.copyFileSync(path.join(sourceMitmDir, file), path.join(runtimeDir, file));
+    }
+    
+    // Copy subdirectories: cert/, dns/, handlers/
+    const subdirs = ['cert', 'dns', 'handlers'];
+    for (const subdir of subdirs) {
+      const srcSubdir = path.join(sourceMitmDir, subdir);
+      const destSubdir = path.join(runtimeDir, subdir);
+      if (fs.existsSync(srcSubdir)) {
+        fs.mkdirSync(destSubdir, { recursive: true });
+        const files = fs.readdirSync(srcSubdir).filter(f => f.endsWith('.js'));
+        for (const file of files) {
+          fs.copyFileSync(path.join(srcSubdir, file), path.join(destSubdir, file));
+        }
+      }
+    }
+
+    // Copy shared/constants for cross-module dependencies
+    const sourceSharedDir = path.join(sourceMitmDir, "..", "shared", "constants");
+    const runtimeSharedDir = path.join(DATA_DIR, "runtime", "shared", "constants");
+    if (fs.existsSync(sourceSharedDir)) {
+      fs.mkdirSync(runtimeSharedDir, { recursive: true });
+      const sharedFiles = fs.readdirSync(sourceSharedDir).filter(f => f.endsWith('.js'));
+      for (const file of sharedFiles) {
+        fs.copyFileSync(path.join(sourceSharedDir, file), path.join(runtimeSharedDir, file));
+      }
+    }
+    
+    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] Copy SUCCESS\n`, { flag: 'a' });
     return runtimeServer;
   } catch (e) {
+    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] Copy FAILED: ${e.stack}\n`, { flag: 'a' });
     try { log(`[MITM] runtime copy failed: ${e.message}`); } catch { /* ignore */ }
     return bundledPath;
   }
@@ -400,19 +473,22 @@ async function getMitmStatus() {
 
 async function scheduleMitmRestart(apiKey) {
   if (mitmIsRestarting) return;
+  // Set guard synchronously before any await to prevent concurrent calls
+  // from passing the check above.
+  mitmIsRestarting = true;
 
   const aliveMs = Date.now() - mitmLastStartTime;
   if (aliveMs >= MITM_RESTART_RESET_MS) mitmRestartCount = 0;
 
   if (mitmRestartCount >= MITM_MAX_RESTARTS) {
     err("Max restart attempts reached. Giving up.");
+    mitmIsRestarting = false;
     return;
   }
 
   const attempt = mitmRestartCount;
   const delay = MITM_RESTART_DELAYS_MS[Math.min(attempt, MITM_RESTART_DELAYS_MS.length - 1)];
   mitmRestartCount++;
-  mitmIsRestarting = true;
 
   log(`Restarting in ${delay / 1000}s... (${mitmRestartCount}/${MITM_MAX_RESTARTS})`);
   await new Promise((r) => setTimeout(r, delay));
@@ -486,7 +562,25 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
     throw new Error("MITM server is already running");
   }
 
-  await killLeftoverMitm(sudoPassword);
+  // Atomically claim lock to prevent concurrent startServer across processes.
+  // O_EXCL (flag: "wx") fails with EEXIST if the file already exists.
+  try {
+    fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: "wx" });
+  } catch (e) {
+    if (e.code === "EEXIST") {
+      let stale = false;
+      try {
+        const pid = parseInt(fs.readFileSync(LOCK_FILE, "utf-8").trim(), 10);
+        stale = !pid || !isProcessAlive(pid);
+      } catch { stale = true; } // unreadable lock → treat as stale
+      if (!stale) throw new Error("MITM server is already starting (lock contention)");
+      try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+      fs.writeFileSync(LOCK_FILE, String(process.pid), { flag: "wx" });
+    } else throw e;
+  }
+
+  try {
+    await killLeftoverMitm(sudoPassword);
 
   if (!IS_WIN) {
     const portStatus = await checkPort443Free();
@@ -561,6 +655,19 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
   }
   const mitmRouterBase = await resolveMitmRouterBaseUrl();
   log(`🚀 Starting server... (router: ${mitmRouterBase})`);
+  
+  // Add parent node_modules to NODE_PATH if in standalone mode (MITM dependencies not bundled)
+  let extraEnv = {};
+  const bundledPath = resolveBundledServerPath();
+  if (bundledPath && bundledPath.includes('.next') && bundledPath.includes('standalone')) {
+    const projectRoot = path.resolve(path.dirname(bundledPath), '..', '..', '..', '..');
+    const parentNodeModules = path.join(projectRoot, 'node_modules');
+    if (fs.existsSync(parentNodeModules)) {
+      extraEnv.NODE_PATH = parentNodeModules + (process.env.NODE_PATH ? path.delimiter + process.env.NODE_PATH : '');
+      log(`[MITM] Adding NODE_PATH: ${parentNodeModules}`);
+    }
+  }
+  
   if (IS_WIN) {
     // Check port 443 — ask user before killing
     const winOwner = await getPort443Owner(sudoPassword);
@@ -591,6 +698,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
           ROUTER_API_KEY: apiKey,
           NODE_ENV: "production",
           MITM_ROUTER_BASE: mitmRouterBase,
+          ...extraEnv,
         },
       }
     );
@@ -599,14 +707,16 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
   } else if (isSudoAvailable()) {
     // Pass HOME explicitly so os.homedir() resolves to the unprivileged user's home
     // instead of /root when sudo resets the environment.
+    const nodePath = extraEnv.NODE_PATH ? `NODE_PATH=${shellQuoteSingle(extraEnv.NODE_PATH)}` : '';
     const inlineCmd = [
       `HOME=${shellQuoteSingle(os.homedir())}`,
       `ROUTER_API_KEY=${shellQuoteSingle(apiKey)}`,
       `MITM_ROUTER_BASE=${shellQuoteSingle(mitmRouterBase)}`,
       "NODE_ENV=production",
+      nodePath,
       shellQuoteSingle(process.execPath),
       shellQuoteSingle(effectiveServerPath),
-    ].join(" ");
+    ].filter(Boolean).join(" ");
     serverProcess = spawn(
       "sudo", ["-S", "-E", "sh", "-c", inlineCmd],
       { detached: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }
@@ -625,6 +735,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
         ROUTER_API_KEY: apiKey,
         NODE_ENV: "production",
         MITM_ROUTER_BASE: mitmRouterBase,
+        ...extraEnv,
       },
     });
   }
@@ -679,6 +790,7 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
       serverProcess = null;
       serverPid = null;
       try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
+      try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
       // Auto-restart on unexpected exit
       if (code !== 0 && !mitmIsRestarting) scheduleMitmRestart(apiKey);
     });
@@ -706,7 +818,15 @@ async function startServer(apiKey, sudoPassword, forceKillPort443 = false) {
   await saveMitmSettings(true, sudoPassword);
   if (sudoPassword) setCachedPassword(sudoPassword);
 
+  // Server is healthy — remove lock file (PID file persists as the marker)
+  try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+
   return { running: true, pid: serverPid };
+  } catch (e) {
+    // Clean up lock on any failure
+    try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+    throw e;
+  }
 }
 
 /**
@@ -779,6 +899,7 @@ async function stopServer(sudoPassword) {
   }
 
   try { fs.unlinkSync(PID_FILE); } catch { /* ignore */ }
+  try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
   await saveMitmSettings(false, null);
   mitmIsRestarting = false;
 

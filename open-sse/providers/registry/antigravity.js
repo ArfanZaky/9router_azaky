@@ -1,4 +1,4 @@
-import { ANTIGRAVITY_OAUTH_CLIENT, getAntigravityUserAgent } from "../shared.js";
+import { ANTIGRAVITY_IDE_BASE_URL, ANTIGRAVITY_OAUTH_CLIENT, getAntigravityUserAgent } from "../shared.js";
 
 export default {
   id: "antigravity",
@@ -19,16 +19,16 @@ export default {
   category: "oauth",
   serviceKinds: ["llm", "image"],
   transport: {
-    baseUrls: [
-      "https://daily-cloudcode-pa.googleapis.com",
-      "https://daily-cloudcode-pa.sandbox.googleapis.com",
-    ],
+    baseUrls: [ANTIGRAVITY_IDE_BASE_URL],
     format: "antigravity",
     headers: {
       "User-Agent": getAntigravityUserAgent(), // Dynamic: matches real IDE v2.1.1
     },
     retry: {
       "429": {
+        attempts: 3,
+      },
+      "500": {
         attempts: 3,
       },
       "503": {

@@ -118,13 +118,15 @@ async function fetchAntigravityUserInfo(accessToken) {
   return response.json();
 }
 
+/**
+ * Build headers for Antigravity API calls.
+ * PR #2471: Removed X-Goog-Api-Client and Client-Metadata - real IDE doesn't send them
+ */
 function getAntigravityApiHeaders(accessToken) {
   return {
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
     "User-Agent": ANTIGRAVITY_CONFIG.loadCodeAssistUserAgent,
-    "X-Goog-Api-Client": ANTIGRAVITY_CONFIG.loadCodeAssistApiClient,
-    "Client-Metadata": ANTIGRAVITY_CONFIG.loadCodeAssistClientMetadata,
     "x-request-source": "local",
   };
 }

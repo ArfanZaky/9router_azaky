@@ -9,7 +9,7 @@ const { execSync } = require("child_process");
 const { log, err, dumpRequest, createResponseDumper, clearDumpDir } = require("./logger");
 const { IS_DEV, LSOF_BIN, TARGET_HOSTS, URL_PATTERNS, MODEL_SYNONYMS, MODEL_PATTERNS, MODEL_NO_MAP, getToolForHost } = require("./config");
 const { DATA_DIR, MITM_DIR } = require("./paths");
-const { getCertForDomain } = require("./cert/generate");
+const { generateCert, getCertForDomain } = require("./cert/generate");
 const { getMitmAlias } = require("./dbReader");
 const { applyAntigravityIdeVersionOverride } = require("./antigravityIdeVersion");
 const LOCAL_PORT = 443;
@@ -57,6 +57,11 @@ function sniCallback(servername, cb) {
 
 let sslOptions;
 try {
+  if (!fs.existsSync(path.join(MITM_DIR, "rootCA.key")) || !fs.existsSync(path.join(MITM_DIR, "rootCA.crt"))) {
+    log("Root CA missing, generating...");
+    generateCert();
+  }
+
   const rootKey = fs.readFileSync(path.join(MITM_DIR, "rootCA.key"));
   const rootCert = fs.readFileSync(path.join(MITM_DIR, "rootCA.crt"));
   rootCAPem = rootCert.toString("utf8");
@@ -74,12 +79,28 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 async function resolveTargetIP(hostname) {
   const cached = cachedTargetIPs[hostname];
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.ip;
-  const resolver = new dns.Resolver();
-  resolver.setServers(["8.8.8.8"]);
-  const resolve4 = promisify(resolver.resolve4.bind(resolver));
-  const addresses = await resolve4(hostname);
-  cachedTargetIPs[hostname] = { ip: addresses[0], ts: Date.now() };
-  return cachedTargetIPs[hostname].ip;
+  
+  try {
+    // Try Google DNS first (bypasses local DNS, faster for MITM scenarios)
+    const resolver = new dns.Resolver();
+    resolver.setServers(["8.8.8.8"]);
+    const resolve4 = promisify(resolver.resolve4.bind(resolver));
+    const addresses = await resolve4(hostname);
+    cachedTargetIPs[hostname] = { ip: addresses[0], ts: Date.now() };
+    return cachedTargetIPs[hostname].ip;
+  } catch (e) {
+    // Fallback to system DNS if Google DNS fails (firewall/network restrictions)
+    try {
+      const resolve4 = promisify(dns.resolve4);
+      const addresses = await resolve4(hostname);
+      cachedTargetIPs[hostname] = { ip: addresses[0], ts: Date.now() };
+      return cachedTargetIPs[hostname].ip;
+    } catch (e2) {
+      // Last resort: return hostname, let Node.js TLS handle resolution
+      log(`DNS resolution failed for ${hostname}, using hostname directly: ${e2.message}`);
+      return hostname;
+    }
+  }
 }
 
 function collectBodyRaw(req) {

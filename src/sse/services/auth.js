@@ -1,6 +1,6 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
-import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, isNonAccountError } from "open-sse/services/accountFallback.js";
+import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
+import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
+import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import * as log from "../utils/logger.js";
@@ -21,7 +21,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
-  const strictPreferred = !!options?.strictPreferred;
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
@@ -37,7 +36,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     if (FREE_PROVIDERS[providerId]?.noAuth) {
       const settings = await getSettings();
       const override = (settings.providerStrategies || {})[providerId] || {};
-      const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: override.proxyPoolId || "" });
+      const strategy = override.rotateStrategy || "none";
+      let pickedId = override.proxyPoolId || null;
+      if (strategy !== "none") {
+        const allPools = await getProxyPools({ isActive: true });
+        const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
+        pickedId = pickProxyPoolId(poolIds, strategy, providerId);
+      }
+      const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
       return {
         id: "noauth",
         connectionName: "Public",
@@ -61,38 +67,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    const baseAvailableConnections = connections.filter(c => {
+    // Filter out model-locked and excluded connections
+    const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       return true;
     });
-
-    // Filter out model-locked and excluded connections. Strict pinning is used
-    // by Codex gateway account aliases, where silently switching identity would
-    // break the user's mental model of "this session/account".
-    let availableConnections = baseAvailableConnections;
-    if (strictPreferred && preferredConnectionId) {
-      const preferred = connections.find((c) => c.id === preferredConnectionId);
-      if (!preferred) {
-        log.warn("AUTH", `${provider} | pinned account not found: ${preferredConnectionId}`);
-        return null;
-      }
-      if (excludeSet.has(preferred.id)) {
-        log.warn("AUTH", `${provider} | pinned account excluded after failure: ${preferred.id?.slice(0, 8)}`);
-        return null;
-      }
-      if (isModelLockActive(preferred, model)) {
-        const retryAfter = getEarliestModelLockUntil(preferred);
-        return {
-          allRateLimited: true,
-          retryAfter,
-          retryAfterHuman: formatRetryAfter(retryAfter),
-          lastError: preferred.lastError || "Pinned account unavailable",
-          lastErrorCode: preferred.errorCode || null,
-        };
-      }
-      availableConnections = [preferred];
-    }
 
     log.debug("AUTH", `${provider} | available: ${availableConnections.length}/${connections.length}`);
     connections.forEach(c => {
@@ -139,9 +119,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     if (connection) {
       // skip strategy
-    } else if (strictPreferred && preferredConnectionId) {
-      log.warn("AUTH", `${provider} | pinned account unavailable: ${preferredConnectionId}`);
-      return null;
     } else if (strategy === "round-robin") {
       const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
 
@@ -232,10 +209,6 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
-  if (isNonAccountError(status, errorText)) {
-    log.warn("AUTH", `non-account error; no fallback [${status}] ${typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error"}`);
-    return { shouldFallback: false, cooldownMs: 0 };
-  }
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
@@ -269,48 +242,6 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   if (provider && status && reason) {
     console.error(`❌ ${provider} [${status}]: ${reason}`);
-  }
-
-  // --- Auto-disable on terminal auth errors ---
-  // Terminal errors: token expired/invalid/revoked (401), banned/suspended (403)
-  // Only disable after consecutive failures to avoid false positives from transient issues
-  const TERMINAL_AUTH_STATUSES = new Set([401, 403]);
-  const TERMINAL_ERROR_MARKERS = [
-    "token expired", "token invalid", "invalid token", "revoked",
-    "unauthorized", "invalid api key", "invalid_api_key",
-    "banned", "suspended", "restricted", "account disabled",
-    "insufficient_quota", "quota exceeded", "payment required",
-  ];
-
-  if (TERMINAL_AUTH_STATUSES.has(status)) {
-    const lowerError = (typeof errorText === "string" ? errorText : "").toLowerCase();
-    const isTerminalError = TERMINAL_ERROR_MARKERS.some(marker => lowerError.includes(marker));
-
-    if (isTerminalError) {
-      const prevFailures = conn?.consecutiveAuthFailures || 0;
-      const newFailures = prevFailures + 1;
-
-      if (newFailures >= 3) {
-        // Auto-disable after 3 consecutive terminal auth errors
-        await updateProviderConnection(connectionId, {
-          isActive: false,
-          autoDisabledAt: new Date().toISOString(),
-          autoDisabledReason: lowerError.includes("banned") || lowerError.includes("suspended") || lowerError.includes("restricted")
-            ? "banned"
-            : lowerError.includes("quota") || lowerError.includes("payment")
-              ? "quota_exhausted"
-              : "token_expired",
-          consecutiveAuthFailures: newFailures,
-        });
-        log.warn("AUTH", `⛔ Auto-disabled ${connName} after ${newFailures} consecutive auth failures [${status}]: ${reason}`);
-      } else {
-        // Increment failure counter
-        await updateProviderConnection(connectionId, {
-          consecutiveAuthFailures: newFailures,
-        });
-        log.warn("AUTH", `${connName} auth failure ${newFailures}/3 [${status}]: ${reason}`);
-      }
-    }
   }
 
   return { shouldFallback: true, cooldownMs };
@@ -354,7 +285,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
 
   // Only reset error state if no active locks remain
   if (remainingActiveLocks.length === 0) {
-    Object.assign(clearObj, { testStatus: "active", lastError: null, lastErrorAt: null, backoffLevel: 0, consecutiveAuthFailures: 0 });
+    Object.assign(clearObj, { testStatus: "active", lastError: null, lastErrorAt: null, backoffLevel: 0 });
   }
 
   await updateProviderConnection(connectionId, clearObj);

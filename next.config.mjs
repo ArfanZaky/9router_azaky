@@ -27,6 +27,9 @@ const nextConfig = {
     root: tracingRoot
   },
   outputFileTracingRoot: tracingRoot,
+  outputFileTracingIncludes: {
+    "*": ["./src/mitm/**/*", "./src/shared/constants/**/*"]
+  },
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]
   },
@@ -39,6 +42,8 @@ const nextConfig = {
     proxyClientMaxBodySize,
     // Cache fetch responses across HMR refreshes for faster dev reloads.
     serverComponentsHmrCache: true,
+    // Tree-shake heavy barrel imports to cut compile + bundle size
+    optimizePackageImports: ["@xyflow/react", "@dnd-kit/core", "@dnd-kit/sortable", "material-symbols", "marked"],
   },
   webpack: (config, { isServer }) => {
     // Ignore fs/path modules in browser bundle
@@ -74,6 +79,14 @@ const nextConfig = {
       {
         source: "/responses",
         destination: "/api/v1/responses"
+      },
+      {
+        source: "/v1beta/:path*",
+        destination: "/api/v1beta/:path*"
+      },
+      {
+        source: "/v1beta",
+        destination: "/api/v1beta"
       },
       {
         source: "/v1/:path*",
