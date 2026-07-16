@@ -2,6 +2,7 @@ import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
 import { executeTool, getOpenAiTools } from "./tools.js";
 import { buildAgentSystemPrompt } from "./skills.js";
+import { sanitizeToolHistory } from "./history.js";
 
 let translatorsReady = false;
 async function ensureTranslators() {
@@ -110,15 +111,16 @@ export async function runAgentLoop({
     accessMode: mode,
   });
 
-  // Normalize history: keep system/user/assistant/tool; strip attachments-only noise
-  const history = [];
+  // Normalize + sanitize tool pairing (Claude rejects orphan tool_result)
+  const rawHistory = [];
   for (const m of messages) {
     if (!m?.role) continue;
     if (m.role === "system") continue; // replaced by agent system
     if (m.role === "tool") {
-      history.push({
+      rawHistory.push({
         role: "tool",
         tool_call_id: m.tool_call_id || m.id,
+        id: m.id,
         content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
       });
       continue;
@@ -126,13 +128,14 @@ export async function runAgentLoop({
     if (m.role === "assistant") {
       const msg = { role: "assistant", content: m.content ?? "" };
       if (Array.isArray(m.tool_calls) && m.tool_calls.length) msg.tool_calls = m.tool_calls;
-      history.push(msg);
+      rawHistory.push(msg);
       continue;
     }
     if (m.role === "user") {
-      history.push({ role: "user", content: m.content ?? "" });
+      rawHistory.push({ role: "user", content: m.content ?? "" });
     }
   }
+  const history = sanitizeToolHistory(rawHistory);
 
   const working = [{ role: "system", content: agentSystem }, ...history];
   const transcript = []; // UI-facing turns (assistant/tool)

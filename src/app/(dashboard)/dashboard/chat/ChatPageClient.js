@@ -520,17 +520,22 @@ export default function ChatPageClient() {
     const titleSeed =
       workingMessages.find((m) => m.role === "user")?.content || activeSession.title;
 
+    // Build request history. Agent loop sanitizes tool pairing again server-side.
+    // Client-side: drop orphan tool rows early so plain chat path is clean too.
     const requestMessages = [];
     if (!agentMode && activeSession.systemPrompt?.trim()) {
       requestMessages.push({ role: "system", content: activeSession.systemPrompt.trim() });
     }
+    const pending = [];
     for (const msg of workingMessages) {
       if (msg.id === assistantId) continue;
       if (msg.role === "tool") {
-        requestMessages.push({
+        pending.push({
           role: "tool",
-          tool_call_id: msg.tool_call_id || msg.id,
+          tool_call_id: msg.tool_call_id || null,
+          id: msg.id,
           content: textValue(msg.content),
+          name: msg.name || null,
         });
         continue;
       }
@@ -542,7 +547,35 @@ export default function ChatPageClient() {
       if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
         entry.tool_calls = msg.tool_calls;
       }
-      requestMessages.push(entry);
+      pending.push(entry);
+    }
+    // Pair tools only with preceding assistant.tool_calls ids
+    {
+      let openIds = new Set();
+      for (const msg of pending) {
+        if (msg.role === "assistant") {
+          openIds = new Set(
+            (Array.isArray(msg.tool_calls) ? msg.tool_calls : []).map((tc) => tc.id).filter(Boolean)
+          );
+          requestMessages.push(msg);
+          continue;
+        }
+        if (msg.role === "tool") {
+          const callId = msg.tool_call_id;
+          if (callId && openIds.has(callId)) {
+            requestMessages.push({
+              role: "tool",
+              tool_call_id: callId,
+              content: msg.content,
+            });
+            openIds.delete(callId);
+          }
+          // else drop orphan
+          continue;
+        }
+        openIds = new Set();
+        requestMessages.push(msg);
+      }
     }
 
     let assistantText = "";
