@@ -21,6 +21,7 @@ import AddApiKeyModal from "./AddApiKeyModal";
 import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
+import ImportAccountsModal from "./ImportAccountsModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -48,6 +49,8 @@ export default function ProviderDetailPage() {
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [addConnectionError, setAddConnectionError] = useState("");
   const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
+  const [showImportAccounts, setShowImportAccounts] = useState(false);
+  const [exportingAccounts, setExportingAccounts] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
   const [showBulkProxyModal, setShowBulkProxyModal] = useState(false);
@@ -285,6 +288,34 @@ export default function ProviderDetailPage() {
       .then((data) => { if (data.models?.length) setKiloFreeModels(data.models); })
       .catch(() => {});
   }, [providerId]);
+
+  const handleExportAccounts = useCallback(async () => {
+    if (exportingAccounts) return;
+    setExportingAccounts(true);
+    try {
+      const res = await fetch(`/api/providers/${encodeURIComponent(providerId)}/accounts`, {
+        cache: "no-store",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || `Export failed (${res.status})`);
+        return;
+      }
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      a.href = url;
+      a.download = `9router-${providerId}-accounts-${stamp}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.log("Error exporting accounts:", error);
+      alert(error.message || "Export failed");
+    } finally {
+      setExportingAccounts(false);
+    }
+  }, [exportingAccounts, providerId]);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -1435,6 +1466,25 @@ export default function ProviderDetailPage() {
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-lg font-semibold">Connections</h2>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="download"
+                onClick={handleExportAccounts}
+                disabled={exportingAccounts || connections.length === 0}
+                title="Export all accounts for this provider (includes tokens/keys)"
+              >
+                {exportingAccounts ? "Exporting…" : "Export"}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="upload"
+                onClick={() => setShowImportAccounts(true)}
+                title="Import accounts JSON for this provider"
+              >
+                Import
+              </Button>
               {connections.length > 0 && proxyPools.length > 0 && (
                 <Button
                   size="sm"
@@ -1839,6 +1889,16 @@ export default function ProviderDetailPage() {
         <BulkImportCodexModal
           isOpen={showBulkImportCodex}
           onClose={() => setShowBulkImportCodex(false)}
+          onSuccess={fetchConnections}
+        />
+      )}
+
+      {!isFreeNoAuth && (
+        <ImportAccountsModal
+          isOpen={showImportAccounts}
+          providerId={providerId}
+          providerName={providerInfo?.name || providerId}
+          onClose={() => setShowImportAccounts(false)}
           onSuccess={fetchConnections}
         />
       )}
