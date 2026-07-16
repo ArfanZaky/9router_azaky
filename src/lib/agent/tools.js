@@ -40,12 +40,16 @@ function getWorkspaceRoots(workspace, accessMode = "sandbox") {
 }
 
 function resolveSafePath(inputPath, workspace, accessMode = "sandbox") {
-  const roots = getWorkspaceRoots(workspace, accessMode);
   const raw = String(inputPath || "").trim() || ".";
   const abs = path.isAbsolute(raw)
     ? path.resolve(raw)
     : path.resolve(workspace || process.cwd(), raw);
   const normalized = path.normalize(abs);
+
+  // Full access mode has no path jail
+  if (accessMode === "full") return normalized;
+
+  const roots = getWorkspaceRoots(workspace, accessMode);
   const ok = roots.some((root) => {
     const r = path.normalize(root);
     return normalized === r || normalized.startsWith(r + path.sep);
