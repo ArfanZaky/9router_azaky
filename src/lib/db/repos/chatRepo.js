@@ -28,8 +28,28 @@ function rowToMessage(row) {
     status: row.status || "done",
     error: row.error || null,
     tokenUsage: parseJson(row.tokenUsage, null),
+    tool_call_id: row.toolCallId || null,
+    name: row.toolName || null,
+    tool_calls: parseJson(row.toolCalls, null),
     createdAt: row.createdAt,
   };
+}
+
+function messageInsertParams(message) {
+  return [
+    message.id,
+    message.sessionId,
+    message.role,
+    typeof message.content === "string" ? message.content : stringifyJson(message.content),
+    stringifyJson(message.attachments || []),
+    message.status || "done",
+    message.error || null,
+    message.tokenUsage ? stringifyJson(message.tokenUsage) : null,
+    message.tool_call_id || message.toolCallId || null,
+    message.name || message.toolName || null,
+    message.tool_calls ? stringifyJson(message.tool_calls) : null,
+    message.createdAt,
+  ];
 }
 
 export async function listChatSessions({ q = "", limit = 100, offset = 0 } = {}) {
@@ -172,23 +192,16 @@ export async function createChatMessage(sessionId, data = {}) {
     status: data.status || "done",
     error: data.error || null,
     tokenUsage: data.tokenUsage || null,
+    tool_call_id: data.tool_call_id || data.toolCallId || null,
+    name: data.name || data.toolName || null,
+    tool_calls: data.tool_calls || data.toolCalls || null,
     createdAt: data.createdAt || now,
   };
   db.transaction(() => {
     db.run(
-      `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, createdAt)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        message.id,
-        message.sessionId,
-        message.role,
-        typeof message.content === "string" ? message.content : stringifyJson(message.content),
-        stringifyJson(message.attachments),
-        message.status,
-        message.error,
-        message.tokenUsage ? stringifyJson(message.tokenUsage) : null,
-        message.createdAt,
-      ]
+      `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, createdAt)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      messageInsertParams(message)
     );
     db.run(`UPDATE chatSessions SET updatedAt = ? WHERE id = ?`, [now, sessionId]);
   });
@@ -207,11 +220,23 @@ export async function updateChatMessage(id, data = {}) {
       ...data,
       attachments: data.attachments !== undefined ? data.attachments : prev.attachments,
       tokenUsage: data.tokenUsage !== undefined ? data.tokenUsage : prev.tokenUsage,
+      tool_call_id:
+        data.tool_call_id !== undefined || data.toolCallId !== undefined
+          ? data.tool_call_id || data.toolCallId || null
+          : prev.tool_call_id,
+      name:
+        data.name !== undefined || data.toolName !== undefined
+          ? data.name || data.toolName || null
+          : prev.name,
+      tool_calls:
+        data.tool_calls !== undefined || data.toolCalls !== undefined
+          ? data.tool_calls || data.toolCalls || null
+          : prev.tool_calls,
     };
     const content =
       typeof merged.content === "string" ? merged.content : stringifyJson(merged.content);
     db.run(
-      `UPDATE chatMessages SET role = ?, content = ?, attachments = ?, status = ?, error = ?, tokenUsage = ? WHERE id = ?`,
+      `UPDATE chatMessages SET role = ?, content = ?, attachments = ?, status = ?, error = ?, tokenUsage = ?, toolCallId = ?, toolName = ?, toolCalls = ? WHERE id = ?`,
       [
         merged.role,
         content,
@@ -219,6 +244,9 @@ export async function updateChatMessage(id, data = {}) {
         merged.status || "done",
         merged.error || null,
         merged.tokenUsage ? stringifyJson(merged.tokenUsage) : null,
+        merged.tool_call_id || null,
+        merged.name || null,
+        merged.tool_calls ? stringifyJson(merged.tool_calls) : null,
         id,
       ]
     );
@@ -264,22 +292,15 @@ export async function replaceChatMessages(sessionId, messages = []) {
         status: data.status || "done",
         error: data.error || null,
         tokenUsage: data.tokenUsage || null,
+        tool_call_id: data.tool_call_id || data.toolCallId || null,
+        name: data.name || data.toolName || null,
+        tool_calls: data.tool_calls || data.toolCalls || null,
         createdAt: data.createdAt || now,
       };
       db.run(
-        `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, createdAt)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          message.id,
-          message.sessionId,
-          message.role,
-          typeof message.content === "string" ? message.content : stringifyJson(message.content),
-          stringifyJson(message.attachments),
-          message.status,
-          message.error,
-          message.tokenUsage ? stringifyJson(message.tokenUsage) : null,
-          message.createdAt,
-        ]
+        `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, createdAt)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        messageInsertParams(message)
       );
       saved.push(message);
     }
