@@ -76,6 +76,20 @@ const getPageInfo = (pathname) => {
       icon: "dns",
       breadcrumbs: [],
     };
+  if (pathname.includes("/chat"))
+    return {
+      title: "Chat",
+      description: "Multi-session chat playground over connected models",
+      icon: "chat",
+      breadcrumbs: [],
+    };
+  if (pathname.includes("/image-gen"))
+    return {
+      title: "Image Gen",
+      description: "Text-to-image playground and gallery",
+      icon: "image",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/combos"))
     return {
       title: "Combos",

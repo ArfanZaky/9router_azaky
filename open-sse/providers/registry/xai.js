@@ -32,9 +32,17 @@ export default {
     { id: "grok-code-fast-1", name: "Grok Code Fast" },
     { id: "grok-3", name: "Grok 3" },
     { id: "grok-2-image-1212", name: "Grok 2 Image", params: ["n","response_format"], kind: "image" },
+    { id: "grok-imagine-image", name: "Grok Imagine Image", params: ["n","response_format"], kind: "image" },
+    { id: "grok-imagine-image-quality", name: "Grok Imagine Image Quality", params: ["n","response_format"], kind: "image" },
+    { id: "grok-imagine-image-pro", name: "Grok Imagine Image Pro", params: ["n","response_format"], kind: "image" },
   ],
   serviceKinds: ["llm","imageToText","webSearch","image"],
-  imageConfig: { baseUrl: "https://api.x.ai/v1/images/generations", bodyFields: ["model","prompt","n","response_format"] },
+  imageConfig: {
+    baseUrl: "https://api.x.ai/v1/images/generations",
+    editUrl: "https://api.x.ai/v1/images/edits",
+    // whitelist for generations; adapter always injects `image` when present for edits
+    bodyFields: ["model", "prompt", "n", "response_format", "image"],
+  },
   searchViaChat: {
     defaultModel: "grok-4.20-reasoning",
     endpoint: "https://api.x.ai/v1/responses",

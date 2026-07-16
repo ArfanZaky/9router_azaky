@@ -65,6 +65,10 @@ export const KIND_EXAMPLE_CONFIG = {
     defaultInput: "A serene lake at sunset",
     bodyKey: "prompt",
     defaultResponse: `{\n  "data": [\n    { "url": "..." }\n  ]\n}`,
+    extraFields: [
+      { key: "duration", label: "Duration (s)", type: "number", default: 5, min: 1, max: 10 },
+      { key: "size", label: "Size / ratio", type: "select", default: "1280x720", options: ["1280x720", "720x1280", "1104x832", "832x1104", "960x960", "1584x672"] },
+    ],
   },
   music: {
     inputLabel: "Prompt",

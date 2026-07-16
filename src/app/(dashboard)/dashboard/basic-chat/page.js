@@ -1,5 +1,5 @@
-import BasicChatPageClient from "./BasicChatPageClient";
+import { redirect } from "next/navigation";
 
 export default function BasicChatPage() {
-  return <BasicChatPageClient />;
+  redirect("/dashboard/chat");
 }

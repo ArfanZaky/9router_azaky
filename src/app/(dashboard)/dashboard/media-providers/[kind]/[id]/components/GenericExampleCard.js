@@ -44,7 +44,7 @@ export function GenericExampleCard({ providerId, kind }) {
   const allowManualModel = needsModel && kindModels.length === 0;
   const [selectedModel, setSelectedModel] = useState(kindModels[0]?.id ?? "");
   const selectedModelObj = kindModels.find((m) => m.id === selectedModel);
-  const supportsEdit = !!selectedModelObj?.capabilities?.includes("edit");
+  const supportsEdit = !!selectedModelObj?.capabilities?.includes("edit") || kind === "video";
   const supportsMask = !!selectedModelObj?.capabilities?.includes("mask");
 
   const [input, setInput] = useState(safeExConfig.defaultInput || "");
@@ -530,6 +530,31 @@ export function GenericExampleCard({ providerId, kind }) {
                 alt="Generated"
                 className="max-w-full rounded-lg border border-border"
               />
+            </div>
+          )}
+          {kind === "video" && Array.isArray(result?.data?.data) && result.data.data.length > 0 && (
+            <div className="mt-2 flex flex-col gap-3">
+              {result.data.data.map((item, idx) => {
+                const src = item?.url || (item?.b64_json ? `data:video/mp4;base64,${item.b64_json}` : "");
+                if (!src) return null;
+                return (
+                  <div key={idx} className="rounded-lg border border-border overflow-hidden bg-black/20">
+                    <div className="flex items-center justify-end gap-2 px-2 py-1.5 bg-sidebar/80">
+                      <a
+                        href={src}
+                        target="_blank"
+                        rel="noreferrer"
+                        download="video.mp4"
+                        className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-primary transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">download</span>
+                        Download
+                      </a>
+                    </div>
+                    <video src={src} controls className="w-full max-h-[420px] bg-black" />
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

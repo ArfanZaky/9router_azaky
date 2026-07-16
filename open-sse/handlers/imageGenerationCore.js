@@ -3,7 +3,26 @@ import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { getExecutor } from "../executors/index.js";
 import { getImageAdapter } from "./imageProviders/index.js";
-import { urlToBase64 } from "./imageProviders/_base.js";
+import { urlToBase64, normalizeReferenceImage } from "./imageProviders/_base.js";
+
+async function normalizeBodyImages(body) {
+  if (!body || typeof body !== "object") return body;
+  // forceDataUri: providers (Gemini/xAI/etc.) can't always fetch arbitrary URLs; data URI is portable
+  const opts = { forceDataUri: true };
+  const next = { ...body };
+  if (next.image) {
+    next.image = await normalizeReferenceImage(next.image, opts);
+  }
+  if (Array.isArray(next.images)) {
+    next.images = await Promise.all(
+      next.images.map((img) => normalizeReferenceImage(img, opts).then((v) => v || img))
+    );
+  }
+  if (next.mask_image) next.mask_image = await normalizeReferenceImage(next.mask_image, opts);
+  if (next.maskImage) next.maskImage = await normalizeReferenceImage(next.maskImage, opts);
+  if (next.mask) next.mask = await normalizeReferenceImage(next.mask, opts);
+  return next;
+}
 
 function serializeRequestBody(requestBody) {
   if (typeof FormData !== "undefined" && requestBody instanceof FormData) return requestBody;
@@ -42,6 +61,13 @@ export async function handleImageGenerationCore({
     return createErrorResult(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
   }
 
+  // Resolve local/gallery refs to data URIs so upstream providers can read them
+  try {
+    body = await normalizeBodyImages(body);
+  } catch (e) {
+    log?.warn?.("IMAGE", `Reference image normalize failed: ${e?.message || e}`);
+  }
+
   const adapter = getImageAdapter(provider);
   if (!adapter) {
     return createErrorResult(
@@ -50,10 +76,12 @@ export async function handleImageGenerationCore({
     );
   }
 
+  const hasRef = !!(body.image || (Array.isArray(body.images) && body.images.length));
+
   // Executor-delegating adapters: skip manual URL/headers/body, use the proven executor flow
   if (adapter.useExecutor && adapter.executeViaExecutor) {
     try {
-      log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." (executor)`);
+      log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." ref=${hasRef} (executor)`);
       const responseBody = await adapter.executeViaExecutor(model, body, credentials, log);
       if (onRequestSuccess) await onRequestSuccess();
       const normalized = adapter.normalize(responseBody, body.prompt);
@@ -96,14 +124,15 @@ export async function handleImageGenerationCore({
   let requestBody;
 
   try {
-    url = adapter.buildUrl(model, credentials);
-    requestBody = await adapter.buildBody(model, body);
+    // Pass body so adapters can switch endpoint (e.g. xAI generations → edits when image present)
+    url = adapter.buildUrl(model, credentials, body);
+    requestBody = await adapter.buildBody(model, body, credentials);
     headers = adapter.buildHeaders(credentials, requestBody, model, body);
   } catch (error) {
     return createErrorResult(HTTP_STATUS.BAD_REQUEST, error.message || `Invalid ${provider} image request`);
   }
 
-  log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..."`);
+  log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." ref=${hasRef}`);
 
   let providerResponse;
   try {

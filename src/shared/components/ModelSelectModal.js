@@ -122,9 +122,21 @@ export default function ModelSelectModal({
     // Kinds where the provider IS the model (no per-model selection needed)
     const PROVIDER_AS_MODEL_KINDS = new Set(["webSearch", "webFetch"]);
     // Kinds that map directly to model.type field
-    const TYPED_KINDS = new Set(["image", "tts", "stt", "embedding", "imageToText"]);
+    const TYPED_KINDS = new Set(["image", "tts", "stt", "embedding", "imageToText", "video", "music"]);
     // For these kinds, providers without hardcoded models can still be picked (provider-as-model fallback)
-    const ALLOW_PROVIDER_FALLBACK_KINDS = new Set(["tts", "image", "webFetch"]);
+    const ALLOW_PROVIDER_FALLBACK_KINDS = new Set(["tts", "image", "video", "webFetch"]);
+
+    // Heuristic for user-added models saved without type=image
+    const looksLikeKind = (id = "", kind) => {
+      const s = String(id);
+      if (kind === "image") {
+        return /image|imagine|dall-?e|flux|imagen|sdxl|stable-diffusion|midjourney|recraft|text2img|txt2img/i.test(s);
+      }
+      if (kind === "tts") return /tts|speech|voice|audio/i.test(s);
+      if (kind === "stt") return /stt|whisper|transcri/i.test(s);
+      if (kind === "embedding") return /embed/i.test(s);
+      return false;
+    };
 
     // Filter a models[] array by kindFilter (keep only matching kind)
     const filterByKind = (models) => {
@@ -133,7 +145,14 @@ export default function ModelSelectModal({
       // while still being valid chat/combo targets.
       if (!kindFilter) return models.filter((m) => m.isPlaceholder || m.isCustom || !getModelKind(m) || getModelKind(m) === "llm");
       if (!TYPED_KINDS.has(kindFilter)) return models;
-      return models.filter((m) => m.isPlaceholder || getModelKind(m) === kindFilter);
+      return models.filter((m) => {
+        if (m.isPlaceholder) return true;
+        const kind = getModelKind(m);
+        if (kind === kindFilter) return true;
+        // Custom/user-added models often default to type=llm — still show if id looks like the kind
+        if (m.isCustom && (!kind || kind === "llm") && looksLikeKind(m.id, kindFilter)) return true;
+        return false;
+      });
     };
 
     // Get all active provider IDs from connections (filtered by kindFilter if set)
@@ -301,7 +320,13 @@ export default function ModelSelectModal({
         const customAliasIds = new Set(customAliasModels.map((m) => m.id));
         const customRegisteredModels = customModels
           .filter((m) => m.providerAlias === alias && !hardcodedIds.has(m.id) && !customAliasIds.has(m.id))
-          .map((m) => ({ id: m.id, name: m.name || m.id, value: `${alias}/${m.id}`, isCustom: true }));
+          .map((m) => ({
+            id: m.id,
+            name: m.name || m.id,
+            value: `${alias}/${m.id}`,
+            kind: getModelKind(m),
+            isCustom: true,
+          }));
 
         const merged = [
           ...hardcodedModels.map((m) => ({ id: m.id, name: m.name, value: `${alias}/${m.id}`, kind: getModelKind(m) })),

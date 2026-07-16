@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -162,6 +162,73 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+    ],
+  },
+  chatSessions: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      title: "TEXT",
+      model: "TEXT",
+      providerId: "TEXT",
+      systemPrompt: "TEXT",
+      params: "TEXT",
+      pinned: "INTEGER DEFAULT 0",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_cs_updated ON chatSessions(updatedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_cs_pinned ON chatSessions(pinned DESC, updatedAt DESC)",
+    ],
+  },
+  chatMessages: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      sessionId: "TEXT NOT NULL",
+      role: "TEXT NOT NULL",
+      content: "TEXT",
+      attachments: "TEXT",
+      status: "TEXT",
+      error: "TEXT",
+      tokenUsage: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_cm_session ON chatMessages(sessionId, createdAt)",
+    ],
+  },
+  imageJobs: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      prompt: "TEXT NOT NULL",
+      negativePrompt: "TEXT",
+      model: "TEXT",
+      providerId: "TEXT",
+      params: "TEXT",
+      status: "TEXT",
+      error: "TEXT",
+      favorite: "INTEGER DEFAULT 0",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ij_created ON imageJobs(createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_ij_favorite ON imageJobs(favorite DESC, createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_ij_model ON imageJobs(model)",
+    ],
+  },
+  imageAssets: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      jobId: "TEXT NOT NULL",
+      path: "TEXT",
+      mime: "TEXT",
+      width: "INTEGER",
+      height: "INTEGER",
+      sourceUrl: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ia_job ON imageAssets(jobId)",
     ],
   },
 };

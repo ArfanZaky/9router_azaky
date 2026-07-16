@@ -22,7 +22,14 @@ export default {
     const isVideo = !model.includes("image");
     const ratio = sizeToAspectRatio(body.size);
     if (isVideo) {
-      return { promptText: body.prompt, model, ratio, duration: 5, ...(body.image ? { promptImage: body.image } : {}) };
+      const duration = Math.min(Math.max(Number(body.duration) || 5, 1), 10);
+      return {
+        promptText: body.prompt,
+        model,
+        ratio,
+        duration,
+        ...(body.image ? { promptImage: body.image } : {}),
+      };
     }
     return { promptText: body.prompt, model, ratio, ...(body.image ? { referenceImages: [{ uri: body.image }] } : {}) };
   },

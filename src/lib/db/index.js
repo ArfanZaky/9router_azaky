@@ -67,6 +67,18 @@ export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
 } from "./repos/requestDetailsRepo.js";
 
+// Chat playground
+export {
+  listChatSessions, getChatSession, createChatSession, updateChatSession, deleteChatSession,
+  listChatMessages, createChatMessage, updateChatMessage, deleteChatMessage, replaceChatMessages,
+} from "./repos/chatRepo.js";
+
+// Image generation playground
+export {
+  listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
+  getImageAsset, addImageAssets,
+} from "./repos/imageGenRepo.js";
+
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();

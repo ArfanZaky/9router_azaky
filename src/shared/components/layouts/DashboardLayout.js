@@ -32,9 +32,12 @@ function getToastStyle(type) {
   };
 }
 
+const PLAYGROUND_PATHS = ["/dashboard/chat", "/dashboard/image-gen", "/dashboard/basic-chat"];
+
 export default function DashboardLayout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const pathname = usePathname();
+  const isPlayground = PLAYGROUND_PATHS.some((p) => pathname === p || pathname?.startsWith(`${p}/`));
   const notifications = useNotificationStore((state) => state.notifications);
   const removeNotification = useNotificationStore((state) => state.removeNotification);
 
@@ -97,8 +100,8 @@ export default function DashboardLayout({ children }) {
         {/* Faint grid background */}
         <div className="landing-grid absolute inset-0 pointer-events-none -z-10" aria-hidden="true" />
         <Header key={pathname} onMenuClick={() => setSidebarOpen(true)} />
-        <div className={`flex-1 overflow-y-auto custom-scrollbar ${pathname === "/dashboard/basic-chat" ? "" : "p-6 lg:p-10"} ${pathname === "/dashboard/basic-chat" ? "flex flex-col overflow-hidden" : ""}`}>
-          <div className={`${pathname === "/dashboard/basic-chat" ? "flex-1 w-full h-full flex flex-col" : "max-w-7xl mx-auto"}`}>{children}</div>
+        <div className={`flex-1 overflow-y-auto custom-scrollbar ${isPlayground ? "" : "p-6 lg:p-10"} ${isPlayground ? "flex flex-col overflow-hidden" : ""}`}>
+          <div className={`${isPlayground ? "flex-1 w-full h-full flex flex-col" : "max-w-7xl mx-auto"}`}>{children}</div>
         </div>
       </main>
     </div>

@@ -4,15 +4,34 @@ import { useState, useEffect } from "react";
 import PropTypes from "prop-types";
 import { Button, Modal } from "@/shared/components";
 
+const MODEL_TYPES = [
+  { value: "llm", label: "LLM / Chat" },
+  { value: "image", label: "Image" },
+  { value: "tts", label: "TTS" },
+  { value: "stt", label: "STT" },
+  { value: "embedding", label: "Embedding" },
+  { value: "imageToText", label: "Image to Text" },
+];
+
+function guessTypeFromId(id = "") {
+  const s = String(id);
+  if (/image|imagine|dall-?e|flux|imagen|sdxl|stable-diffusion|midjourney|recraft|text2img|txt2img/i.test(s)) return "image";
+  if (/tts|speech|voice/i.test(s) && !/whisper/i.test(s)) return "tts";
+  if (/stt|whisper|transcri/i.test(s)) return "stt";
+  if (/embed/i.test(s)) return "embedding";
+  return "llm";
+}
+
 export default function AddCustomModelModal({ isOpen, providerAlias, providerDisplayAlias, onSave, onClose }) {
   const [modelId, setModelId] = useState("");
+  const [modelType, setModelType] = useState("llm");
   const [testStatus, setTestStatus] = useState(null); // null | "testing" | "ok" | "error"
   const [testError, setTestError] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Reset state when modal opens
   useEffect(() => {
-    if (isOpen) { setModelId(""); setTestStatus(null); setTestError(""); }
+    if (isOpen) { setModelId(""); setModelType("llm"); setTestStatus(null); setTestError(""); }
   }, [isOpen]);
 
   // Strip provider's own alias prefix (e.g. "cc/model" -> "model" for cc provider)
@@ -46,7 +65,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
     if (!cleanId || saving) return;
     setSaving(true);
     try {
-      await onSave(cleanId);
+      await onSave(cleanId, modelType || guessTypeFromId(cleanId));
     } finally {
       setSaving(false);
     }
@@ -65,7 +84,13 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
             <input
               type="text"
               value={modelId}
-              onChange={(e) => { setModelId(e.target.value); setTestStatus(null); setTestError(""); }}
+              onChange={(e) => {
+                const v = e.target.value;
+                setModelId(v);
+                setModelType(guessTypeFromId(stripAlias(v.trim())));
+                setTestStatus(null);
+                setTestError("");
+              }}
               onKeyDown={handleKeyDown}
               placeholder="e.g. claude-opus-4-5"
               className="flex-1 px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
@@ -83,6 +108,22 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
           </div>
           <p className="text-xs text-text-muted mt-1">
             Sent to provider as: <code className="font-mono bg-sidebar px-1 rounded">{stripAlias(modelId.trim()) || "model-id"}</code>
+          </p>
+        </div>
+
+        <div>
+          <label className="text-sm font-medium mb-1.5 block">Type</label>
+          <select
+            value={modelType}
+            onChange={(e) => setModelType(e.target.value)}
+            className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+          >
+            {MODEL_TYPES.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-text-muted mt-1">
+            Image models must be type <code className="font-mono bg-sidebar px-1 rounded">image</code> to appear in Image Gen.
           </p>
         </div>
 
