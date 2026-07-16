@@ -167,7 +167,6 @@
 - Antigravity: retry transient upstream failures — Sutarto Jordan Chrisfivo
 - Param-support: handle strip rules without match/drop (#1960) — Joseph Yaksich
 - Translator: resolve custom provider prefix in debug endpoint (#1083) — hamsa0x7
->>>>>>> upstream/master
 
 # v0.5.8 (2026-06-21)
 

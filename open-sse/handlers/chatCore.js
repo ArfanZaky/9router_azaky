@@ -17,6 +17,7 @@ import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDeta
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
+import { shouldApplyCavemanPrompt, shouldDisableCodeBuddyCnReasoning } from "./chatCore/cavemanGuard.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { injectCaveman } from "../rtk/caveman.js";
@@ -195,6 +196,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Token-saver summary parts, printed as one "⚙" line at the end (only active ones)
   const xf = [];
 
+  if (shouldDisableCodeBuddyCnReasoning({ sourceFormat, provider, model })) {
+    translatedBody.reasoning_effort = "none";
+    delete translatedBody.reasoning_summary;
+    log?.debug?.("REASONING", `disabled for ${provider}/${model} on ${sourceFormat}`);
+  }
+
   // RTK: compress tool_result content
   const rtkStats = compressMessages(translatedBody, rtkEnabled);
   if (rtkStats?.hits?.length) {
@@ -220,8 +227,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Caveman: inject terse-style system prompt
   if (cavemanEnabled && cavemanLevel) {
-    injectCaveman(translatedBody, finalFormat, cavemanLevel);
-    xf.push(`CAVEMAN:${cavemanLevel}`);
+    if (shouldApplyCavemanPrompt({ sourceFormat, provider, model })) {
+      injectCaveman(translatedBody, finalFormat, cavemanLevel);
+      log?.debug?.("CAVEMAN", `${cavemanLevel} | ${finalFormat}`);
+      xf.push(`CAVEMAN:${cavemanLevel}`);
+    } else {
+      log?.debug?.("CAVEMAN", `skipped for ${provider}/${model} on ${sourceFormat}`);
+    }
   }
 
   // Ponytail: inject lazy-senior-dev system prompt

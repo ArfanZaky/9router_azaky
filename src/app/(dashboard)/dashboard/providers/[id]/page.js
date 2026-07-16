@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, CodeBuddyQuotaCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal, SegmentedControl } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -44,7 +44,7 @@ export default function ProviderDetailPage() {
   const [proxyPools, setProxyPools] = useState([]);
   const [showOAuthModal, setShowOAuthModal] = useState(false);
   const [showIFlowCookieModal, setShowIFlowCookieModal] = useState(false);
-  const [showCodeBuddyQuotaCookieModal, setShowCodeBuddyQuotaCookieModal] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("all");
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [addConnectionError, setAddConnectionError] = useState("");
   const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
@@ -87,10 +87,6 @@ export default function ProviderDetailPage() {
   };
 
   const triggerOAuthConnection = () => {
-    if (providerId === "kiro" || providerId === "codebuddy" || providerId === "codebuddy-cn") {
-      router.push(`/dashboard/automation?provider=${providerId}`);
-      return;
-    }
     if (providerId === "antigravity" && typeof window !== "undefined") {
       const confirmed = window.localStorage.getItem(AG_RISK_STORAGE_KEY) === "true";
       if (!confirmed) {
@@ -725,11 +721,6 @@ export default function ProviderDetailPage() {
     setShowIFlowCookieModal(false);
   };
 
-  const handleCodeBuddyQuotaCookieSuccess = () => {
-    fetchConnections();
-    setShowCodeBuddyQuotaCookieModal(false);
-  };
-
   const handleSaveApiKey = async (formData) => {
     setAddConnectionError("");
     try {
@@ -869,11 +860,14 @@ export default function ProviderDetailPage() {
   };
 
   const toggleSelectAllConnections = () => {
-    if (allSelected) {
-      setSelectedConnectionIds([]);
+    const scope = statusFilter !== "all" ? filteredConnections : connections;
+    const allScopeSelected = scope.length > 0 && scope.every((conn) => selectedConnectionIds.includes(conn.id));
+    if (allScopeSelected) {
+      setSelectedConnectionIds((prev) => prev.filter((id) => !scope.some((conn) => conn.id === id)));
       return;
     }
-    setSelectedConnectionIds(connections.map((conn) => conn.id));
+    const newIds = scope.map((conn) => conn.id);
+    setSelectedConnectionIds((prev) => [...new Set([...prev, ...newIds])]);
   };
 
   const clearSelection = () => {
@@ -955,9 +949,30 @@ export default function ProviderDetailPage() {
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
+  const getEffectiveStatus = (conn) => {
+    const isCooldown = Object.entries(conn).some(
+      ([k, v]) =>
+        k.startsWith("modelLock_") && v && new Date(v).getTime() > Date.now(),
+    );
+    return conn.testStatus === "unavailable" && !isCooldown
+      ? "active"
+      : conn.testStatus;
+  };
+
+  const filteredConnections = connections.filter((conn) => {
+    if (statusFilter === "all") return true;
+    const status = getEffectiveStatus(conn);
+    if (statusFilter === "active") return status === "active" || status === "success";
+    if (statusFilter === "error") return status === "error" || status === "expired" || status === "unavailable";
+    if (statusFilter === "disabled") return conn.isActive === false;
+    return true;
+  });
+
+  const allFilteredSelected = filteredConnections.length > 0 && filteredConnections.every((conn) => selectedConnectionIds.includes(conn.id));
+
   const connectionsList = (
     <div className="flex min-w-0 flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03]">
-      {connections
+      {filteredConnections
         .map((conn, index) => (
           <div key={conn.id} className="flex min-w-0 items-stretch">
             <label className="flex shrink-0 items-center px-2">
@@ -975,7 +990,7 @@ export default function ProviderDetailPage() {
                 proxyPools={proxyPools}
                 isOAuth={isOAuth}
                 isFirst={index === 0}
-                isLast={index === connections.length - 1}
+                isLast={index === filteredConnections.length - 1}
                 onMoveUp={() => handleSwapPriority(index, index - 1)}
                 onMoveDown={() => handleSwapPriority(index, index + 1)}
                 onToggleActive={(isActive) => handleUpdateConnectionStatus(conn.id, isActive)}
@@ -1568,17 +1583,12 @@ export default function ProviderDetailPage() {
                         {translate("Bulk Add")}
                       </Button>
                     )}
-                    {providerId === "codebuddy" && (
-                      <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowCodeBuddyQuotaCookieModal(true)}>
-                        Quota Cookie
-                      </Button>
-                    )}
                     <Button
                       size="sm"
-                      icon={usesAutomationLogin ? "automation" : "add"}
+                      icon="add"
                       onClick={triggerAddConnection}
                     >
-                      {usesAutomationLogin ? "Open Automation" : (isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection"))}
+                      {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
                     </Button>
                   </>
                 )}
@@ -1586,6 +1596,21 @@ export default function ProviderDetailPage() {
             </div>
           ) : (
             <>
+              {connections.length > 0 && (
+                <div className="mb-3 flex flex-wrap items-center gap-3">
+                  <SegmentedControl
+                    size="sm"
+                    options={[
+                      { value: "all", label: "All" },
+                      { value: "active", label: "Active" },
+                      { value: "error", label: "Error" },
+                      { value: "disabled", label: "Disabled" },
+                    ]}
+                    value={statusFilter}
+                    onChange={setStatusFilter}
+                  />
+                </div>
+              )}
               {oneByOneSummary && (
                 <div className="mb-4 rounded-lg border border-black/10 bg-black/[0.02] px-3 py-2 text-xs text-text-muted dark:border-white/10 dark:bg-white/[0.03]">
                   <div className="flex flex-wrap items-center gap-3">
@@ -1602,12 +1627,12 @@ export default function ProviderDetailPage() {
                   </div>
                 </div>
               )}
-              {connections.length > 0 && (
+              {filteredConnections.length > 0 && (
                 <div className="mb-3 flex items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
                   <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
                     <input
                       type="checkbox"
-                      checked={allSelected}
+                      checked={allFilteredSelected}
                       onChange={toggleSelectAllConnections}
                       className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
                     />
@@ -1618,6 +1643,16 @@ export default function ProviderDetailPage() {
               {connectionsList}
               {!isCompatible && (
                 <div className="mt-4 grid grid-cols-1 gap-2 sm:flex">
+                  {selectedConnectionIds.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      icon="delete"
+                      onClick={handleBulkDelete}
+                    >
+                      Delete Selected ({selectedConnectionIds.length})
+                    </Button>
+                  )}
                   {providerId === "iflow" && (
                     <Button
                       size="sm"
@@ -1640,18 +1675,6 @@ export default function ProviderDetailPage() {
                       className="w-full sm:w-auto"
                     >
                       {translate("Bulk Add")}
-                    </Button>
-                  )}
-                  {providerId === "codebuddy" && (
-                    <Button
-                      size="sm"
-                      icon="cookie"
-                      variant="secondary"
-                      onClick={() => setShowCodeBuddyQuotaCookieModal(true)}
-                      title="Attach CodeBuddy web cookie for quota tracking"
-                      className="w-full sm:w-auto"
-                    >
-                      Quota Cookie
                     </Button>
                   )}
                   {hasDualAuthModes ? (
@@ -1677,11 +1700,11 @@ export default function ProviderDetailPage() {
                   ) : (
                     <Button
                       size="sm"
-                      icon={usesAutomationLogin ? "automation" : "add"}
+                      icon="add"
                       onClick={triggerAddConnection}
                       className="w-full sm:w-auto"
                     >
-                      {usesAutomationLogin ? "Open Automation" : "Add"}
+                      {isCompatible ? "Add API Key" : (providerId === "iflow" ? "OAuth" : "Add Connection")}
                     </Button>
                   )}
                 </div>
@@ -1776,16 +1799,6 @@ export default function ProviderDetailPage() {
           isOpen={showIFlowCookieModal}
           onSuccess={handleIFlowCookieSuccess}
           onClose={() => setShowIFlowCookieModal(false)}
-        />
-      )}
-      {providerId === "codebuddy" && (
-        <CodeBuddyQuotaCookieModal
-          isOpen={showCodeBuddyQuotaCookieModal}
-          connectionIds={(selectedConnectionIds.length > 0
-            ? selectedConnectionIds
-            : connections.map((connection) => connection.id))}
-          onSuccess={handleCodeBuddyQuotaCookieSuccess}
-          onClose={() => setShowCodeBuddyQuotaCookieModal(false)}
         />
       )}
       <AddApiKeyModal

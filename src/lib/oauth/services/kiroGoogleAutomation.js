@@ -37,6 +37,10 @@ const NEXT_BUTTON_SELECTORS = [
   'div[role="button"]:has-text("Berikutnya")',
   '#identifierNext button',
   '#passwordNext button',
+  'button:has-text("下一步")',
+  'button:has-text("继续")',
+  'div[role="button"]:has-text("下一步")',
+  'div[role="button"]:has-text("继续")',
 ];
 
 const APPROVE_BUTTON_SELECTORS = [
@@ -78,6 +82,24 @@ const APPROVE_BUTTON_SELECTORS = [
   'div[role="button"]:has-text("I understand")',
   'input[type="button"][value="Saya mengerti"]',
   'input[type="submit"][value="Saya mengerti"]',
+  'button:has-text("允许")',
+  'button:has-text("继续")',
+  'button:has-text("下一步")',
+  'button:has-text("是")',
+  'button:has-text("接受")',
+  'button:has-text("同意")',
+  'button:has-text("我了解")',
+  'button:has-text("我明白")',
+  'button:has-text("好的")',
+  'button:has-text("明白了")',
+  '[role="button"]:has-text("允许")',
+  '[role="button"]:has-text("继续")',
+  '[role="button"]:has-text("下一步")',
+  '[role="button"]:has-text("同意")',
+  '[role="button"]:has-text("我了解")',
+  '[role="button"]:has-text("好的")',
+  'input[type="submit"][value="同意"]',
+  'input[type="submit"][value="我了解"]',
 ];
 
 const SKIP_BUTTON_SELECTORS = [
@@ -89,11 +111,20 @@ const SKIP_BUTTON_SELECTORS = [
   'button:has-text("Tidak sekarang")',
   'div[role="button"]:has-text("Skip")',
   'div[role="button"]:has-text("Not now")',
+  'button:has-text("跳过")',
+  'button:has-text("暂不")',
+  'button:has-text("以后再说")',
+  'button:has-text("不，谢谢")',
+  'button:has-text("现在不用")',
+  'div[role="button"]:has-text("跳过")',
+  'div[role="button"]:has-text("暂不")',
 ];
 
 const GOOGLE_LOGIN_BUTTON_SELECTORS = [
   '#social-google',
   'a#social-google',
+  'button.ButtonContinueWithGoogle',
+  'button[class*="ContinueWithGoogle"]',
   'a:has-text("Continue with Google")',
   'a:has-text("Sign in with Google")',
   'a:has-text("Sign up with Google")',
@@ -110,6 +141,11 @@ const GOOGLE_LOGIN_BUTTON_SELECTORS = [
   '[aria-label*="Sign in with Google"]',
   '[aria-label*="Sign up with Google"]',
   '[aria-label*="Log in with Google"]',
+  'button:has-text("Google")',
+  'a:has-text("Google")',
+  'div[role="button"]:has-text("Google")',
+  'span:has-text("Google")',
+  '[aria-label*="Google"]',
   '[data-provider*="google" i]',
 ];
 
@@ -157,6 +193,19 @@ const PROVIDER_ONBOARDING_ACTION_SELECTORS = [
   'button:has-text("Launch")',
   'button:has-text("Use CodeBuddy")',
   'button:has-text("Go to CodeBuddy")',
+  'button:has-text("继续")',
+  'button:has-text("下一步")',
+  'button:has-text("确认")',
+  'button:has-text("同意")',
+  'button:has-text("开始")',
+  'button:has-text("完成")',
+  'button:has-text("跳过")',
+  'button:has-text("暂不")',
+  'button:has-text("保存")',
+  'button:has-text("创建")',
+  '[role="button"]:has-text("继续")',
+  '[role="button"]:has-text("确认")',
+  '[role="button"]:has-text("同意")',
 ];
 
 const PROVIDER_REGION_TRIGGER_SELECTORS = [
@@ -213,6 +262,14 @@ const INVALID_CREDENTIAL_MARKERS = [
   "couldn't sign you in",
   "invalid email or password",
   "password is incorrect",
+  "密码错误",
+  "密码不正确",
+  "找不到该 google 帐号",
+  "找不到该 google 账号",
+  "无法登录",
+  "无法为您登录",
+  "请输入有效的电子邮件",
+  "电子邮件或密码无效",
 ];
 
 const MANUAL_ASSIST_MARKERS = [
@@ -229,6 +286,17 @@ const MANUAL_ASSIST_MARKERS = [
   "unusual activity detected",
   "captcha",
   "try again later",
+  "两步验证",
+  "双重验证",
+  "验证您的身份",
+  "确认是您本人",
+  "检查您的手机",
+  "恢复邮箱",
+  "恢复电话",
+  "已阻止可疑的登录",
+  "检测到异常活动",
+  "验证码",
+  "请稍后重试",
 ];
 
 const RESTRICTED_ACCOUNT_MARKERS = [
@@ -252,6 +320,19 @@ const RESTRICTED_ACCOUNT_MARKERS = [
   "akun dibatasi",
   "akun diblokir",
   "akun ditangguhkan",
+  "帐号已受限",
+  "账号已受限",
+  "帐号已被暂停",
+  "账号已被暂停",
+  "帐号已被停用",
+  "账号已被停用",
+  "帐号已被禁用",
+  "账号已被禁用",
+  "帐号已被封禁",
+  "账号已被封禁",
+  "访问被拒绝",
+  "帐号已被锁定",
+  "账号已被锁定",
 ];
 
 const GOOGLE_ONBOARDING_MARKERS = [
@@ -267,6 +348,14 @@ const GOOGLE_ONBOARDING_MARKERS = [
   "tambahkan nomor telepon pemulihan",
   "choose your settings",
   "pilih setelan anda",
+  "欢迎使用您的新 google 帐号",
+  "欢迎使用您的新 google 账号",
+  "欢迎使用您的新帐号",
+  "欢迎使用您的新账号",
+  "隐私权和条款",
+  "个性化您的 google 服务",
+  "添加恢复电话",
+  "选择您的设置",
 ];
 
 const GOOGLE_WORKSPACE_WELCOME_MARKERS = [
@@ -276,6 +365,10 @@ const GOOGLE_WORKSPACE_WELCOME_MARKERS = [
   "administrator anda memutuskan layanan",
   "your organisation administrator manages",
   "your organization administrator manages",
+  "欢迎使用您的新帐号",
+  "欢迎使用您的新账号",
+  "您的管理员决定",
+  "您的组织管理员管理",
 ];
 
 const KIRO_CALLBACK_PREFIX = "kiro://kiro.kiroAgent/authenticate-success";
@@ -332,8 +425,8 @@ async function clickFirstVisible(page, selectors) {
       const visible = await locator.isVisible().catch(() => false);
       if (!visible) continue;
 
-      await locator.click({ timeout: 5_000 }).catch(() => null);
-      return true;
+      const clicked = await locator.click({ timeout: 5_000 }).then(() => true).catch(() => false);
+      if (clicked) return true;
     }
   }
 
@@ -373,23 +466,41 @@ async function checkFirstVisible(page, selectors) {
       const checked = await locator.isChecked().catch(() => false);
       if (checked) return true;
 
-      const visible = await locator.isVisible().catch(() => false);
-      const didCheck = visible
-        ? await locator.check({ force: true, timeout: 5_000 }).then(() => true).catch(() => false)
-        : false;
-      if (didCheck) return true;
+      const didCheck = await locator.check({ force: true, timeout: 5_000 }).then(() => true).catch(() => false);
+      if (didCheck) {
+        const verified = await locator.isChecked().catch(() => false);
+        if (verified) return true;
+      }
 
-      const clicked = visible
-        ? await locator.click({ force: true, timeout: 5_000 }).then(() => true).catch(() => false)
-        : false;
-      if (clicked) return true;
+      const clicked = await locator.click({ force: true, timeout: 5_000 }).then(() => true).catch(() => false);
+      if (clicked) {
+        await scope.waitForTimeout(200).catch(() => null);
+        const verified = await locator.isChecked().catch(() => false);
+        if (verified) return true;
+      }
+
+      const labelClicked = await scope.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return false;
+        const label = el.closest("label") || el.querySelector("label");
+        if (label instanceof HTMLElement) { label.click(); return true; }
+        return false;
+      }, selector).catch(() => false);
+      if (labelClicked) {
+        await scope.waitForTimeout(200).catch(() => null);
+        const verified = await locator.isChecked().catch(() => false);
+        if (verified) return true;
+      }
 
       const domChecked = await scope.evaluate((candidateSelector) => {
         const input = document.querySelector(candidateSelector);
         if (!(input instanceof HTMLInputElement)) return false;
-        input.checked = true;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "checked")?.set;
+        if (setter) setter.call(input, true);
+        else input.checked = true;
         input.dispatchEvent(new Event("input", { bubbles: true }));
         input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         return input.checked;
       }, selector).catch(() => false);
       if (domChecked) return true;
@@ -426,14 +537,47 @@ async function waitForFirstVisibleLocator(page, selector, { timeout = 15_000, po
   return null;
 }
 
+async function humanType(locator, value, { timeout = 15_000 } = {}) {
+  if (!locator || value == null) return false;
+  const text = String(value);
+
+  try {
+    await locator.click({ timeout: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 200 + Math.floor(Math.random() * 400)));
+  } catch {
+    /* noop */
+  }
+
+  try {
+    await locator.press("Control+a");
+    await new Promise((resolve) => setTimeout(resolve, 50 + Math.floor(Math.random() * 100)));
+    await locator.press("Delete");
+    await new Promise((resolve) => setTimeout(resolve, 150 + Math.floor(Math.random() * 300)));
+  } catch {
+    try { await locator.fill(""); } catch {}
+  }
+
+  for (let i = 0; i < text.length; i++) {
+    await locator.press(text[i], { timeout });
+    const baseDelay = 50 + Math.floor(Math.random() * 130);
+    const longPause = Math.random() < 0.06 ? 300 + Math.floor(Math.random() * 500) : 0;
+    await new Promise((resolve) => setTimeout(resolve, baseDelay + longPause));
+  }
+
+  let observed = "";
+  try {
+    observed = await locator.inputValue();
+  } catch {
+    observed = "";
+  }
+  return observed === text;
+}
+
 async function fillInputResilient(locator, value, { timeout = 15_000 } = {}) {
   if (!locator || value == null) return false;
 
-  try {
-    await locator.fill(value, { timeout });
-  } catch {
-    // swallow; verification + fallback below will decide
-  }
+  const filled = await humanType(locator, value, { timeout });
+  if (filled) return true;
 
   let observed = "";
   try {
@@ -443,8 +587,6 @@ async function fillInputResilient(locator, value, { timeout = 15_000 } = {}) {
   }
   if (observed === value) return true;
 
-  // Fallback for React/Vue-controlled inputs where .fill() bypasses the
-  // framework's onChange wiring and the value snaps back to empty.
   try {
     await locator.click({ timeout: 5_000 });
   } catch {
@@ -507,7 +649,8 @@ function isProviderPage(page) {
     const url = new URL(page.url());
     return /codebuddy\.(ai|cn)$/.test(url.hostname)
       || url.hostname.endsWith(".codebuddy.ai")
-      || url.hostname.endsWith(".codebuddy.cn");
+      || url.hostname.endsWith(".codebuddy.cn")
+      || url.hostname === "chat.z.ai";
   } catch {
     return false;
   }
@@ -517,7 +660,7 @@ async function handleGoogleConsent(page, reportStep) {
   if (!isGoogleAuthPage(page)) return false;
 
   const text = await readPageText(page);
-  const looksLikeConsent = /wants to access|ingin mengakses|akses ke akun google|allow/i.test(text);
+  const looksLikeConsent = /wants to access|ingin mengakses|akses ke akun google|allow|想要访问|授权访问|允许/i.test(text);
   if (!looksLikeConsent) return false;
 
   await page.evaluate(() => {
@@ -650,7 +793,7 @@ async function fillProviderOnboardingDefaults(page) {
       const currentValue = await locator.inputValue().catch(() => "");
       if (currentValue) continue;
 
-      const didFill = await locator.fill(value, { timeout: 5_000 }).then(() => true).catch(() => false);
+      const didFill = await humanType(locator, value, { timeout: 5_000 }).catch(() => false);
       if (didFill) filled = true;
     }
   }
@@ -1134,8 +1277,38 @@ async function handleProviderOnboarding(page, reportStep, serviceLabel) {
   return false;
 }
 
+async function handleZaiAuthorizePage(page, reportStep) {
+  if (!isProviderPage(page) || isGoogleAuthPage(page)) return false;
+
+  const text = await readPageText(page);
+  const isZaiAuthorize = /would like to access your.*account|wants to access your.*account/i.test(text)
+    || /AutoGLM|autoglm/i.test(text);
+  if (!isZaiAuthorize) return false;
+
+  const checkboxChecked = await checkFirstVisible(page, TERMS_CHECKBOX_SELECTORS);
+  if (checkboxChecked) {
+    reportStep("accepting_zai_authorize_tos", "Accepted Z.ai authorize TOS checkbox");
+    await page.waitForTimeout(500);
+  }
+
+  const clickedContinue = await clickFirstActionable(page, [
+    'button:has-text("Continue"):not([disabled])',
+    'button:not([disabled]):has-text("Continue")',
+  ]);
+  if (clickedContinue) {
+    reportStep("approving_zai_authorize", "Approved Z.ai authorize — continuing to AutoClaw");
+    await page.waitForTimeout(1500);
+    return true;
+  }
+
+  return checkboxChecked;
+}
+
 async function handleProviderLoginGate(page, reportStep) {
   if (isGoogleAuthPage(page)) return false;
+
+  const handledZaiAuthorize = await handleZaiAuthorizePage(page, reportStep);
+  if (handledZaiAuthorize) return true;
 
   const confirmedExistingDialog = await clickFirstActionable(page, PRIVACY_CONFIRM_BUTTON_SELECTORS);
   if (confirmedExistingDialog) {
@@ -1148,6 +1321,7 @@ async function handleProviderLoginGate(page, reportStep) {
   if (checkedTerms) {
     reportStep("accepting_provider_terms", "Accepted provider terms for Google login");
     await page.waitForTimeout(400);
+    return true;
   }
 
   const clickedGoogle = await clickFirstActionable(page, GOOGLE_LOGIN_BUTTON_SELECTORS);
@@ -1273,6 +1447,7 @@ export function createOAuthCallbackMonitor(context, page, {
 export async function runGoogleAccountAutomation({
   page,
   authUrl,
+  skipNavigation = false,
   email,
   password,
   successPromise,
@@ -1291,34 +1466,51 @@ export async function runGoogleAccountAutomation({
   const useProviderLoginGate = serviceLabel !== "Antigravity";
 
   reportStep(openingStep, openingMessage);
-  try {
-    await page.goto(authUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-  } catch (error) {
-    const message = error?.message || String(error);
-    if (message.includes("ERR_TUNNEL_CONNECTION_FAILED")) {
-      reportStep("proxy_tunnel_failed", "Proxy tunnel failed while opening Google OAuth");
-      return {
-        status: "failed_proxy",
-        error: "Proxy tunnel failed while opening Google OAuth. Check/disable the selected automation proxy, proxy pool, or outbound automation proxy setting.",
-      };
+  if (!skipNavigation && authUrl) {
+    try {
+      await page.goto(authUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    } catch (error) {
+      const message = error?.message || String(error);
+      if (message.includes("ERR_TUNNEL_CONNECTION_FAILED")) {
+        reportStep("proxy_tunnel_failed", "Proxy tunnel failed while opening Google OAuth");
+        return {
+          status: "failed_proxy",
+          error: "Proxy tunnel failed while opening Google OAuth. Check/disable the selected automation proxy, proxy pool, or outbound automation proxy setting.",
+        };
+      }
+      throw error;
     }
-    throw error;
+    await page.waitForTimeout(1500 + Math.floor(Math.random() * 1500));
+  } else {
+    await page.waitForTimeout(1000 + Math.floor(Math.random() * 1000));
   }
-  await page.waitForTimeout(2_000);
 
   if (useProviderLoginGate) await handleProviderLoginGate(page, reportStep);
 
   const emailInput = await waitForFirstVisibleLocator(page, EMAIL_INPUT_SELECTOR, { timeout: 15_000 });
   if (emailInput) {
     reportStep("entering_email", "Entering Google email");
+    await page.mouse.move(100 + Math.floor(Math.random() * 400), 200 + Math.floor(Math.random() * 300));
+    await page.waitForTimeout(300 + Math.floor(Math.random() * 500));
     const filled = await fillInputResilient(emailInput, email);
     if (!filled) {
       reportStep("email_fill_failed", "Could not fill the Google email field; will retry in the polling loop");
     } else {
       reportStep("submitting_email", "Submitting email");
+      await page.waitForTimeout(500 + Math.floor(Math.random() * 500));
       await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
     }
   }
+
+  // Wait for navigation away from email page before entering the polling loop.
+  // Without this, the loop may re-detect the stale email input and resubmit,
+  // causing Google to show "Wrong password" (password never entered).
+  try {
+    await page.waitForURL((url) => !url.toString().includes("/identifier?"), { timeout: 10_000 });
+  } catch {
+    // Page didn't navigate; the loop will handle retry.
+  }
+  await page.waitForTimeout(1000);
 
   while (Date.now() - startTime < shortTimeoutMs) {
     const successResult = await Promise.race([
@@ -1341,6 +1533,16 @@ export async function runGoogleAccountAutomation({
         error: successResult.error?.message || `Timed out waiting for ${serviceLabel} authorization`,
       };
     }
+
+    try {
+      const currentUrl = page.url();
+      const urlObj = new URL(currentUrl);
+      if (urlObj.hostname.includes("autoclaw.z.ai")) {
+        reportStep("waiting_for_token", `Redirected back — waiting for token extraction`);
+        await page.waitForTimeout(1000);
+        continue;
+      }
+    } catch {}
 
     const handledGoogleConsent = await handleGoogleConsent(page, reportStep);
     if (handledGoogleConsent) {
@@ -1389,25 +1591,40 @@ export async function runGoogleAccountAutomation({
       const filled = await fillInputResilient(nextEmailInput, email);
       if (filled) {
         reportStep("submitting_email", "Submitting email");
+        await page.waitForTimeout(500 + Math.floor(Math.random() * 500));
         await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
+        // Navigation guard: wait for URL to leave /identifier? path so the
+        // loop does not re-detect the stale email input and re-submit.
+        try {
+          await page.waitForURL((url) => !url.toString().includes("/identifier?"), { timeout: 10_000 });
+        } catch {
+          // Page didn't navigate; the loop will handle retry.
+        }
+        await page.waitForTimeout(2000);
       } else {
         reportStep("email_fill_failed", "Could not fill the Google email field; retrying loop");
       }
-      await page.waitForTimeout(700);
       continue;
     }
 
     const passwordInput = await getFirstVisibleLocator(page, PASSWORD_INPUT_SELECTOR);
     if (passwordInput) {
       reportStep("entering_password", "Entering Google password");
+      await page.waitForTimeout(500 + Math.floor(Math.random() * 800));
+      await page.mouse.move(100 + Math.floor(Math.random() * 400), 200 + Math.floor(Math.random() * 300));
+      await page.waitForTimeout(200 + Math.floor(Math.random() * 400));
       const filled = await fillInputResilient(passwordInput, password);
       if (filled) {
         reportStep("submitting_password", "Submitting password");
+        await page.waitForTimeout(400 + Math.floor(Math.random() * 600));
         await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
       } else {
         reportStep("password_fill_failed", "Could not fill the Google password field; retrying loop");
       }
-      await page.waitForTimeout(700);
+      try {
+        await page.waitForURL((url) => !url.toString().includes("/challenge/pwd?"), { timeout: 10_000 });
+      } catch {}
+      await page.waitForTimeout(2000);
       continue;
     }
 

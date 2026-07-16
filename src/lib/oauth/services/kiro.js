@@ -1,5 +1,5 @@
-import crypto from "crypto";
 import { KIRO_CONFIG, assertValidAwsRegion } from "../constants/oauth.js";
+import { generatePKCE } from "../utils/pkce.js";
 
 /**
  * Kiro OAuth Service
@@ -127,18 +127,17 @@ export class KiroService {
   }
 
   /**
-   * Generate PKCE params + social login URL in one call.
-   * Returns { authUrl, codeVerifier, state }
+   * Build a complete social authorization payload (PKCE verifier + authUrl)
+   * for Google/GitHub. Used by bulk import automation and the manual
+   * social-authorize route.
    */
   createSocialAuthorization(provider) {
-    const codeVerifier = crypto.randomBytes(32).toString("base64url");
-    const codeChallenge = crypto
-      .createHash("sha256")
-      .update(codeVerifier)
-      .digest("base64url");
-    const state = crypto.randomBytes(16).toString("hex");
+    if (!["google", "github"].includes(provider)) {
+      throw new Error(`Invalid social provider: ${provider}`);
+    }
+    const { codeVerifier, codeChallenge, state } = generatePKCE();
     const authUrl = this.buildSocialLoginUrl(provider, codeChallenge, state);
-    return { authUrl, codeVerifier, state };
+    return { authUrl, codeVerifier, codeChallenge, state, provider };
   }
 
   /**

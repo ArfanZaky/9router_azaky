@@ -269,7 +269,7 @@ async function defaultBrowserLauncher(job) {
     engine: job?.engine || "chromium",
     proxyUrl: job?.proxyUrl || undefined,
     headless: false,
-    args: ["--start-maximized"],
+    args: ["--start-maximized", "--disable-blink-features=AutomationControlled"],
   });
 }
 
@@ -289,8 +289,12 @@ async function defaultSocialExchange(args) {
   return exchangeAndSaveKiroSocialConnection(args);
 }
 
-export async function createFreshContext(browser) {
-  const context = await browser.newContext({ viewport: null });
+export async function createFreshContext(browser, { locale = "en-US" } = {}) {
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    viewport: null,
+    locale,
+  });
   const page = await context.newPage();
   await revealBrowserWindow(page).catch(() => null);
   return { context, page };
@@ -717,7 +721,26 @@ export class KiroBulkImportManager {
     const previewAccount = this.capturePreviewAccount(job);
     if (!previewAccount) return null;
 
-    const page = previewAccount.runtimeSession?.page || previewAccount.manualSession?.page;
+    const session = previewAccount.runtimeSession || previewAccount.manualSession;
+    const fallbackPage = session?.page;
+    const context = session?.context;
+    let page = fallbackPage;
+
+    if (context && typeof context.pages === "function") {
+      const pages = context.pages();
+      if (pages.length > 1) {
+        for (let i = pages.length - 1; i >= 0; i--) {
+          try {
+            const url = pages[i].url();
+            if (url && url !== "about:blank") {
+              page = pages[i];
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
     if (!page) return null;
 
     const meta = {
