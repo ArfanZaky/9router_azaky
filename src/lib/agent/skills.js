@@ -99,7 +99,7 @@ export function buildAgentSystemPrompt({ workspace, userSystem = "", accessMode 
     `- Keep tool usage minimal and purposeful.`,
     `- After tools finish, give a clear final answer.`,
     `- Do not attempt destructive system operations (disk format, reboot, wiping roots).`,
-    `- Paths must stay under workspace roots.`,
+    mode === "sandbox" ? `- Paths must stay under workspace roots.` : ``,
     mode === "sandbox" ? `- Sandbox: do not request bash/write_file; use read-only tools.` : ``,
     ``,
   ].filter(Boolean);
