@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getGrokCliBulkImportManager } from "@/lib/oauth/services";
 import { parseKiroBulkAccounts } from "@/lib/oauth/services/kiroBulkImportManager";
-import { resolveBulkImportProxy } from "@/lib/oauth/services/bulkImportProxyResolver";
+import {
+  resolveAllBulkImportProxies,
+  resolveBulkImportProxy,
+} from "@/lib/oauth/services/bulkImportProxyResolver";
 
 export const dynamic = "force-dynamic";
 
@@ -33,11 +36,10 @@ export async function POST(request) {
     }
 
     const requestedProxyMode = body?.proxyMode === "round-robin" ? "round-robin" : "none";
-    const { proxyUrl, proxyUrls, proxyMode, proxyPoolId, proxySource, error: proxyError } = await resolveBulkImportProxy({
-      proxyPoolId: requestedProxyMode === "round-robin" ? body?.proxyPoolId : null,
-      proxyUrl: requestedProxyMode === "round-robin" ? body?.proxyUrl : null,
-      useSettingsFallback: false,
-    });
+    const resolvedProxy = requestedProxyMode === "round-robin"
+      ? await resolveAllBulkImportProxies()
+      : await resolveBulkImportProxy({ useSettingsFallback: false });
+    const { proxyUrl, proxyUrls, proxyMode, proxyPoolId, proxySource, error: proxyError } = resolvedProxy;
     if (proxyError) {
       return NextResponse.json({ error: proxyError }, { status: 400 });
     }

@@ -415,12 +415,6 @@ export default function BulkAccountAutomationModal({
       };
       if (provider === "grok-cli") {
         postBody.proxyMode = proxyMode;
-        if (proxyMode === "round-robin") {
-          if (!proxyPoolId) {
-            throw new Error("Select a proxy pool containing at least 2 proxies for Round Robin Proxy");
-          }
-          postBody.proxyPoolId = proxyPoolId;
-        }
       } else if (proxyPoolId) {
         postBody.proxyPoolId = proxyPoolId;
       } else if (proxyUrl.trim()) {
@@ -745,13 +739,16 @@ export default function BulkAccountAutomationModal({
                   ))}
                 </div>
               )}
-              {(provider !== "grok-cli" || proxyMode === "round-robin") && (
+              {provider === "grok-cli" && proxyMode === "round-robin" && (
+                <p className="text-xs text-text-muted">
+                  Automatically uses every HTTP/HTTPS proxy from all active browser-compatible pools. Each account receives the next proxy in order.
+                </p>
+              )}
+              {provider !== "grok-cli" && (
                 <>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1 block text-xs text-text-muted">
-                    {provider === "grok-cli" ? "Round Robin Proxy Pool" : "Proxy Pool"}
-                  </label>
+                  <label className="mb-1 block text-xs text-text-muted">Proxy Pool</label>
                   <select
                     value={proxyPoolId}
                     onChange={(event) => {
@@ -765,14 +762,14 @@ export default function BulkAccountAutomationModal({
                       <option
                         key={pool.id}
                         value={pool.id}
-                        disabled={!pool.browserCompatible || (provider === "grok-cli" && pool.proxyCount < 2)}
+                        disabled={!pool.browserCompatible}
                       >
                         {formatBrowserProxyPoolOption(pool)}
                       </option>
                     ))}
                   </select>
                 </div>
-                {provider !== "grok-cli" && <div>
+                <div>
                   <label className="mb-1 block text-xs text-text-muted">Custom Proxy URL</label>
                   <Input
                     type="text"
@@ -781,12 +778,10 @@ export default function BulkAccountAutomationModal({
                     disabled={Boolean(proxyPoolId)}
                     placeholder="http://user:pass@host:port"
                   />
-                </div>}
+                </div>
               </div>
               <p className="mt-1 text-xs text-text-muted">
-                {provider === "grok-cli"
-                  ? "Each account gets the next proxy URL from the selected pool. Assignment follows input order and wraps around when accounts exceed proxies."
-                  : "Browsers will route login traffic through the chosen proxy. Multiple URLs in a pool or custom field rotate round-robin across workers. Relay-style pools (Vercel, Cloudflare, Deno) are excluded because they only rewrite API URLs."}
+                Browsers will route login traffic through the chosen proxy. Multiple URLs in a pool or custom field rotate round-robin across workers. Relay-style pools (Vercel, Cloudflare, Deno) are excluded because they only rewrite API URLs.
               </p>
                 </>
               )}
