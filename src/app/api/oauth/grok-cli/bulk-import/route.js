@@ -32,12 +32,29 @@ export async function POST(request) {
       );
     }
 
+    const requestedProxyMode = body?.proxyMode === "round-robin" ? "round-robin" : "none";
     const { proxyUrl, proxyUrls, proxyMode, proxyPoolId, proxySource, error: proxyError } = await resolveBulkImportProxy({
-      proxyPoolId: body?.proxyPoolId,
-      proxyUrl: body?.proxyUrl,
+      proxyPoolId: requestedProxyMode === "round-robin" ? body?.proxyPoolId : null,
+      proxyUrl: requestedProxyMode === "round-robin" ? body?.proxyUrl : null,
+      useSettingsFallback: false,
     });
     if (proxyError) {
       return NextResponse.json({ error: proxyError }, { status: 400 });
+    }
+    if (requestedProxyMode === "round-robin" && proxyUrls.length < 2) {
+      return NextResponse.json(
+        { error: "Round Robin Proxy requires at least 2 browser-compatible proxy URLs" },
+        { status: 400 }
+      );
+    }
+    if (
+      requestedProxyMode === "round-robin" &&
+      proxyUrls.some((url) => !/^https?:\/\//i.test(url))
+    ) {
+      return NextResponse.json(
+        { error: "Grok Round Robin Proxy supports HTTP/HTTPS proxy URLs only" },
+        { status: 400 }
+      );
     }
 
     const manager = getGrokCliBulkImportManager();
@@ -49,7 +66,7 @@ export async function POST(request) {
       engine: "camoufox",
       proxyUrl,
       proxyUrls,
-      proxyMode,
+      proxyMode: requestedProxyMode === "round-robin" ? proxyMode : "none",
       proxyPoolId,
       proxySource,
     });

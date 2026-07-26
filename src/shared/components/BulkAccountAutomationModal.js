@@ -20,6 +20,8 @@ const DEFAULT_CONCURRENCY_BY_PROVIDER = {
 };
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "needs_manual"]);
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+// Auto-retry failed emails when queue drains; stop only on all-success or user abort
+const AUTO_RETRY_FAILED_PROVIDERS = new Set(["grok-cli", "kiro", "antigravity"]);
 const DEFAULT_ENGINE = "chromium";
 // Grok xAI rejects Chromium TLS fingerprint on device_code redeem → force Camoufox
 const DEFAULT_ENGINE_BY_PROVIDER = {
@@ -99,15 +101,21 @@ export default function BulkAccountAutomationModal({
 }) {
   const storageKey = `${provider}-bulk-import-active-job`;
   const completedRefreshJobsRef = useRef(new Set());
+  const autoRetriedJobIdsRef = useRef(new Set());
+  const autoRetryInFlightRef = useRef(false);
+  // Campaign: keep original credentials + cumulative success across auto-retry rounds
+  const campaignRef = useRef(null);
   const [bulkText, setBulkText] = useState("");
   const providerDefaultConcurrency = DEFAULT_CONCURRENCY_BY_PROVIDER[provider] ?? DEFAULT_CONCURRENCY;
   const providerDefaultEngine = DEFAULT_ENGINE_BY_PROVIDER[provider] ?? DEFAULT_ENGINE;
   const engineOptions = provider === "grok-cli" ? ENGINE_OPTIONS_GROK : ENGINE_OPTIONS;
+  const autoRetryEnabled = AUTO_RETRY_FAILED_PROVIDERS.has(provider);
   const [concurrency, setConcurrency] = useState(String(providerDefaultConcurrency));
   const [autoConcurrency, setAutoConcurrency] = useState(true);
   const [systemSpecInfo, setSystemSpecInfo] = useState(null);
   const [systemSpecLoading, setSystemSpecLoading] = useState(false);
   const [engine, setEngine] = useState(providerDefaultEngine);
+  const [proxyMode, setProxyMode] = useState("none");
   const [proxyPoolId, setProxyPoolId] = useState("");
   const [proxyUrl, setProxyUrl] = useState("");
   const [proxyPools, setProxyPools] = useState([]);
@@ -115,9 +123,19 @@ export default function BulkAccountAutomationModal({
   const [error, setError] = useState(null);
   const [importing, setImporting] = useState(false);
   const [jobRestoreNotice, setJobRestoreNotice] = useState(null);
+  const [campaignSummary, setCampaignSummary] = useState(null);
+  const [autoRetryNotice, setAutoRetryNotice] = useState(null);
 
   const runningJob = activeJob && ACTIVE_JOB_STATUSES.has(activeJob.status);
   const finishedJob = activeJob && TERMINAL_JOB_STATUSES.has(activeJob.status);
+  const campaignActive = Boolean(campaignSummary && !campaignSummary.stopped);
+  // Treat as "still working" while auto-retry will continue failed emails
+  const willAutoRetry =
+    autoRetryEnabled &&
+    finishedJob &&
+    activeJob?.status !== "cancelled" &&
+    (activeJob?.summary?.failed || 0) > 0 &&
+    campaignActive;
 
   const groupedAccounts = useMemo(() => {
     const groups = new Map();
@@ -138,16 +156,88 @@ export default function BulkAccountAutomationModal({
     setConcurrency(String(providerDefaultConcurrency));
     setEngine(providerDefaultEngine);
     setAutoConcurrency(true);
+    setProxyMode("none");
     setProxyPoolId("");
     setProxyUrl("");
     setActiveJob(null);
     setError(null);
     setImporting(false);
     setJobRestoreNotice(null);
+    setCampaignSummary(null);
+    setAutoRetryNotice(null);
+    campaignRef.current = null;
+    autoRetryInFlightRef.current = false;
+    autoRetriedJobIdsRef.current = new Set();
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(storageKey);
     }
   }, [storageKey, providerDefaultConcurrency, providerDefaultEngine]);
+
+  const buildRetryLinesFromJob = useCallback((job, sourceText) => {
+    const failedEmails = new Set(
+      (job?.accounts || [])
+        .filter((account) => String(account.status).startsWith("failed"))
+        .map((account) => String(account.email || "").toLowerCase())
+        .filter(Boolean)
+    );
+    const campaign = campaignRef.current;
+    const linesSource = (campaign?.originalLines || []).length
+      ? campaign.originalLines
+      : String(sourceText || "")
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+
+    return linesSource.filter((line) => {
+      const email = getBulkAccountEmail(line);
+      if (!email || !failedEmails.has(email)) return false;
+      if (campaign?.successEmails?.has(email)) return false;
+      return true;
+    });
+  }, []);
+
+  const mergeCampaignFromJob = useCallback((job) => {
+    const campaign = campaignRef.current;
+    if (!campaign || !job) return null;
+
+    const successNow = (job.accounts || [])
+      .filter((a) => a.status === "success")
+      .map((a) => String(a.email || "").toLowerCase())
+      .filter(Boolean);
+    for (const email of successNow) campaign.successEmails.add(email);
+
+    const failedNow = (job.accounts || [])
+      .filter((a) => String(a.status).startsWith("failed"))
+      .map((a) => ({
+        email: String(a.email || "").toLowerCase(),
+        error: a.error || a.message || a.currentStep || "failed",
+      }))
+      .filter((a) => a.email);
+
+    const total = campaign.originalLines.length || job.summary?.total || 0;
+    const success = campaign.successEmails.size;
+    const failed = failedNow.filter((a) => !campaign.successEmails.has(a.email));
+    const cancelled = job.status === "cancelled" || campaign.aborted;
+    const allSuccess = total > 0 && success >= total && failed.length === 0;
+    const stopped = cancelled || allSuccess;
+
+    const next = {
+      round: campaign.round,
+      total,
+      success,
+      failed: failed.length,
+      failedAccounts: failed,
+      successEmails: [...campaign.successEmails],
+      cancelled,
+      allSuccess,
+      stopped,
+      lastJobId: job.jobId,
+      lastJobStatus: job.status,
+    };
+    campaignRef.current = { ...campaign, lastSummary: next };
+    setCampaignSummary(next);
+    return next;
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -280,21 +370,58 @@ export default function BulkAccountAutomationModal({
     return () => window.clearInterval(interval);
   }, [activeJob?.jobId, finishedJob, isOpen, onSuccess, provider, storageKey]);
 
-  const startBulkJob = async (lines) => {
+  const startBulkJob = async (lines, { isRetryRound = false } = {}) => {
+    const normalizedLines = (lines || []).map((line) => String(line).trim()).filter(Boolean);
+    if (!normalizedLines.length) {
+      setError("No accounts to import");
+      return null;
+    }
+
     setImporting(true);
     setError(null);
     setJobRestoreNotice(null);
+    if (!isRetryRound) setAutoRetryNotice(null);
 
     try {
+      if (!isRetryRound || !campaignRef.current) {
+        campaignRef.current = {
+          originalLines: normalizedLines,
+          successEmails: new Set(),
+          round: 1,
+          aborted: false,
+          lastSummary: null,
+        };
+        setCampaignSummary({
+          round: 1,
+          total: normalizedLines.length,
+          success: 0,
+          failed: 0,
+          failedAccounts: [],
+          cancelled: false,
+          allSuccess: false,
+          stopped: false,
+        });
+      } else {
+        campaignRef.current.round = (campaignRef.current.round || 1) + 1;
+      }
+
       const postBody = {
-        accounts: lines,
+        accounts: normalizedLines,
         concurrency: autoConcurrency
           ? "auto"
           : Number.parseInt(concurrency, 10) || providerDefaultConcurrency,
         // Grok must always use Camoufox (xAI Access denied on Chromium/Node poll)
         engine: provider === "grok-cli" ? "camoufox" : engine,
       };
-      if (proxyPoolId) {
+      if (provider === "grok-cli") {
+        postBody.proxyMode = proxyMode;
+        if (proxyMode === "round-robin") {
+          if (!proxyPoolId) {
+            throw new Error("Select a proxy pool containing at least 2 proxies for Round Robin Proxy");
+          }
+          postBody.proxyPoolId = proxyPoolId;
+        }
+      } else if (proxyPoolId) {
         postBody.proxyPoolId = proxyPoolId;
       } else if (proxyUrl.trim()) {
         postBody.proxyUrl = proxyUrl.trim();
@@ -317,10 +444,13 @@ export default function BulkAccountAutomationModal({
         completedRefreshJobsRef.current.delete(data.job.jobId);
         if (typeof window !== "undefined") window.localStorage.setItem(storageKey, data.job.jobId);
       }
+      return data.job || null;
     } catch (err) {
       setError(err.message);
+      return null;
     } finally {
       setImporting(false);
+      autoRetryInFlightRef.current = false;
     }
   };
 
@@ -335,30 +465,91 @@ export default function BulkAccountAutomationModal({
       return;
     }
 
-    await startBulkJob(lines);
+    await startBulkJob(lines, { isRetryRound: false });
   };
 
   const handleRetryFailed = async () => {
-    const failedEmails = new Set(
-      (activeJob?.accounts || [])
-        .filter((account) => String(account.status).startsWith("failed"))
-        .map((account) => String(account.email).toLowerCase())
-    );
-    const retryLines = bulkText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => failedEmails.has(getBulkAccountEmail(line)));
+    const retryLines = buildRetryLinesFromJob(activeJob, bulkText);
 
     if (!retryLines.length) {
       setError("Failed account credentials are no longer available. Clear the job and enter them again.");
       return;
     }
 
-    await startBulkJob(retryLines);
+    await startBulkJob(retryLines, { isRetryRound: true });
   };
+
+  // When a job finishes: update campaign summary; auto-retry failed if queue drained
+  useEffect(() => {
+    if (!isOpen || !activeJob?.jobId || !finishedJob) return;
+    const timer = window.setTimeout(() => {
+      if (activeJob.status === "cancelled") {
+        if (campaignRef.current) campaignRef.current.aborted = true;
+        mergeCampaignFromJob(activeJob);
+        setAutoRetryNotice("Stopped — cancelled by user.");
+        return;
+      }
+
+      const summary = mergeCampaignFromJob(activeJob);
+      if (!summary) return;
+
+      if (summary.allSuccess) {
+        setAutoRetryNotice(`All ${summary.success}/${summary.total} accounts succeeded.`);
+        return;
+      }
+
+      if (!autoRetryEnabled || summary.failed <= 0) return;
+      if (autoRetriedJobIdsRef.current.has(activeJob.jobId)) return;
+      if (autoRetryInFlightRef.current || campaignRef.current?.aborted) return;
+
+      const retryLines = buildRetryLinesFromJob(activeJob, bulkText);
+      if (!retryLines.length) {
+        setAutoRetryNotice(
+          `Finished with ${summary.success}/${summary.total} success, ${summary.failed} failed (no credentials to retry).`
+        );
+        return;
+      }
+
+      autoRetriedJobIdsRef.current.add(activeJob.jobId);
+      autoRetryInFlightRef.current = true;
+      const nextRound = (campaignRef.current?.round || 1) + 1;
+      setAutoRetryNotice(
+        `Queue empty — auto-retry round ${nextRound}: ${retryLines.length} failed account${retryLines.length === 1 ? "" : "s"}…`
+      );
+      void startBulkJob(retryLines, { isRetryRound: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- startBulkJob uses latest closure state intentionally once per terminal job
+  }, [
+    isOpen,
+    finishedJob,
+    activeJob?.jobId,
+    activeJob?.status,
+    activeJob?.summary?.failed,
+    activeJob?.summary?.success,
+    autoRetryEnabled,
+    bulkText,
+    buildRetryLinesFromJob,
+    mergeCampaignFromJob,
+  ]);
 
   const handleCancelJob = async () => {
     if (!activeJob?.jobId) return;
+
+    if (campaignRef.current) campaignRef.current.aborted = true;
+    autoRetryInFlightRef.current = false;
+    setAutoRetryNotice("Stopped — user abort (no more auto-retry).");
+
+    // Terminal job: only stop campaign auto-retry (no server cancel needed)
+    if (TERMINAL_JOB_STATUSES.has(activeJob.status) && activeJob.status !== "cancelled") {
+      mergeCampaignFromJob({ ...activeJob, status: "cancelled" });
+      setCampaignSummary((prev) =>
+        prev
+          ? { ...prev, cancelled: true, stopped: true, lastJobStatus: "cancelled" }
+          : prev
+      );
+      return;
+    }
 
     // Optimistic UI — do not wait for poll to flip status
     setActiveJob((prev) => {
@@ -390,6 +581,7 @@ export default function BulkAccountAutomationModal({
       if (!res.ok || data.error) throw new Error(data.error || "Failed to cancel job");
       if (data.job) {
         setActiveJob({ ...data.job, status: "cancelled" });
+        mergeCampaignFromJob({ ...data.job, status: "cancelled" });
       }
       try {
         window.localStorage?.removeItem?.(storageKey);
@@ -515,17 +707,51 @@ export default function BulkAccountAutomationModal({
                 </select>
                 <p className="mt-1 text-xs text-text-muted">
                   {provider === "grok-cli"
-                    ? "Grok/xAI rejects Chromium + Node token poll (Access denied). Camoufox is required for authorize and redeem."
+                    ? "Grok/xAI authorization uses Camoufox. Device-code issue and token redeem use the same direct or per-account proxy route."
                     : "Camoufox is a stealth Firefox; first run downloads ~150MB."}
                 </p>
               </div>
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium">Network Proxy (optional)</label>
+              <label className="mb-2 block text-sm font-medium">
+                {provider === "grok-cli" ? "Proxy Mode" : "Network Proxy (optional)"}
+              </label>
+              {provider === "grok-cli" && (
+                <div className="mb-3 grid grid-cols-2 gap-2">
+                  {[
+                    { value: "none", label: "No Proxy", hint: "Direct connection" },
+                    { value: "round-robin", label: "Round Robin Proxy", hint: "Different proxy per account" },
+                  ].map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => {
+                        setProxyMode(option.value);
+                        if (option.value === "none") {
+                          setProxyPoolId("");
+                          setProxyUrl("");
+                        }
+                      }}
+                      className={`rounded-lg border px-3 py-3 text-left transition-colors ${
+                        proxyMode === option.value
+                          ? "border-primary bg-primary/10 text-text-main"
+                          : "border-border bg-background text-text-muted hover:border-primary/40"
+                      }`}
+                    >
+                      <span className="block text-sm font-semibold">{option.label}</span>
+                      <span className="mt-1 block text-xs">{option.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {(provider !== "grok-cli" || proxyMode === "round-robin") && (
+                <>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="mb-1 block text-xs text-text-muted">Proxy Pool</label>
+                  <label className="mb-1 block text-xs text-text-muted">
+                    {provider === "grok-cli" ? "Round Robin Proxy Pool" : "Proxy Pool"}
+                  </label>
                   <select
                     value={proxyPoolId}
                     onChange={(event) => {
@@ -536,13 +762,17 @@ export default function BulkAccountAutomationModal({
                   >
                     <option value="">None</option>
                     {proxyPools.map((pool) => (
-                      <option key={pool.id} value={pool.id} disabled={!pool.browserCompatible}>
+                      <option
+                        key={pool.id}
+                        value={pool.id}
+                        disabled={!pool.browserCompatible || (provider === "grok-cli" && pool.proxyCount < 2)}
+                      >
                         {formatBrowserProxyPoolOption(pool)}
                       </option>
                     ))}
                   </select>
                 </div>
-                <div>
+                {provider !== "grok-cli" && <div>
                   <label className="mb-1 block text-xs text-text-muted">Custom Proxy URL</label>
                   <Input
                     type="text"
@@ -551,11 +781,15 @@ export default function BulkAccountAutomationModal({
                     disabled={Boolean(proxyPoolId)}
                     placeholder="http://user:pass@host:port"
                   />
-                </div>
+                </div>}
               </div>
               <p className="mt-1 text-xs text-text-muted">
-                Browsers will route login traffic through the chosen proxy. Multiple URLs in a pool or custom field rotate round-robin across workers. Relay-style pools (Vercel, Cloudflare, Deno) are excluded because they only rewrite API URLs.
+                {provider === "grok-cli"
+                  ? "Each account gets the next proxy URL from the selected pool. Assignment follows input order and wraps around when accounts exceed proxies."
+                  : "Browsers will route login traffic through the chosen proxy. Multiple URLs in a pool or custom field rotate round-robin across workers. Relay-style pools (Vercel, Cloudflare, Deno) are excluded because they only rewrite API URLs."}
               </p>
+                </>
+              )}
             </div>
           </>
         )}
@@ -573,12 +807,12 @@ export default function BulkAccountAutomationModal({
                 </p>
               </div>
               <div className="flex gap-2">
-                {runningJob && (
-                  <Button size="sm" variant="secondary" onClick={handleCancelJob}>
-                    Cancel Job
+                {(runningJob || willAutoRetry) && (
+                  <Button size="sm" variant="secondary" onClick={handleCancelJob} disabled={importing && !runningJob}>
+                    {willAutoRetry && !runningJob ? "Stop Auto-Retry" : "Cancel Job"}
                   </Button>
                 )}
-                {finishedJob && (
+                {finishedJob && !willAutoRetry && (
                   <Button size="sm" onClick={handleDoneRefresh}>
                     Done & Refresh
                   </Button>
@@ -594,6 +828,72 @@ export default function BulkAccountAutomationModal({
                 </div>
               ))}
             </div>
+
+            {campaignSummary && (
+              <div
+                className={`rounded-xl border p-4 ${
+                  campaignSummary.allSuccess
+                    ? "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20"
+                    : campaignSummary.cancelled
+                      ? "border-border bg-sidebar"
+                      : "border-primary/30 bg-primary/5"
+                }`}
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold">
+                      {campaignSummary.allSuccess
+                        ? "Campaign complete — all success"
+                        : campaignSummary.cancelled
+                          ? "Campaign stopped — user abort"
+                          : willAutoRetry || runningJob
+                            ? "Campaign running"
+                            : "Campaign summary"}
+                    </p>
+                    <p className="mt-1 text-xs text-text-muted">
+                      Round {campaignSummary.round}
+                      {autoRetryEnabled ? " · auto-retry failed when queue is empty" : ""}
+                      {" · "}stops only when all succeed or you cancel
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <span className="rounded-md bg-background/80 px-2 py-1">
+                      Total <strong>{campaignSummary.total}</strong>
+                    </span>
+                    <span className="rounded-md bg-green-500/15 px-2 py-1 text-green-700 dark:text-green-300">
+                      Success <strong>{campaignSummary.success}</strong>
+                    </span>
+                    <span className="rounded-md bg-red-500/15 px-2 py-1 text-red-700 dark:text-red-300">
+                      Failed <strong>{campaignSummary.failed}</strong>
+                    </span>
+                  </div>
+                </div>
+
+                {autoRetryNotice && (
+                  <p className="mt-3 text-sm text-text-main">{autoRetryNotice}</p>
+                )}
+
+                {campaignSummary.failedAccounts?.length > 0 && (
+                  <div className="mt-3 max-h-36 space-y-1 overflow-y-auto rounded-lg border border-border/60 bg-background/60 p-2">
+                    <p className="text-[11px] uppercase tracking-wide text-text-muted">Failed emails</p>
+                    {campaignSummary.failedAccounts.map((item) => (
+                      <div key={item.email} className="flex gap-2 text-xs">
+                        <span className="min-w-0 flex-1 truncate font-medium">{item.email}</span>
+                        <span className="max-w-[55%] truncate text-red-500" title={item.error}>
+                          {item.error}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {campaignSummary.success > 0 && campaignSummary.allSuccess && (
+                  <p className="mt-2 text-xs text-green-700 dark:text-green-300">
+                    All {campaignSummary.success} account{campaignSummary.success === 1 ? "" : "s"} imported.
+                  </p>
+                )}
+              </div>
+            )}
 
             {activeJob.error && (
               <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
@@ -747,24 +1047,32 @@ export default function BulkAccountAutomationModal({
               {importing ? "Starting..." : "Start Bulk Login"}
             </Button>
           )}
-          {activeJob && !finishedJob && (
-            <Button onClick={handleCancelJob} fullWidth variant="secondary" disabled={!runningJob}>
-              {runningJob ? "Cancel Running Job" : "Job Stopped"}
+          {activeJob && (!finishedJob || willAutoRetry) && (
+            <Button onClick={handleCancelJob} fullWidth variant="secondary" disabled={!runningJob && !willAutoRetry}>
+              {willAutoRetry && !runningJob
+                ? "Stop Auto-Retry"
+                : runningJob
+                  ? "Cancel Running Job"
+                  : "Job Stopped"}
             </Button>
           )}
-          {finishedJob && (
+          {finishedJob && !willAutoRetry && (
             <>
-{["kiro", "antigravity", "grok-cli"].includes(provider) && activeJob.summary?.failed > 0 && (
+              {autoRetryEnabled && activeJob.summary?.failed > 0 && !campaignSummary?.allSuccess && (
                 <Button onClick={handleRetryFailed} fullWidth disabled={importing}>
                   {importing ? "Retrying..." : `Retry Failed Emails (${activeJob.summary.failed})`}
                 </Button>
               )}
-              <Button onClick={handleDoneRefresh} fullWidth variant={["kiro", "antigravity", "grok-cli"].includes(provider) && activeJob.summary?.failed > 0 ? "secondary" : "primary"}>
+              <Button
+                onClick={handleDoneRefresh}
+                fullWidth
+                variant={autoRetryEnabled && activeJob.summary?.failed > 0 ? "secondary" : "primary"}
+              >
                 Done & Refresh Connections
               </Button>
             </>
           )}
-          <Button onClick={activeJob ? resetState : onClose} variant="ghost" fullWidth>
+          <Button onClick={activeJob ? resetState : onClose} variant="ghost" fullWidth disabled={willAutoRetry && importing}>
             {activeJob ? "Clear" : "Cancel"}
           </Button>
         </div>

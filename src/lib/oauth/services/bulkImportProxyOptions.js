@@ -18,6 +18,7 @@ export function getBrowserProxyPools(payload = {}) {
     .filter((pool) => pool?.isActive !== false && splitProxyUrls(pool?.proxyUrl).length > 0)
     .map((pool) => ({
       ...pool,
+      proxyCount: splitProxyUrls(pool?.proxyUrl).length,
       browserCompatible: !RELAY_POOL_TYPES.has(pool?.type),
     }));
 }

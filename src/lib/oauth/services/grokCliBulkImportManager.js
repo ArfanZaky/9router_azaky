@@ -33,6 +33,12 @@ import {
   GROK_CLI_BULK_IMPORT_DEFAULT_CONCURRENCY,
   GROK_CLI_BULK_CONFIG,
 } from "../constants/grok.js";
+import { ProxyAgent } from "undici";
+
+function createProxyDispatcher(proxyUrl) {
+  const clean = String(proxyUrl || "").trim();
+  return clean ? new ProxyAgent({ uri: clean }) : null;
+}
 
 /**
  * Default device code request function
@@ -40,7 +46,7 @@ import {
 /**
  * Request device code via Node fetch (fallback).
  */
-async function defaultRequestDeviceCode() {
+async function defaultRequestDeviceCode(proxyUrl) {
   const body = new URLSearchParams({
     client_id: GROK_CLI_CLIENT_ID,
     scope: GROK_CLI_SCOPE,
@@ -49,7 +55,7 @@ async function defaultRequestDeviceCode() {
 
   try {
     console.log("[GrokCLI] Requesting device code from:", GROK_CLI_DEVICE_CODE_URL);
-    const response = await fetch(GROK_CLI_DEVICE_CODE_URL, {
+    const requestInit = {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -57,7 +63,10 @@ async function defaultRequestDeviceCode() {
         "User-Agent": "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)",
       },
       body,
-    });
+    };
+    const dispatcher = createProxyDispatcher(proxyUrl);
+    if (dispatcher) requestInit.dispatcher = dispatcher;
+    const response = await fetch(GROK_CLI_DEVICE_CODE_URL, requestInit);
 
     console.log("[GrokCLI] Response status:", response.status);
 
@@ -89,10 +98,10 @@ async function defaultRequestDeviceCode() {
 /**
  * Default token polling function
  */
-async function defaultPollDeviceToken(deviceCode) {
+async function defaultPollDeviceToken(deviceCode, proxyUrl) {
   try {
     console.log("[GrokCLI] Polling token for device code:", deviceCode.substring(0, 10) + "...");
-    const response = await fetch(GROK_CLI_TOKEN_URL, {
+    const requestInit = {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -104,7 +113,10 @@ async function defaultPollDeviceToken(deviceCode) {
         device_code: deviceCode,
         client_id: GROK_CLI_CLIENT_ID,
       }),
-    });
+    };
+    const dispatcher = createProxyDispatcher(proxyUrl);
+    if (dispatcher) requestInit.dispatcher = dispatcher;
+    const response = await fetch(GROK_CLI_TOKEN_URL, requestInit);
 
     console.log("[GrokCLI] Poll response status:", response.status);
 
@@ -257,6 +269,47 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
     });
   }
 
+  async runWorker(job, workerId, browser = job.browser) {
+    const proxyUrls = Array.isArray(job.proxyUrls) ? job.proxyUrls : [];
+    if (job.proxyMode !== "round-robin" || proxyUrls.length < 2) {
+      return super.runWorker(job, workerId, browser);
+    }
+
+    while (!job.cancelRequested && job.status !== "cancelled") {
+      const account = this.dequeueAccount(job, workerId);
+      if (!account) return;
+
+      // Round-robin assignment by this job's input order.
+      const proxyUrl = proxyUrls[(Math.max(1, account.line || 1) - 1) % proxyUrls.length];
+      account.assignedProxyUrl = proxyUrl;
+      let accountBrowser = null;
+      try {
+        accountBrowser = await this.browserLauncher({ ...job, proxyUrl });
+        accountBrowser.__ninerouterProxyUrl = proxyUrl;
+        job.workerBrowsers.add(accountBrowser);
+        this.setAccountStep(
+          account,
+          "proxy_assigned",
+          `Round-robin proxy ${((Math.max(1, account.line || 1) - 1) % proxyUrls.length) + 1}/${proxyUrls.length}`
+        );
+        await this.processAccount(job, account, workerId, accountBrowser);
+      } catch (error) {
+        if (!String(account.status || "").startsWith("failed") && account.status !== "cancelled") {
+          this.finalizeAccount(account, job.cancelRequested ? "cancelled" : "failed", {
+            error: error.message || "Failed to launch account proxy browser",
+            step: job.cancelRequested ? "cancelled" : "proxy_browser_failed",
+            message: error.message || "Failed to launch account proxy browser",
+          });
+        }
+      } finally {
+        if (accountBrowser) {
+          job.workerBrowsers.delete(accountBrowser);
+          await accountBrowser.close().catch(() => null);
+        }
+      }
+    }
+  }
+
   /**
    * Request device code from auth.x.ai
    */
@@ -264,7 +317,7 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
     this.setAccountStep(account, "requesting_device_code", "Requesting device code");
     
     try {
-      const deviceData = await this.requestDeviceCode();
+      const deviceData = await this.requestDeviceCode(account?.assignedProxyUrl || null);
       
       if (!deviceData.device_code || !deviceData.verification_uri) {
         throw new Error("Invalid device code response");
@@ -296,9 +349,32 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
    * Poll token via Node — same path as dashboard Providers OAuth (manual).
    * Device flow: issue + redeem on the CLI client; browser only authorizes.
    */
-  async _pollTokenOnceServer(deviceCode) {
-    const { pollForToken } = await import("../providers.js");
-    return pollForToken("grok-cli", deviceCode);
+  async _pollTokenOnceServer(deviceCode, proxyUrl) {
+    const result = await this.pollDeviceToken(deviceCode, proxyUrl);
+    const data = result.data || {};
+    if (data.access_token) {
+      return {
+        success: true,
+        tokens: {
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token || null,
+          idToken: data.id_token || null,
+          expiresIn: data.expires_in,
+          scope: data.scope,
+          access_token: data.access_token,
+          refresh_token: data.refresh_token,
+          id_token: data.id_token,
+          expires_in: data.expires_in,
+        },
+      };
+    }
+    return {
+      success: false,
+      error: data.error || "no_access_token",
+      errorDescription: data.error_description || data.message,
+      pending: data.error === "authorization_pending",
+      slowDown: data.error === "slow_down",
+    };
   }
 
   /**
@@ -334,7 +410,7 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
 
       try {
         console.log("[GrokCLI] Polling via Node pollForToken (same as Providers OAuth)...");
-        const result = await this._pollTokenOnceServer(code);
+        const result = await this._pollTokenOnceServer(code, account?.assignedProxyUrl || null);
         console.log(
           `[GrokCLI] Node poll: success=${result.success} error=${result.error || "-"} desc=${result.errorDescription || "-"}`
         );
