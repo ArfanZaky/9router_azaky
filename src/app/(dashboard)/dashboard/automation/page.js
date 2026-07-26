@@ -410,7 +410,47 @@ function AntigravityAutomationPanel({ onRefresh }) {
   );
 }
 
+function GrokCliAutomationPanel({ onRefresh }) {
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setIsBulkOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">group_add</span>
+            Auto Login Bulk (Google SSO)
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Run bulk Gmail:password automation via Google SSO with Grok CLI device code flow. Import 100+ accounts in parallel.
+          </span>
+        </button>
+      </div>
+      <BulkAccountAutomationModal
+        isOpen={isBulkOpen}
+        provider="grok-cli"
+        title="Grok CLI Bulk GSuite Login"
+        serviceName="Grok CLI"
+        onSuccess={onRefresh}
+        onClose={() => setIsBulkOpen(false)}
+      />
+    </>
+  );
+}
+
 const AUTOMATION_PROVIDERS = [
+  {
+    id: "grok-cli",
+    label: "Grok CLI",
+    icon: "auto_awesome",
+    description: "Bulk GSuite auto login via Google SSO and device code flow.",
+    supportedModes: ["bulk-account", "device-oauth"],
+    component: GrokCliAutomationPanel,
+  },
   {
     id: "kiro",
     label: "Kiro AI",

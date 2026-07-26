@@ -14,12 +14,23 @@ import {
 import { readJsonResponse } from "@/shared/utils/httpResponse.js";
 
 const DEFAULT_CONCURRENCY = 4;
+// Camoufox/Firefox: one shared browser window per job; keep workers low by default
+const DEFAULT_CONCURRENCY_BY_PROVIDER = {
+  "grok-cli": 1,
+};
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "needs_manual"]);
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_ENGINE = "chromium";
+// Grok xAI rejects Chromium TLS fingerprint on device_code redeem → force Camoufox
+const DEFAULT_ENGINE_BY_PROVIDER = {
+  "grok-cli": "camoufox",
+};
 const ENGINE_OPTIONS = [
   { value: "chromium", label: "Chromium (default, fast)" },
   { value: "camoufox", label: "Camoufox (stealth Firefox, slower)" },
+];
+const ENGINE_OPTIONS_GROK = [
+  { value: "camoufox", label: "Camoufox only (required — Chromium gets Access denied)" },
 ];
 
 function describeWorkerLimit(limitedBy) {
@@ -37,6 +48,13 @@ function formatClock(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "now";
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function getBulkAccountEmail(line) {
+  const raw = String(line || "").trim();
+  if (!raw || raw.startsWith("#")) return "";
+  const separator = raw.includes("|") ? "|" : raw.includes("\t") ? "\t" : ":";
+  return raw.split(separator, 1)[0].trim().toLowerCase();
 }
 
 function getStatusVariant(status) {
@@ -82,11 +100,14 @@ export default function BulkAccountAutomationModal({
   const storageKey = `${provider}-bulk-import-active-job`;
   const completedRefreshJobsRef = useRef(new Set());
   const [bulkText, setBulkText] = useState("");
-  const [concurrency, setConcurrency] = useState(String(DEFAULT_CONCURRENCY));
+  const providerDefaultConcurrency = DEFAULT_CONCURRENCY_BY_PROVIDER[provider] ?? DEFAULT_CONCURRENCY;
+  const providerDefaultEngine = DEFAULT_ENGINE_BY_PROVIDER[provider] ?? DEFAULT_ENGINE;
+  const engineOptions = provider === "grok-cli" ? ENGINE_OPTIONS_GROK : ENGINE_OPTIONS;
+  const [concurrency, setConcurrency] = useState(String(providerDefaultConcurrency));
   const [autoConcurrency, setAutoConcurrency] = useState(true);
   const [systemSpecInfo, setSystemSpecInfo] = useState(null);
   const [systemSpecLoading, setSystemSpecLoading] = useState(false);
-  const [engine, setEngine] = useState(DEFAULT_ENGINE);
+  const [engine, setEngine] = useState(providerDefaultEngine);
   const [proxyPoolId, setProxyPoolId] = useState("");
   const [proxyUrl, setProxyUrl] = useState("");
   const [proxyPools, setProxyPools] = useState([]);
@@ -114,7 +135,8 @@ export default function BulkAccountAutomationModal({
 
   const resetState = useCallback(() => {
     setBulkText("");
-    setConcurrency(String(DEFAULT_CONCURRENCY));
+    setConcurrency(String(providerDefaultConcurrency));
+    setEngine(providerDefaultEngine);
     setAutoConcurrency(true);
     setProxyPoolId("");
     setProxyUrl("");
@@ -125,7 +147,7 @@ export default function BulkAccountAutomationModal({
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(storageKey);
     }
-  }, [storageKey]);
+  }, [storageKey, providerDefaultConcurrency, providerDefaultEngine]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -224,12 +246,29 @@ export default function BulkAccountAutomationModal({
       try {
         const { res, data } = await fetchJob(provider, activeJob.jobId);
         if (res.ok && data?.job) {
-          setActiveJob(data.job);
-          if (typeof window !== "undefined") {
+          setActiveJob((prev) => {
+            // Do not let a stale server snapshot resurrect a job we already cancelled in UI
+            if (
+              prev?.status === "cancelled" &&
+              ACTIVE_JOB_STATUSES.has(data.job.status) &&
+              prev.jobId === data.job.jobId
+            ) {
+              return prev;
+            }
+            return data.job;
+          });
+          if (typeof window !== "undefined" && !TERMINAL_JOB_STATUSES.has(data.job.status)) {
             window.localStorage.setItem(storageKey, data.job.jobId);
           }
           if (TERMINAL_JOB_STATUSES.has(data.job.status) && !completedRefreshJobsRef.current.has(data.job.jobId)) {
             completedRefreshJobsRef.current.add(data.job.jobId);
+            if (typeof window !== "undefined") {
+              try {
+                window.localStorage.removeItem(storageKey);
+              } catch {
+                /* ignore */
+              }
+            }
             onSuccess?.();
           }
         }
@@ -241,17 +280,7 @@ export default function BulkAccountAutomationModal({
     return () => window.clearInterval(interval);
   }, [activeJob?.jobId, finishedJob, isOpen, onSuccess, provider, storageKey]);
 
-  const handleStartBulk = async () => {
-    const lines = bulkText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (!lines.length) {
-      setError("Please enter at least one email:password or email|password line");
-      return;
-    }
-
+  const startBulkJob = async (lines) => {
     setImporting(true);
     setError(null);
     setJobRestoreNotice(null);
@@ -261,8 +290,9 @@ export default function BulkAccountAutomationModal({
         accounts: lines,
         concurrency: autoConcurrency
           ? "auto"
-          : Number.parseInt(concurrency, 10) || DEFAULT_CONCURRENCY,
-        engine,
+          : Number.parseInt(concurrency, 10) || providerDefaultConcurrency,
+        // Grok must always use Camoufox (xAI Access denied on Chromium/Node poll)
+        engine: provider === "grok-cli" ? "camoufox" : engine,
       };
       if (proxyPoolId) {
         postBody.proxyPoolId = proxyPoolId;
@@ -294,18 +324,80 @@ export default function BulkAccountAutomationModal({
     }
   };
 
+  const handleStartBulk = async () => {
+    const lines = bulkText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (!lines.length) {
+      setError("Please enter at least one email:password or email|password line");
+      return;
+    }
+
+    await startBulkJob(lines);
+  };
+
+  const handleRetryFailed = async () => {
+    const failedEmails = new Set(
+      (activeJob?.accounts || [])
+        .filter((account) => String(account.status).startsWith("failed"))
+        .map((account) => String(account.email).toLowerCase())
+    );
+    const retryLines = bulkText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => failedEmails.has(getBulkAccountEmail(line)));
+
+    if (!retryLines.length) {
+      setError("Failed account credentials are no longer available. Clear the job and enter them again.");
+      return;
+    }
+
+    await startBulkJob(retryLines);
+  };
+
   const handleCancelJob = async () => {
     if (!activeJob?.jobId) return;
 
+    // Optimistic UI — do not wait for poll to flip status
+    setActiveJob((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        status: "cancelled",
+        cancelRequested: true,
+        accounts: (prev.accounts || []).map((a) =>
+          a.status === "queued" || a.status === "running" || a.status === "needs_manual"
+            ? { ...a, status: "cancelled", currentStep: "cancelled", message: "Job cancelled" }
+            : a
+        ),
+        summary: {
+          ...(prev.summary || {}),
+          running: 0,
+          queued: 0,
+          needs_manual: 0,
+        },
+      };
+    });
+
     try {
+      setError(null);
       const res = await fetch(`/api/oauth/${provider}/bulk-import/${activeJob.jobId}/cancel`, {
         method: "POST",
       });
       const data = await readJsonResponse(res, "Failed to cancel job");
       if (!res.ok || data.error) throw new Error(data.error || "Failed to cancel job");
-      if (data.job) setActiveJob(data.job);
+      if (data.job) {
+        setActiveJob({ ...data.job, status: "cancelled" });
+      }
+      try {
+        window.localStorage?.removeItem?.(storageKey);
+      } catch {
+        /* ignore */
+      }
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "Cancel failed — restart server to kill stuck browsers");
     }
   };
 
@@ -344,6 +436,11 @@ export default function BulkAccountAutomationModal({
               <p className="text-sm text-blue-800 dark:text-blue-200">
                 Bulk GSuite login runs browser workers in the background. Use one account per line: <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">email:password</code> or <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">email|password</code>. Lines starting with <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">#</code> are skipped. Accounts that hit CAPTCHA, 2FA, or recovery prompts move to manual assist.
               </p>
+              {provider === "grok-cli" && (
+                <p className="mt-2 text-sm font-medium text-amber-800 dark:text-amber-200">
+                  Grok/xAI: token redeem only works with Camoufox (same as real browser). Chromium + server-side poll get Access denied. Manual Providers OAuth works because it uses your normal browser fingerprint.
+                </p>
+              )}
             </div>
 
             <div>
@@ -410,13 +507,16 @@ export default function BulkAccountAutomationModal({
                   value={engine}
                   onChange={(event) => setEngine(event.target.value)}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                  disabled={provider === "grok-cli"}
                 >
-                  {ENGINE_OPTIONS.map((opt) => (
+                  {engineOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
                 <p className="mt-1 text-xs text-text-muted">
-                  Camoufox is a stealth Firefox; first run downloads ~150MB.
+                  {provider === "grok-cli"
+                    ? "Grok/xAI rejects Chromium + Node token poll (Access denied). Camoufox is required for authorize and redeem."
+                    : "Camoufox is a stealth Firefox; first run downloads ~150MB."}
                 </p>
               </div>
             </div>
@@ -653,9 +753,16 @@ export default function BulkAccountAutomationModal({
             </Button>
           )}
           {finishedJob && (
-            <Button onClick={handleDoneRefresh} fullWidth>
-              Done & Refresh Connections
-            </Button>
+            <>
+{["kiro", "antigravity", "grok-cli"].includes(provider) && activeJob.summary?.failed > 0 && (
+                <Button onClick={handleRetryFailed} fullWidth disabled={importing}>
+                  {importing ? "Retrying..." : `Retry Failed Emails (${activeJob.summary.failed})`}
+                </Button>
+              )}
+              <Button onClick={handleDoneRefresh} fullWidth variant={["kiro", "antigravity", "grok-cli"].includes(provider) && activeJob.summary?.failed > 0 ? "secondary" : "primary"}>
+                Done & Refresh Connections
+              </Button>
+            </>
           )}
           <Button onClick={activeJob ? resetState : onClose} variant="ghost" fullWidth>
             {activeJob ? "Clear" : "Cancel"}

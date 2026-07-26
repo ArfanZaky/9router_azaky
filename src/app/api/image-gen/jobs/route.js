@@ -58,7 +58,7 @@ export async function POST(request) {
     if ((!body.assets && !body.images) && Array.isArray(body.data)) {
       for (const item of body.data) {
         const id = uuidv4();
-        if (item.b64_json) {
+        if (item.b64_json && String(item.b64_json).length > 32) {
           const written = writeImageFromBase64({ id, b64: item.b64_json, mime: "image/png" });
           assetsIn.push({ id, path: written.rel, mime: written.mime, sourceUrl: item.url || null });
         } else if (item.url) {

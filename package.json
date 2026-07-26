@@ -4,10 +4,10 @@
   "description": "WYx0 fork of 9Router with provider automation and quota tracking",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack --port 2026",
-    "dev:webpack": "next dev --webpack --port 2026",
+    "dev": "node chat-server.mjs",
+    "dev:webpack": "node chat-server.mjs",
     "build": "node ./scripts/build-next.mjs",
-    "start": "node ./scripts/start-standalone.mjs",
+    "start": "node chat-server.mjs",
     "dev:bun": "bun --bun next dev --webpack --port 2026",
     "build:bun": "bun --bun next build --webpack",
     "start:bun": "bun ./.next/standalone/server.js",
@@ -46,6 +46,7 @@
     "sql.js": "^1.14.1",
     "undici": "^7.19.2",
     "uuid": "^13.0.0",
+    "ws": "^8.21.1",
     "zustand": "^5.0.10"
   },
   "optionalDependencies": {
@@ -61,7 +62,9 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4"
   },
-  "engines": { "node": ">=18.0.0" },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",

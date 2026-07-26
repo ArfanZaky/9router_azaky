@@ -142,13 +142,27 @@ export class AntigravityExecutor extends BaseExecutor {
       // Strip model name suffixes for the actual API model name
       const cleanModel = model.replace(/-(\d+)x(\d+)$/, "");
 
-      // Build simplified contents — text-only, merge all user messages
+      // Image gen: keep text + inline image refs (edit). Do not drop inlineData.
       const contents = [];
       const srcContents = body.request?.contents || body.contents || [];
       for (const c of srcContents) {
-        const textParts = (c.parts || []).filter(p => p.text !== undefined).map(p => ({ text: p.text }));
-        if (textParts.length > 0) {
-          contents.push({ role: c.role || "user", parts: textParts });
+        const parts = (c.parts || [])
+          .map((p) => {
+            if (p?.text !== undefined) return { text: p.text };
+            const inline = p?.inlineData || p?.inline_data;
+            if (inline?.data) {
+              return {
+                inlineData: {
+                  mimeType: inline.mimeType || inline.mime_type || "image/png",
+                  data: inline.data,
+                },
+              };
+            }
+            return null;
+          })
+          .filter(Boolean);
+        if (parts.length > 0) {
+          contents.push({ role: c.role || "user", parts });
         }
       }
 
@@ -163,6 +177,9 @@ export class AntigravityExecutor extends BaseExecutor {
       const request = {
         contents,
         generationConfig: {
+          // Required for Nano Banana / Gemini image models — without this the
+          // API often returns text-only and the dashboard shows "No asset".
+          responseModalities: ["TEXT", "IMAGE"],
           temperature: 1.0,
           topP: 0.95,
           topK: 40,

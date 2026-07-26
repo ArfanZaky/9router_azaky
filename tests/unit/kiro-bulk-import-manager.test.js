@@ -79,6 +79,7 @@ describe("kiro bulk import manager helpers", () => {
 describe("KiroBulkImportManager", () => {
   it("processes accounts once and completes with saved connections", async () => {
     const processed = [];
+    const exchangeRequests = [];
     const manager = new KiroBulkImportManager({
       browserLauncher: async () => createFakeBrowser(),
       kiroServiceFactory: () => ({
@@ -96,11 +97,10 @@ describe("KiroBulkImportManager", () => {
           code: `code-${email}`,
         };
       },
-      socialExchange: async ({ code }) => ({
-        connection: {
-          id: `conn-${code}`,
-        },
-      }),
+      socialExchange: async (request) => {
+        exchangeRequests.push(request);
+        return { connection: { id: `conn-${request.code}` } };
+      },
     });
 
     const startedJob = await manager.startJob({
@@ -117,6 +117,7 @@ describe("KiroBulkImportManager", () => {
     });
 
     expect(processed.sort()).toEqual(["user1@gmail.com", "user2@gmail.com"]);
+    expect(exchangeRequests.map((request) => request.email).sort()).toEqual(["user1@gmail.com", "user2@gmail.com"]);
     expect(finishedJob.summary.success).toBe(2);
     expect(finishedJob.summary.failed).toBe(0);
     expect(finishedJob.accounts.every((account) => account.connectionId)).toBe(true);

@@ -37,15 +37,39 @@ function extractToolCalls(message) {
   }));
 }
 
+/** OpenAI content may be string or [{type:"text",text}] (Claude/Gemini after translate). */
+function extractMessageText(message) {
+  if (!message || typeof message !== "object") return "";
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part?.type === "text" && typeof part.text === "string") return part.text;
+        if (typeof part?.text === "string") return part.text;
+        return "";
+      })
+      .join("");
+  }
+  if (typeof message.reasoning_content === "string" && message.reasoning_content.trim()) {
+    return message.reasoning_content;
+  }
+  if (typeof message.text === "string") return message.text;
+  return "";
+}
+
 async function callChatCompletions({ model, messages, tools, apiKey, temperature, max_tokens, top_p }) {
   await ensureTranslators();
   const body = {
     model,
     messages,
-    tools,
-    tool_choice: "auto",
     stream: false,
   };
+  if (tools?.length) {
+    body.tools = tools;
+    body.tool_choice = "auto";
+  }
   if (temperature != null) body.temperature = temperature;
   if (max_tokens != null) body.max_tokens = max_tokens;
   if (top_p != null) body.top_p = top_p;
@@ -98,9 +122,9 @@ export async function runAgentLoop({
   signal,
   onEvent,
 }) {
-  const emit = (event, data) => {
+  const emit = async (event, data) => {
     if (signal?.aborted) return;
-    onEvent?.(event, data);
+    await onEvent?.(event, data);
   };
 
   const mode = accessMode === "full" ? "full" : "sandbox";
@@ -140,16 +164,18 @@ export async function runAgentLoop({
   const working = [{ role: "system", content: agentSystem }, ...history];
   const transcript = []; // UI-facing turns (assistant/tool)
   let finalText = "";
+  let endedWithToolCalls = false;
+  let continuationUsed = false;
 
-  emit("status", { phase: "start", maxSteps, toolCount: tools.length, workspace, accessMode: mode });
+  await emit("status", { phase: "start", maxSteps, toolCount: tools.length, workspace, accessMode: mode });
 
+  let lastError = "";
   for (let step = 0; step < maxSteps; step++) {
     if (signal?.aborted) {
-      emit("error", { message: "Aborted" });
       break;
     }
 
-    emit("status", { phase: "thinking", step: step + 1 });
+    await emit("status", { phase: "thinking", step: step + 1 });
 
     let data;
     try {
@@ -163,19 +189,27 @@ export async function runAgentLoop({
         top_p,
       });
     } catch (e) {
-      emit("error", { message: e.message || String(e) });
-      break;
+      lastError = e.message || String(e);
+      throw new Error(lastError);
+    }
+
+    if (data?.error) {
+      lastError =
+        typeof data.error === "string"
+          ? data.error
+          : data.error?.message || JSON.stringify(data.error);
+      throw new Error(lastError);
     }
 
     const choice = data?.choices?.[0];
     const message = choice?.message || {};
     const finish = choice?.finish_reason || "";
-    const content = typeof message.content === "string" ? message.content : "";
+    const content = extractMessageText(message);
     const toolCalls = extractToolCalls(message);
 
     if (content) {
       finalText = content;
-      emit("text", { step: step + 1, content });
+      await emit("text", { step: step + 1, content });
     }
 
     // Persist assistant message into working history
@@ -203,21 +237,31 @@ export async function runAgentLoop({
       tool_calls: assistantMsg.tool_calls || null,
       step: step + 1,
     });
-    emit("message", {
+    await emit("message", {
       role: "assistant",
       content: content || "",
       tool_calls: assistantMsg.tool_calls || null,
       step: step + 1,
     });
 
-    if (!toolCalls.length || finish === "stop") {
+    endedWithToolCalls = toolCalls.length > 0;
+    if (!toolCalls.length) {
+      const incomplete = finish === "length" || content.trimEnd().endsWith(":");
+      if (incomplete && !continuationUsed && step < maxSteps - 1) {
+        continuationUsed = true;
+        working.push({
+          role: "user",
+          content: "Continue the unfinished task now. Use tools when changes or checks are required, then provide a final summary.",
+        });
+        continue;
+      }
       break;
     }
 
     // Execute tools sequentially
     for (const call of toolCalls) {
       if (signal?.aborted) break;
-      emit("tool_start", {
+      await emit("tool_start", {
         id: call.id,
         name: call.name,
         arguments: call.arguments,
@@ -231,7 +275,7 @@ export async function runAgentLoop({
         accessMode: mode,
       });
 
-      emit("tool_result", {
+      await emit("tool_result", {
         id: call.id,
         name: call.name,
         content: result,
@@ -251,7 +295,7 @@ export async function runAgentLoop({
         content: result,
         step: step + 1,
       });
-      emit("message", {
+      await emit("message", {
         role: "tool",
         tool_call_id: call.id,
         name: call.name,
@@ -261,7 +305,41 @@ export async function runAgentLoop({
     }
   }
 
-  emit("done", {
+  if (endedWithToolCalls && !signal?.aborted) {
+    try {
+      const data = await callChatCompletions({
+        model,
+        messages: [...working, {
+          role: "user",
+          content: "The tool-step limit was reached. Summarize completed work, verification, and anything still unfinished. Do not call tools.",
+        }],
+        tools: [],
+        apiKey,
+        temperature,
+        max_tokens,
+        top_p,
+      });
+      if (data?.error) {
+        throw new Error(typeof data.error === "string" ? data.error : data.error?.message || JSON.stringify(data.error));
+      }
+      const summary = extractMessageText(data?.choices?.[0]?.message);
+      if (summary) {
+        finalText = summary;
+        transcript.push({ role: "assistant", content: summary, tool_calls: null, step: maxSteps + 1 });
+        await emit("text", { step: maxSteps + 1, content: summary });
+        await emit("message", { role: "assistant", content: summary, tool_calls: null, step: maxSteps + 1 });
+      }
+    } catch (error) {
+      finalText = `${finalText ? `${finalText}\n\n` : ""}(Agent reached the tool-step limit; final summary failed: ${error.message || String(error)})`;
+      await emit("text", { step: maxSteps + 1, content: finalText });
+    }
+  }
+
+  if (!finalText && lastError && !signal?.aborted) {
+    finalText = `Error: ${lastError}`;
+  }
+
+  await emit("done", {
     finalText,
     transcript,
     steps: transcript.filter((t) => t.role === "assistant").length,
@@ -287,7 +365,6 @@ export function createAgentSseResponse(run) {
         .then(() => run(onEvent))
         .catch((err) => {
           onEvent("error", { message: err?.message || String(err) });
-          onEvent("done", { finalText: "", transcript: [], steps: 0 });
         })
         .finally(() => {
           closed = true;

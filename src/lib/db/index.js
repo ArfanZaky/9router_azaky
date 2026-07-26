@@ -72,6 +72,9 @@ export {
   listChatSessions, getChatSession, createChatSession, updateChatSession, deleteChatSession,
   listChatMessages, createChatMessage, updateChatMessage, deleteChatMessage, replaceChatMessages,
 } from "./repos/chatRepo.js";
+export {
+  createChatRun, getChatRunRecord, updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
+} from "./repos/chatRunRepo.js";
 
 // Image generation playground
 export {
