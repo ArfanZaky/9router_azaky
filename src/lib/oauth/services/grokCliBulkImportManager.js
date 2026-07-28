@@ -34,10 +34,50 @@ import {
   GROK_CLI_BULK_CONFIG,
 } from "../constants/grok.js";
 import { ProxyAgent } from "undici";
+import { createHash } from "node:crypto";
+
+const GROK_PROXY_QUARANTINE_MS = 30 * 60_000;
+const GROK_PROXY_INVALID_GRANT_LIMIT = 2;
+
+function getProxyHealthStore() {
+  if (!globalThis.__grokCliProxyHealth) globalThis.__grokCliProxyHealth = new Map();
+  return globalThis.__grokCliProxyHealth;
+}
+
+function getProxyKey(proxyUrl) {
+  return createHash("sha256").update(String(proxyUrl || "direct")).digest("hex").slice(0, 10);
+}
+
+function getIpFingerprint(ip) {
+  return createHash("sha256").update(String(ip || "unknown")).digest("hex").slice(0, 8);
+}
 
 function createProxyDispatcher(proxyUrl) {
   const clean = String(proxyUrl || "").trim();
   return clean ? new ProxyAgent({ uri: clean }) : null;
+}
+
+async function readNodeEgressIp(dispatcher) {
+  const response = await fetch("https://api.ipify.org?format=json", {
+    ...(dispatcher ? { dispatcher } : {}),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`Node egress check HTTP ${response.status}`);
+  return String((await response.json())?.ip || "").trim();
+}
+
+async function readBrowserEgressIp(browser) {
+  const { context, page } = await createFreshContext(browser);
+  try {
+    await page.goto("https://api.ipify.org?format=json", {
+      waitUntil: "domcontentloaded",
+      timeout: 20_000,
+    });
+    const text = await page.locator("body").innerText({ timeout: 5_000 });
+    return String(JSON.parse(text)?.ip || "").trim();
+  } finally {
+    await context.close().catch(() => null);
+  }
 }
 
 /**
@@ -46,7 +86,7 @@ function createProxyDispatcher(proxyUrl) {
 /**
  * Request device code via Node fetch (fallback).
  */
-async function defaultRequestDeviceCode(proxyUrl) {
+async function defaultRequestDeviceCode(proxyUrl, proxyDispatcher) {
   const body = new URLSearchParams({
     client_id: GROK_CLI_CLIENT_ID,
     scope: GROK_CLI_SCOPE,
@@ -64,7 +104,7 @@ async function defaultRequestDeviceCode(proxyUrl) {
       },
       body,
     };
-    const dispatcher = createProxyDispatcher(proxyUrl);
+    const dispatcher = proxyDispatcher || createProxyDispatcher(proxyUrl);
     if (dispatcher) requestInit.dispatcher = dispatcher;
     const response = await fetch(GROK_CLI_DEVICE_CODE_URL, requestInit);
 
@@ -98,7 +138,7 @@ async function defaultRequestDeviceCode(proxyUrl) {
 /**
  * Default token polling function
  */
-async function defaultPollDeviceToken(deviceCode, proxyUrl) {
+async function defaultPollDeviceToken(deviceCode, proxyUrl, proxyDispatcher) {
   try {
     console.log("[GrokCLI] Polling token for device code:", deviceCode.substring(0, 10) + "...");
     const requestInit = {
@@ -114,7 +154,7 @@ async function defaultPollDeviceToken(deviceCode, proxyUrl) {
         client_id: GROK_CLI_CLIENT_ID,
       }),
     };
-    const dispatcher = createProxyDispatcher(proxyUrl);
+    const dispatcher = proxyDispatcher || createProxyDispatcher(proxyUrl);
     if (dispatcher) requestInit.dispatcher = dispatcher;
     const response = await fetch(GROK_CLI_TOKEN_URL, requestInit);
 
@@ -235,6 +275,7 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
     requestDeviceCode = defaultRequestDeviceCode,
     pollDeviceToken = defaultPollDeviceToken,
     saveConnection = defaultSaveGrokCliConnection,
+    storageName = "grok-cli-bulk-import",
   } = {}) {
     super({
       // Always Camoufox: Chromium + bare Node fetch get invalid_grant/Access denied from xAI
@@ -251,7 +292,7 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
           });
         }),
       googleAutomation,
-      storageName: "grok-cli-bulk-import",
+      storageName,
     });
 
     this.requestDeviceCode = requestDeviceCode;
@@ -260,13 +301,43 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
     this.config = GROK_CLI_BULK_CONFIG;
   }
 
+  refreshRuntimeDefaults({ googleAutomation } = {}) {
+    this.requestDeviceCode = defaultRequestDeviceCode;
+    this.pollDeviceToken = defaultPollDeviceToken;
+    this.saveConnection = defaultSaveGrokCliConnection;
+    if (googleAutomation) this.googleAutomation = googleAutomation;
+  }
+
   async startJob(opts = {}) {
     // Force engine even if UI/API sends chromium
     return super.startJob({
       ...opts,
       engine: "camoufox",
-      concurrency: opts.concurrency ?? 1,
+      concurrency: 1,
     });
+  }
+
+  _isProxyQuarantined(proxyUrl) {
+    const state = getProxyHealthStore().get(getProxyKey(proxyUrl));
+    return Boolean(state?.quarantinedUntil && state.quarantinedUntil > Date.now());
+  }
+
+  _recordProxyFailure(proxyUrl, reason) {
+    if (!proxyUrl) return;
+    const key = getProxyKey(proxyUrl);
+    const store = getProxyHealthStore();
+    const state = store.get(key) || { invalidGrants: 0, mismatches: 0, quarantinedUntil: 0 };
+    if (reason === "egress_mismatch") state.mismatches += 1;
+    if (reason === "invalid_grant") state.invalidGrants += 1;
+    if (reason === "egress_mismatch" || state.invalidGrants >= GROK_PROXY_INVALID_GRANT_LIMIT) {
+      state.quarantinedUntil = Date.now() + GROK_PROXY_QUARANTINE_MS;
+    }
+    store.set(key, state);
+  }
+
+  _recordProxySuccess(proxyUrl) {
+    if (!proxyUrl) return;
+    getProxyHealthStore().delete(getProxyKey(proxyUrl));
   }
 
   async runWorker(job, workerId, browser = job.browser) {
@@ -279,20 +350,83 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
       const account = this.dequeueAccount(job, workerId);
       if (!account) return;
 
-      // Round-robin assignment by this job's input order.
-      const proxyUrl = proxyUrls[(Math.max(1, account.line || 1) - 1) % proxyUrls.length];
-      account.assignedProxyUrl = proxyUrl;
       let accountBrowser = null;
+      let proxyDispatcher = null;
+      let proxyUrl = null;
       try {
-        accountBrowser = await this.browserLauncher({ ...job, proxyUrl });
-        accountBrowser.__ninerouterProxyUrl = proxyUrl;
-        job.workerBrowsers.add(accountBrowser);
-        this.setAccountStep(
-          account,
-          "proxy_assigned",
-          `Round-robin proxy ${((Math.max(1, account.line || 1) - 1) % proxyUrls.length) + 1}/${proxyUrls.length}`
-        );
+        const originalIndex = Number.isInteger(job.proxyAccountIndexes?.[String(account.email).toLowerCase()])
+          ? job.proxyAccountIndexes[String(account.email).toLowerCase()]
+          : Math.max(1, account.line || 1) - 1;
+        const startIndex = (originalIndex + Number(job.proxyOffset || 0)) % proxyUrls.length;
+        for (let attempt = 0; attempt < proxyUrls.length; attempt++) {
+          const proxyIndex = (startIndex + attempt) % proxyUrls.length;
+          const candidate = proxyUrls[proxyIndex];
+          if (this._isProxyQuarantined(candidate)) continue;
+
+          accountBrowser = await this.browserLauncher({ ...job, proxyUrl: candidate });
+          accountBrowser.__ninerouterProxyUrl = candidate;
+          job.workerBrowsers.add(accountBrowser);
+          proxyDispatcher = createProxyDispatcher(candidate);
+
+          let nodeIp = "";
+          let browserIp = "";
+          try {
+            [nodeIp, browserIp] = await Promise.all([
+              readNodeEgressIp(proxyDispatcher),
+              readBrowserEgressIp(accountBrowser),
+            ]);
+          } catch (error) {
+            console.warn(`[GrokCLI] Proxy ${proxyIndex + 1}/${proxyUrls.length} egress check unavailable: ${error.message}`);
+          }
+
+          if (!nodeIp || !browserIp) {
+            this.setAccountStep(
+              account,
+              "proxy_unverified",
+              `Proxy ${proxyIndex + 1}/${proxyUrls.length} egress could not be verified; trying next proxy`
+            );
+            await proxyDispatcher.close().catch(() => null);
+            proxyDispatcher = null;
+            job.workerBrowsers.delete(accountBrowser);
+            await accountBrowser.close().catch(() => null);
+            accountBrowser = null;
+            continue;
+          }
+
+          if (nodeIp && browserIp && nodeIp !== browserIp) {
+            this._recordProxyFailure(candidate, "egress_mismatch");
+            this.setAccountStep(
+              account,
+              "proxy_rejected",
+              `Proxy ${proxyIndex + 1}/${proxyUrls.length} rotates egress IP; trying next proxy`
+            );
+            await proxyDispatcher.close().catch(() => null);
+            proxyDispatcher = null;
+            job.workerBrowsers.delete(accountBrowser);
+            await accountBrowser.close().catch(() => null);
+            accountBrowser = null;
+            continue;
+          }
+
+          proxyUrl = candidate;
+          account.assignedProxyUrl = candidate;
+          account.assignedProxyDispatcher = proxyDispatcher;
+          this.setAccountStep(
+            account,
+            "proxy_assigned",
+            `Proxy ${proxyIndex + 1}/${proxyUrls.length} verified${nodeIp ? ` (egress ${getIpFingerprint(nodeIp)})` : ""}`
+          );
+          break;
+        }
+
+        if (!accountBrowser || !proxyUrl) {
+          throw new Error("No healthy sticky proxy available; all proxies are mismatched or quarantined");
+        }
         await this.processAccount(job, account, workerId, accountBrowser);
+        if (account.status === "success") this._recordProxySuccess(proxyUrl);
+        if (/invalid_grant|Access denied/i.test(account.error || "")) {
+          this._recordProxyFailure(proxyUrl, "invalid_grant");
+        }
       } catch (error) {
         if (!String(account.status || "").startsWith("failed") && account.status !== "cancelled") {
           this.finalizeAccount(account, job.cancelRequested ? "cancelled" : "failed", {
@@ -302,6 +436,8 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
           });
         }
       } finally {
+        account.assignedProxyDispatcher = null;
+        if (proxyDispatcher) await proxyDispatcher.close().catch(() => null);
         if (accountBrowser) {
           job.workerBrowsers.delete(accountBrowser);
           await accountBrowser.close().catch(() => null);
@@ -317,7 +453,10 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
     this.setAccountStep(account, "requesting_device_code", "Requesting device code");
     
     try {
-      const deviceData = await this.requestDeviceCode(account?.assignedProxyUrl || null);
+      const deviceData = await this.requestDeviceCode(
+        account?.assignedProxyUrl || null,
+        account?.assignedProxyDispatcher || null
+      );
       
       if (!deviceData.device_code || !deviceData.verification_uri) {
         throw new Error("Invalid device code response");
@@ -349,8 +488,8 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
    * Poll token via Node — same path as dashboard Providers OAuth (manual).
    * Device flow: issue + redeem on the CLI client; browser only authorizes.
    */
-  async _pollTokenOnceServer(deviceCode, proxyUrl) {
-    const result = await this.pollDeviceToken(deviceCode, proxyUrl);
+  async _pollTokenOnceServer(deviceCode, proxyUrl, proxyDispatcher) {
+    const result = await this.pollDeviceToken(deviceCode, proxyUrl, proxyDispatcher);
     const data = result.data || {};
     if (data.access_token) {
       return {
@@ -392,7 +531,6 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
     const startTime = Date.now();
     const timeoutMs = this.config.pollTimeoutMs;
     let currentInterval = Math.max((account.pollIntervalSec || 5) * 1000, 5_000);
-    let postAuthGrantErrors = 0;
     const deviceCodeHint = `${code.slice(0, 8)}...${code.slice(-6)} (len=${code.length})`;
 
     this.setAccountStep(account, "polling_token", "Polling for authorization token");
@@ -410,7 +548,11 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
 
       try {
         console.log("[GrokCLI] Polling via Node pollForToken (same as Providers OAuth)...");
-        const result = await this._pollTokenOnceServer(code, account?.assignedProxyUrl || null);
+        const result = await this._pollTokenOnceServer(
+          code,
+          account?.assignedProxyUrl || null,
+          account?.assignedProxyDispatcher || null
+        );
         console.log(
           `[GrokCLI] Node poll: success=${result.success} error=${result.error || "-"} desc=${result.errorDescription || "-"}`
         );
@@ -439,22 +581,9 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
         }
 
         if (result.error === "invalid_grant" || result.error === "access_denied") {
-          postAuthGrantErrors++;
-          console.log(
-            `[GrokCLI] Post-auth ${result.error} ${postAuthGrantErrors}/8: ${result.errorDescription || ""} | ${deviceCodeHint}`
+          throw new Error(
+            `invalid_grant after browser /done; retry with a fresh device_code and next proxy. ${result.errorDescription || result.error} | ${deviceCodeHint}`
           );
-          this.setAccountStep(
-            account,
-            "polling_retry",
-            `Token after /done: ${result.errorDescription || result.error} (${postAuthGrantErrors}/8)`
-          );
-          if (postAuthGrantErrors >= 8) {
-            throw new Error(
-              `Access denied after browser /done (device_code not redeemable). ${result.errorDescription || result.error}`
-            );
-          }
-          await wait(currentInterval);
-          continue;
         }
 
         console.log(`[GrokCLI] Poll error:`, result.error, result.errorDescription);
@@ -508,9 +637,7 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
     let page = null;
 
     try {
-      // Step 1: Node device_code FIRST (same as dashboard Providers OAuth).
-      // Browser-issued codes + browser poll produced invalid_grant after /done.
-      // Standard device flow: CLI issues + redeems; browser only authorizes.
+      // CLI issues + redeems the device_code; browser handles user authorization.
       const deviceData = await this._requestDeviceCode(account);
       if (!deviceData.device_code || !(deviceData.verification_uri_complete || deviceData.verification_uri || account.verificationUri)) {
         throw new Error("Invalid device code response");
@@ -544,6 +671,8 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
         userCode: deviceData.user_code,
         email: account.email,
         password: account.password,
+        proxyUrl: account?.assignedProxyUrl || null,
+        proxyDispatcher: account?.assignedProxyDispatcher || null,
         successPromise: null,
         shortTimeoutMs: this.config.shortTimeoutMs,
         onStep: (step, message) => {
@@ -664,7 +793,10 @@ export class GrokCliBulkImportManager extends KiroBulkImportManager {
 
       } else {
         // Generic failure
-        this.finalizeAccount(account, "failed", {
+        const terminalStatus = String(automationResult.status || "").startsWith("failed")
+          ? automationResult.status
+          : "failed";
+        this.finalizeAccount(account, terminalStatus, {
           error: automationResult.error || "Automation failed",
           step: "automation_failed",
           message: automationResult.error || "Browser automation failed",
@@ -817,6 +949,7 @@ export function getGrokCliBulkImportManager() {
   if (!store.manager) {
     store.manager = new GrokCliBulkImportManager();
   }
+  store.manager.refreshRuntimeDefaults?.({ googleAutomation: runGrokCliGoogleAutomation });
   return store.manager;
 }
 

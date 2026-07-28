@@ -17,6 +17,7 @@ const DEFAULT_CONCURRENCY = 4;
 // Camoufox/Firefox: one shared browser window per job; keep workers low by default
 const DEFAULT_CONCURRENCY_BY_PROVIDER = {
   "grok-cli": 1,
+  "grok-cli-domain": 1,
 };
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "needs_manual"]);
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
@@ -26,6 +27,7 @@ const DEFAULT_ENGINE = "chromium";
 // Grok xAI rejects Chromium TLS fingerprint on device_code redeem → force Camoufox
 const DEFAULT_ENGINE_BY_PROVIDER = {
   "grok-cli": "camoufox",
+  "grok-cli-domain": "camoufox",
 };
 const ENGINE_OPTIONS = [
   { value: "chromium", label: "Chromium (default, fast)" },
@@ -100,6 +102,7 @@ export default function BulkAccountAutomationModal({
   serviceName,
 }) {
   const storageKey = `${provider}-bulk-import-active-job`;
+  const isGrokProvider = provider === "grok-cli" || provider === "grok-cli-domain";
   const completedRefreshJobsRef = useRef(new Set());
   const autoRetriedJobIdsRef = useRef(new Set());
   const autoRetryInFlightRef = useRef(false);
@@ -108,8 +111,8 @@ export default function BulkAccountAutomationModal({
   const [bulkText, setBulkText] = useState("");
   const providerDefaultConcurrency = DEFAULT_CONCURRENCY_BY_PROVIDER[provider] ?? DEFAULT_CONCURRENCY;
   const providerDefaultEngine = DEFAULT_ENGINE_BY_PROVIDER[provider] ?? DEFAULT_ENGINE;
-  const engineOptions = provider === "grok-cli" ? ENGINE_OPTIONS_GROK : ENGINE_OPTIONS;
-  const autoRetryEnabled = AUTO_RETRY_FAILED_PROVIDERS.has(provider);
+  const engineOptions = isGrokProvider ? ENGINE_OPTIONS_GROK : ENGINE_OPTIONS;
+  const autoRetryEnabled = AUTO_RETRY_FAILED_PROVIDERS.has(provider) || provider === "grok-cli-domain";
   const [concurrency, setConcurrency] = useState(String(providerDefaultConcurrency));
   const [autoConcurrency, setAutoConcurrency] = useState(true);
   const [systemSpecInfo, setSystemSpecInfo] = useState(null);
@@ -411,10 +414,16 @@ export default function BulkAccountAutomationModal({
           ? "auto"
           : Number.parseInt(concurrency, 10) || providerDefaultConcurrency,
         // Grok must always use Camoufox (xAI Access denied on Chromium/Node poll)
-        engine: provider === "grok-cli" ? "camoufox" : engine,
+        engine: isGrokProvider ? "camoufox" : engine,
       };
-      if (provider === "grok-cli") {
+      if (isGrokProvider) {
         postBody.proxyMode = proxyMode;
+        postBody.proxyOffset = isRetryRound ? Math.max(0, (campaignRef.current?.round || 1) - 1) : 0;
+        postBody.proxyAccountIndexes = Object.fromEntries(
+          (campaignRef.current?.originalLines || normalizedLines)
+            .map((line, index) => [getBulkAccountEmail(line), index])
+            .filter(([email]) => email)
+        );
       } else if (proxyPoolId) {
         postBody.proxyPoolId = proxyPoolId;
       } else if (proxyUrl.trim()) {
@@ -693,14 +702,14 @@ export default function BulkAccountAutomationModal({
                   value={engine}
                   onChange={(event) => setEngine(event.target.value)}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                  disabled={provider === "grok-cli"}
+                  disabled={isGrokProvider}
                 >
                   {engineOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
                 <p className="mt-1 text-xs text-text-muted">
-                  {provider === "grok-cli"
+                  {isGrokProvider
                     ? "Grok/xAI authorization uses Camoufox. Device-code issue and token redeem use the same direct or per-account proxy route."
                     : "Camoufox is a stealth Firefox; first run downloads ~150MB."}
                 </p>
@@ -709,9 +718,9 @@ export default function BulkAccountAutomationModal({
 
             <div>
               <label className="mb-2 block text-sm font-medium">
-                {provider === "grok-cli" ? "Proxy Mode" : "Network Proxy (optional)"}
+                {isGrokProvider ? "Proxy Mode" : "Network Proxy (optional)"}
               </label>
-              {provider === "grok-cli" && (
+              {isGrokProvider && (
                 <div className="mb-3 grid grid-cols-2 gap-2">
                   {[
                     { value: "none", label: "No Proxy", hint: "Direct connection" },
@@ -739,12 +748,12 @@ export default function BulkAccountAutomationModal({
                   ))}
                 </div>
               )}
-              {provider === "grok-cli" && proxyMode === "round-robin" && (
+              {isGrokProvider && proxyMode === "round-robin" && (
                 <p className="text-xs text-text-muted">
                   Automatically uses every HTTP/HTTPS proxy from all active browser-compatible pools. Each account receives the next proxy in order.
                 </p>
               )}
-              {provider !== "grok-cli" && (
+              {!isGrokProvider && (
                 <>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>

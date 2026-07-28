@@ -39,11 +39,12 @@ function buildResolvedProxy(proxyUrls, source) {
   };
 }
 
-export async function resolveAllBulkImportProxies() {
+export async function resolveAllBulkImportProxies({ httpOnly = false } = {}) {
   const pools = await getProxyPools({ isActive: true });
   const proxyUrls = (pools || [])
     .filter((pool) => pool?.isActive !== false && !RELAY_POOL_TYPES.has(pool?.type))
-    .flatMap((pool) => splitBulkImportProxyUrls(pool?.proxyUrl));
+    .flatMap((pool) => splitBulkImportProxyUrls(pool?.proxyUrl))
+    .filter((proxyUrl) => !httpOnly || /^https?:\/\//i.test(proxyUrl));
   const validationError = validateProxyUrls(proxyUrls);
   if (validationError) {
     return {

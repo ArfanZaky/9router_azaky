@@ -134,12 +134,7 @@ export function parseKiroBulkAccounts(accounts = []) {
 }
 
 function getFailedCount(accounts) {
-  return accounts.filter((account) => (
-    account.status === "failed"
-    || account.status === "failed_invalid_credentials"
-    || account.status === "failed_exchange"
-    || account.status === "failed_timeout"
-  )).length;
+  return accounts.filter((account) => String(account.status || "").startsWith("failed")).length;
 }
 
 function buildSummary(accounts) {

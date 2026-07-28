@@ -37,7 +37,7 @@ export async function POST(request) {
 
     const requestedProxyMode = body?.proxyMode === "round-robin" ? "round-robin" : "none";
     const resolvedProxy = requestedProxyMode === "round-robin"
-      ? await resolveAllBulkImportProxies()
+      ? await resolveAllBulkImportProxies({ httpOnly: true })
       : await resolveBulkImportProxy({ useSettingsFallback: false });
     const { proxyUrl, proxyUrls, proxyMode, proxyPoolId, proxySource, error: proxyError } = resolvedProxy;
     if (proxyError) {
@@ -49,19 +49,8 @@ export async function POST(request) {
         { status: 400 }
       );
     }
-    if (
-      requestedProxyMode === "round-robin" &&
-      proxyUrls.some((url) => !/^https?:\/\//i.test(url))
-    ) {
-      return NextResponse.json(
-        { error: "Grok Round Robin Proxy supports HTTP/HTTPS proxy URLs only" },
-        { status: 400 }
-      );
-    }
-
     const manager = getGrokCliBulkImportManager();
-    // xAI device_code redeem rejects Chromium/Node TLS fingerprint → Access denied.
-    // Manual Providers OAuth uses real browser; bulk must use Camoufox for authorize + token poll.
+    // Camoufox handles authorization; Node issue/redeem stays on the same account proxy session.
     const job = await manager.startJob({
       accounts,
       concurrency: body?.concurrency,
@@ -71,6 +60,17 @@ export async function POST(request) {
       proxyMode: requestedProxyMode === "round-robin" ? proxyMode : "none",
       proxyPoolId,
       proxySource,
+      jobFields: {
+        proxyOffset: Math.max(0, Number.parseInt(body?.proxyOffset, 10) || 0),
+        proxyAccountIndexes:
+          body?.proxyAccountIndexes && typeof body.proxyAccountIndexes === "object"
+            ? Object.fromEntries(
+                Object.entries(body.proxyAccountIndexes)
+                  .filter(([email, index]) => email.includes("@") && Number.isInteger(index) && index >= 0)
+                  .map(([email, index]) => [email.toLowerCase(), index])
+              )
+            : {},
+      },
     });
 
     return NextResponse.json({

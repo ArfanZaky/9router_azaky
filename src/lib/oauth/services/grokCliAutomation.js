@@ -753,3 +753,11 @@ export const __test__ = {
   clickGoogleLoginButton,
   readPageText,
 };
+
+export {
+  clickFirstVisible,
+  dismissGrokCookieBanner,
+  fillDeviceCodeIfNeeded,
+  clickContinueButton,
+  readPageText,
+};

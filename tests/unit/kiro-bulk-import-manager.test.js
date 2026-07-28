@@ -74,6 +74,16 @@ describe("kiro bulk import manager helpers", () => {
     expect(__test__.clampConcurrency("999")).toBe(KIRO_BULK_IMPORT_MAX_CONCURRENCY);
     expect(__test__.clampConcurrency("3")).toBe(3);
   });
+
+  it("counts provider-specific failed statuses in the summary", () => {
+    const summary = __test__.buildSummary([
+      { status: "success" },
+      { status: "failed_otp_timeout" },
+      { status: "failed_exchange" },
+    ]);
+    expect(summary.success).toBe(1);
+    expect(summary.failed).toBe(2);
+  });
 });
 
 describe("KiroBulkImportManager", () => {
