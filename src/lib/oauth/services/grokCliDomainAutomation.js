@@ -219,6 +219,17 @@ function profileNames(email) {
   };
 }
 
+function classifyTurnstileSnapshot(snapshot = {}, pageText = "") {
+  if (Number(snapshot.tokenLength) > 20) return "solved";
+  if (
+    snapshot.interactiveVisible ||
+    /verify you are human|verification failed|troubleshoot/i.test(pageText)
+  ) {
+    return "interactive";
+  }
+  return snapshot.mounted ? "checking" : "loading";
+}
+
 async function completeSignupProfile(page, email, password, reportStep) {
   const profileReady = await waitForAny(page, [...FIRST_NAME_SELECTORS, ...LAST_NAME_SELECTORS, ...PASSWORD_INPUT_SELECTORS], 15_000);
   if (!profileReady) {
@@ -238,13 +249,15 @@ async function completeSignupProfile(page, email, password, reportStep) {
   await fillFirst(page, PASSWORD_INPUT_SELECTORS, password);
 
   const turnstileStartedAt = Date.now();
-  const automaticGraceDeadline = turnstileStartedAt + 15_000;
+  const automaticGraceDeadline = turnstileStartedAt + 60_000;
   const extendedManualDeadline = turnstileStartedAt + 10 * 60_000;
   let checkingReported = false;
+  let loadingReported = false;
   let manualReported = false;
   let profileSubmitted = false;
   let extendedWaitReported = false;
   let lastManualElapsedBucket = 0;
+  let lastAutomaticElapsedBucket = 0;
   while (!page.isClosed?.()) {
     const text = await readPageText(page);
     const profileStillVisible = Boolean(await waitForAny(
@@ -256,9 +269,13 @@ async function completeSignupProfile(page, email, password, reportStep) {
     await dismissGrokCookieBanner(page, reportStep);
 
     const turnstile = await page.evaluate(() => {
-      const response = document.querySelector(
-        'input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]'
+      const responses = [...document.querySelectorAll(
+        'input[name*="turnstile" i], textarea[name*="turnstile" i]'
+      )];
+      const widget = document.querySelector(
+        'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], .cf-turnstile, [data-sitekey]'
       );
+      const box = widget?.getBoundingClientRect?.();
       let apiToken = "";
       try {
         if (window.turnstile && typeof window.turnstile.getResponse === "function") {
@@ -267,11 +284,21 @@ async function completeSignupProfile(page, email, password, reportStep) {
       } catch {
         apiToken = "";
       }
-      const token = String(response?.value || apiToken || "");
-      return { solved: token.length > 20 };
-    }).catch(() => ({ solved: false }));
+      const tokenLength = Math.max(
+        apiToken.length,
+        ...responses.map((response) => String(response?.value || "").length)
+      );
+      return {
+        tokenLength,
+        mounted: Boolean(widget || responses.length),
+        interactiveVisible: Boolean(
+          widget?.tagName === "IFRAME" && box && box.width > 20 && box.height > 20
+        ),
+      };
+    }).catch(() => ({ tokenLength: 0, mounted: false, interactiveVisible: false }));
+    const turnstileState = classifyTurnstileSnapshot(turnstile, text);
 
-    if (turnstile.solved && !profileSubmitted) {
+    if (turnstileState === "solved" && !profileSubmitted) {
       reportStep(
         manualReported ? "turnstile_completed" : "turnstile_auto_verified",
         manualReported
@@ -284,15 +311,24 @@ async function completeSignupProfile(page, email, password, reportStep) {
       continue;
     }
 
-    if (!checkingReported) {
+    if (turnstileState === "checking" && !checkingReported) {
       reportStep("turnstile_checking", "Waiting for Cloudflare automatic verification");
       checkingReported = true;
     }
 
-    if (Date.now() >= automaticGraceDeadline && !manualReported) {
+    if (turnstileState === "loading" && !loadingReported) {
+      reportStep("turnstile_loading", "Waiting for the Cloudflare verification widget to load");
+      loadingReported = true;
+    }
+
+    if (
+      Date.now() >= automaticGraceDeadline &&
+      turnstileState === "interactive" &&
+      !manualReported
+    ) {
       reportStep(
         "manual_turnstile_required",
-        "Cloudflare verification requires manual completion in the open browser; waiting without resubmitting"
+        "An interactive Cloudflare challenge is visible; complete it in the open browser"
       );
       manualReported = true;
     }
@@ -313,6 +349,16 @@ async function completeSignupProfile(page, email, password, reportStep) {
           "Cloudflare verification has waited 10 minutes; browser remains open and recoverable until completion or cancellation"
         );
         extendedWaitReported = true;
+      }
+    } else {
+      const elapsedSeconds = Math.floor((Date.now() - turnstileStartedAt) / 1000);
+      const elapsedBucket = Math.floor(elapsedSeconds / 30);
+      if (elapsedBucket > lastAutomaticElapsedBucket) {
+        reportStep(
+          turnstileState === "loading" ? "turnstile_loading" : "turnstile_checking",
+          `Waiting for Cloudflare automatic verification (${elapsedSeconds}s)`
+        );
+        lastAutomaticElapsedBucket = elapsedBucket;
       }
     }
     await page.waitForTimeout(1_000);
@@ -563,6 +609,7 @@ export const __test__ = {
   waitAndClick,
   normalizeOtp,
   profileNames,
+  classifyTurnstileSnapshot,
   finishOtpVerification,
   callbackCode,
   createPkce,

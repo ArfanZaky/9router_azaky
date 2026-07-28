@@ -102,4 +102,21 @@ describe("Grok domain signup helpers", () => {
     expect(automationTest.callbackCode("https://evil.example/callback?code=abc")).toBeNull();
   });
 
+  it("classifies Turnstile as solved from any harvested token", () => {
+    expect(automationTest.classifyTurnstileSnapshot({ tokenLength: 128 })).toBe("solved");
+  });
+
+  it("requires manual Turnstile only for an interactive challenge", () => {
+    expect(automationTest.classifyTurnstileSnapshot({ interactiveVisible: true })).toBe("interactive");
+    expect(automationTest.classifyTurnstileSnapshot({}, "Verify you are human")).toBe("interactive");
+  });
+
+  it("keeps mounted non-interactive Turnstile in automatic checking", () => {
+    expect(automationTest.classifyTurnstileSnapshot({ mounted: true })).toBe("checking");
+  });
+
+  it("keeps an absent Turnstile widget in loading instead of manual", () => {
+    expect(automationTest.classifyTurnstileSnapshot()).toBe("loading");
+  });
+
 });
