@@ -21,6 +21,7 @@ import {
   QODER_MODEL_MAP,
 } from "../../src/lib/qoder/constants.js";
 import { PROVIDER_MODELS } from "../../open-sse/config/providerModels.js";
+import qoderProvider from "../../open-sse/providers/registry/qoder.js";
 import { __test__ as qoderExecutorInternals } from "../../open-sse/executors/qoder.js";
 
 // Convenience aliases — tests were originally written against module-level
@@ -145,6 +146,33 @@ describe("initiateDeviceFlow", () => {
   });
 });
 
+describe("Qoder PAT import helpers", () => {
+  const service = new QoderService();
+
+  it("parses a complete PAT and preserves machine identity", () => {
+    expect(service.parsePatEntry("pt-test:machine-token:0:machine-code")).toEqual({
+      personalToken: "pt-test",
+      machineToken: "machine-token",
+      machineType: "0",
+      machineCode: "machine-code",
+      machineId: "machine-code",
+    });
+  });
+
+  it("generates and reuses one machine identity for a minimal PAT", () => {
+    const parsed = service.parsePatEntry("pt-test");
+    expect(parsed.machineCode).toMatch(/^[0-9a-f-]{36}$/);
+    expect(parsed.machineId).toBe(parsed.machineCode);
+    expect(parsed.machineToken).toBe(parsed.machineCode);
+    expect(parsed.machineType).toBe("0");
+  });
+
+  it("rejects malformed PAT entries", () => {
+    expect(() => service.parsePatEntry("not-a-pat")).toThrow(/Invalid Qoder PAT/);
+    expect(() => service.parsePatEntry("pt-a:b:0:c:extra")).toThrow(/Invalid Qoder PAT/);
+  });
+});
+
 describe("buildCosyHeaders", () => {
   const creds = {
     userId: "test-user-id",
@@ -215,6 +243,16 @@ describe("buildCosyHeaders", () => {
     const headers = buildCosyHeaders(Buffer.alloc(0), QODER_MODEL_LIST_URL, creds);
     expect(headers["Cosy-Machineid"]).toBe("fixed-machine-id");
     expect(headers["Cosy-Machinetoken"]).toBe("fixed-machine-id");
+  });
+
+  it("preserves explicit PAT machine token and type", () => {
+    const headers = buildCosyHeaders(Buffer.alloc(0), QODER_MODEL_LIST_URL, {
+      ...creds,
+      machineToken: "pat-machine-token",
+      machineType: "0",
+    });
+    expect(headers["Cosy-Machinetoken"]).toBe("pat-machine-token");
+    expect(headers["Cosy-Machinetype"]).toBe("0");
   });
 
   it("auto-generates a machineId when none is supplied", () => {
@@ -366,6 +404,79 @@ describe("normalizeMessages", () => {
     const result = normalizeMessages([]);
     expect(result.messages).toEqual([]);
     expect(result.systemText).toBe("");
+  });
+
+  it("flattens assistant tool calls and tool results into supported roles", () => {
+    const result = normalizeMessages([
+      { role: "assistant", content: "", tool_calls: [{ function: { name: "read_file", arguments: '{"path":"a"}' } }] },
+      { role: "tool", tool_call_id: "call-1", content: "file body" },
+    ]);
+    expect(result.messages.map((message) => message.role)).toEqual(["assistant", "user"]);
+    expect(result.messages[0].content).toContain("[assistant requested tools]");
+    expect(result.messages[0].content).toContain('read_file({"path":"a"})');
+    expect(result.messages[1].content).toBe("[tool result call-1]\nfile body");
+    expect(result.messages[1].contents[0].text).toBe(result.messages[1].content);
+  });
+
+  it("hoists developer messages and normalizes function messages", () => {
+    const result = normalizeMessages([
+      { role: "developer", content: "developer rule" },
+      { role: "function", content: "function result" },
+    ]);
+    expect(result.systemText).toBe("developer rule");
+    expect(result.messages[0].role).toBe("assistant");
+  });
+});
+
+describe("compactMessages", () => {
+  const { compactMessages } = qoderExecutorInternals;
+  const message = (text) => ({ role: "user", content: text, contents: [{ type: "text", text }] });
+
+  it("preserves histories within the model-aware budget", () => {
+    const messages = Array.from({ length: 40 }, (_, index) => message(`message ${index}`));
+    expect(compactMessages(messages, 180000)).toBe(messages);
+  });
+
+  it("removes oldest messages and inserts a marker when over budget", () => {
+    const newest = message("newest");
+    const result = compactMessages([message("a".repeat(190000)), newest], 1);
+    expect(result[0].content).toContain("earlier context compacted");
+    expect(result.at(-1)).toBe(newest);
+  });
+});
+
+describe("inspectFirstQoderEvent", () => {
+  const { inspectFirstQoderEvent } = qoderExecutorInternals;
+
+  function responseFor(envelope) {
+    return new Response(`data: ${JSON.stringify(envelope)}\n\n`, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  it("promotes embedded Qoder quota errors", async () => {
+    const result = await inspectFirstQoderEvent(responseFor({ statusCodeValue: 403, body: '{"code":"112","message":"pricingUrl"}' }));
+    expect(result.quota).toBe(true);
+  });
+
+  it("identifies embedded 504 responses for retry", async () => {
+    const result = await inspectFirstQoderEvent(responseFor({ statusCodeValue: 504, body: "gateway timeout" }));
+    expect(result.retry504).toBe(true);
+  });
+
+  it("replays a successful first event exactly once", async () => {
+    const response = responseFor({ statusCodeValue: 200, body: "chunk" });
+    const result = await inspectFirstQoderEvent(response);
+    const text = await result.response.text();
+    expect((text.match(/statusCodeValue/g) || []).length).toBe(1);
+  });
+});
+
+describe("Qoder transport", () => {
+  it("uses five-minute connect and stall timeouts", () => {
+    expect(qoderProvider.transport.timeoutMs).toBe(300000);
+    expect(qoderProvider.transport.stallTimeoutMs).toBe(300000);
   });
 });
 

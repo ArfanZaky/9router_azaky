@@ -111,6 +111,8 @@ export function generateMachineId() {
  * @param {string} [creds.name]            Display name (optional).
  * @param {string} [creds.email]           Email (optional, can be empty).
  * @param {string} [creds.machineId]       Persisted machine UUID.
+ * @param {string} [creds.machineToken]    Persisted machine token.
+ * @param {string} [creds.machineType]     Persisted machine type.
  * @returns {Record<string, string>} Header map ready to merge onto fetch().
  */
 export function buildCosyHeaders(body, requestUrl, creds) {
@@ -158,8 +160,8 @@ export function buildCosyHeaders(body, requestUrl, creds) {
     "Cosy-Date": timestamp,
     "Cosy-Version": QODER_IDE_VERSION,
     "Cosy-Machineid": machineId,
-    "Cosy-Machinetoken": machineId,
-    "Cosy-Machinetype": QODER_MACHINE_TYPE,
+    "Cosy-Machinetoken": creds.machineToken || machineId,
+    "Cosy-Machinetype": creds.machineType || QODER_MACHINE_TYPE,
     "Cosy-Machineos": QODER_MACHINE_OS,
     "Cosy-Clienttype": QODER_CLIENT_TYPE,
     "Cosy-Clientip": "127.0.0.1",

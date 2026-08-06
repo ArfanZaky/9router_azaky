@@ -726,7 +726,7 @@ const PROVIDERS = {
           access_token: result.accessToken,
           refresh_token: result.refreshToken,
           expires_in: expiresIn,
-          _qoderUserId: result.userId,
+          _qoderUserId: userInfo.id || result.userId,
           _qoderMachineId: extraData?._qoderMachineId || "",
           _qoderName: userInfo.name,
           _qoderEmail: userInfo.email,

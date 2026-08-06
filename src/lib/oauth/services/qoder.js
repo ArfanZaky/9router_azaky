@@ -1,6 +1,8 @@
 import {
   QODER_DEVICE_TOKEN_URL,
+  QODER_JOB_TOKEN_EXCHANGE_URL,
   QODER_LOGIN_URL,
+  QODER_QUOTA_USAGE_URL,
   QODER_USERINFO_URL,
 } from "../../qoder/constants.js";
 import crypto from "crypto";
@@ -52,6 +54,41 @@ async function fetchWithTimeout(url, init = {}) {
 }
 
 export class QoderService {
+  parsePatEntry(entry) {
+    const value = String(entry || "").trim();
+    const parts = value.split(":");
+    if (!parts[0]?.startsWith("pt-") || parts.length > 4) {
+      throw new Error("Invalid Qoder PAT entry; expected pt-token[:machineToken:machineType:machineCode]");
+    }
+
+    const machineCode = parts[3]?.trim() || uuidv4();
+    return {
+      personalToken: parts[0].trim(),
+      machineToken: parts[1]?.trim() || machineCode,
+      machineType: parts[2]?.trim() || "0",
+      machineCode,
+      machineId: machineCode,
+    };
+  }
+
+  async exchangePersonalToken(personalToken) {
+    const response = await fetchWithTimeout(QODER_JOB_TOKEN_EXCHANGE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ personal_token: personalToken }),
+    });
+    if (!response.ok) {
+      throw new Error(`Qoder PAT exchange failed: HTTP ${response.status}`);
+    }
+    const body = await response.json().catch(() => null);
+    if (!body?.token) throw new Error("Qoder PAT exchange returned no token");
+    return {
+      accessToken: body.token,
+      refreshToken: body.refresh_token || "",
+      expireTime: QoderService.parseExpiry(body.expires_at, body.expires_in),
+    };
+  }
+
   /**
    * Generate a PKCE verifier + S256 challenge pair.
    * Uses 32 random bytes (matches qodercli/Veria).
@@ -160,12 +197,15 @@ export class QoderService {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           Accept: "application/json",
-          "User-Agent": "Go-http-client/2.0",
+          "User-Agent": "qoder/1.0.22",
+          "Cosy-ClientType": "5",
+          "Cosy-Version": "1.0.22",
         },
       });
       if (!response.ok) return { name: "", email: "" };
       const body = await response.json();
       return {
+        id: String(body.id || "").trim(),
         name: (body.name || body.username || "").trim(),
         email: (body.email || "").trim(),
         organizationId: (body.organization_id || "").trim(),
@@ -173,6 +213,25 @@ export class QoderService {
     } catch {
       return { name: "", email: "" };
     }
+  }
+
+  async fetchQuotaUsage(accessToken) {
+    const response = await fetchWithTimeout(QODER_QUOTA_USAGE_URL, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    });
+    if (!response.ok) throw new Error(`Qoder quota check failed: HTTP ${response.status}`);
+    const body = await response.json().catch(() => null);
+    if (!body || typeof body !== "object") throw new Error("Qoder quota check returned invalid JSON");
+    const quota = body.userQuota || {};
+    const remaining = Number(quota.remaining) || 0;
+    return {
+      userType: body.userType || "",
+      isQuotaExceeded: body.isQuotaExceeded === true,
+      total: Number(quota.total) || 0,
+      used: Number(quota.used) || 0,
+      remaining,
+      active: body.isQuotaExceeded !== true && remaining > 0,
+    };
   }
 
   async fetchUserPlan(accessToken) {

@@ -49,15 +49,46 @@ function normalizeMessages(messages) {
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") continue;
     const text = extractText(msg.content);
-    if (msg.role === "system") {
+    if (msg.role === "system" || msg.role === "developer") {
       if (text) systemParts.push(text);
       continue;
     }
-    const cloned = { ...msg };
-    cloned.content = text;
-    out.push(cloned);
+    let role = msg.role;
+    let normalizedText = text;
+    if (role === "tool") {
+      role = "user";
+      normalizedText = `[tool result ${msg.tool_call_id || msg.name || "unknown"}]\n${text}`;
+    } else if (role === "function" || role === "model") {
+      role = "assistant";
+    } else if (role !== "user" && role !== "assistant") {
+      role = "assistant";
+    }
+    if (role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      const calls = msg.tool_calls.map((call) => {
+        const fn = call?.function || {};
+        return `${fn.name || "tool"}(${fn.arguments || ""})`;
+      });
+      normalizedText = [text, "[assistant requested tools]", ...calls].filter(Boolean).join("\n");
+    }
+    out.push({
+      role,
+      content: normalizedText,
+      contents: [{ type: "text", text: normalizedText }],
+    });
   }
   return { messages: out, systemText: systemParts.join("\n\n") };
+}
+
+function compactMessages(messages, maxInputTokens) {
+  const budgetChars = Math.max(180000, Math.floor((Number(maxInputTokens) || 0) * 3.2));
+  let total = messages.reduce((sum, message) => sum + (message.content?.length || 0), 0);
+  if (total <= budgetChars) return messages;
+  const kept = [...messages];
+  while (kept.length > 1 && total > budgetChars) {
+    total -= kept.shift().content?.length || 0;
+  }
+  const marker = "[earlier context compacted]";
+  return [{ role: "user", content: marker, contents: [{ type: "text", text: marker }] }, ...kept];
 }
 
 function extractText(content) {
@@ -161,7 +192,9 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
     throw err;
   }
 
-  const { messages, systemText } = normalizeMessages(body.messages || []);
+  const normalized = normalizeMessages(body.messages || []);
+  const messages = compactMessages(normalized.messages, modelConfig.max_input_tokens);
+  const systemText = normalized.systemText;
   const tools = body.tools;
   const isReasoning = !!modelConfig.is_reasoning;
   const maxOutputTokens = Number(modelConfig.max_output_tokens) || 0;
@@ -227,6 +260,49 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
       },
     },
     modelConfig,
+  };
+}
+
+async function inspectFirstQoderEvent(response) {
+  if (!response.ok || !response.body) return { response };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let prefix = "";
+  while (!prefix.includes("\n\n") && !prefix.includes("\r\n\r\n")) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    prefix += decoder.decode(value, { stream: true });
+  }
+  const firstLine = prefix.split(/\r?\n/).find((line) => line.trimStart().startsWith("data:"));
+  let envelope = null;
+  try { envelope = JSON.parse(firstLine?.replace(/^\s*data:\s*/, "") || ""); } catch {}
+  const status = Number(envelope?.statusCodeValue) || 200;
+  const inner = typeof envelope?.body === "string" ? envelope.body : "";
+  const quota = (status === 402 || status === 403) && /(?:\b112\b|pricingUrl|quota|credits)/i.test(inner);
+  if (quota || status === 504) {
+    await reader.cancel().catch(() => null);
+    return { quota, retry504: status === 504 };
+  }
+
+  const encoder = new TextEncoder();
+  const replayed = new ReadableStream({
+    async start(controller) {
+      if (prefix) controller.enqueue(encoder.encode(prefix));
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          controller.enqueue(value);
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel(reason) { return reader.cancel(reason); },
+  });
+  return {
+    response: new Response(replayed, { status: response.status, statusText: response.statusText, headers: response.headers }),
   };
 }
 
@@ -392,56 +468,55 @@ export class QoderExecutor extends BaseExecutor {
     const encodedBodyStr = qoderEncodeBody(plainBody);
     const encodedBodyBuf = Buffer.from(encodedBodyStr, "latin1");
 
-    let cosyHeaders;
-    try {
-      cosyHeaders = buildCosyHeaders(
-        encodedBodyBuf,
-        url,
-        {
-          userId: psd.userId,
-          authToken: credentials.accessToken,
-          name: credentials.displayName || "",
-          email: credentials.email || "",
-          machineId: psd.machineId || "",
-        },
-      );
-    } catch (err) {
-      // cosy.js throws synchronously on missing userId/authToken — surface
-      // as 401 so chatCore prompts re-auth instead of returning a 500.
-      const fakeResp = new Response(
-        JSON.stringify({ error: { message: `qoder cosy signing failed: ${err.message}` } }),
-        { status: 401, headers: { "Content-Type": "application/json" } },
-      );
-      return { response: fakeResp, url, headers: {}, transformedBody: body };
-    }
-
     const modelSource = (payload.model_config && payload.model_config.source) || "system";
-    const headers = {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      "Cache-Control": "no-cache",
-      "X-Model-Key": qoderKey,
-      "X-Model-Source": modelSource,
-      // gzip triggers signature validation on Qoder's CDN; force identity.
-      "Accept-Encoding": "identity",
-      ...cosyHeaders,
-    };
-
-    // Abort if upstream doesn't return response headers within connect timeout.
-    const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-    const connectCtrl = new AbortController();
-    const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
-    const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
-
+    let headers = {};
     let response;
-    try {
-      response = await proxyAwareFetch(
-        url,
-        { method: "POST", headers, body: encodedBodyBuf, signal: mergedSignal },
-        proxyOptions,
-      );
-    } finally {
-      clearTimeout(connectTimer);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        headers = {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          "Cache-Control": "no-cache",
+          "X-Model-Key": qoderKey,
+          "X-Model-Source": modelSource,
+          "Accept-Encoding": "identity",
+          ...buildCosyHeaders(encodedBodyBuf, url, {
+            userId: psd.userId,
+            authToken: credentials.accessToken,
+            name: credentials.displayName || "",
+            email: credentials.email || "",
+            machineId: psd.machineCode || psd.machineId || "",
+            machineToken: psd.machineToken || "",
+            machineType: psd.machineType || "",
+          }),
+        };
+      } catch (err) {
+        const fakeResp = new Response(JSON.stringify({ error: { message: `qoder cosy signing failed: ${err.message}` } }), { status: 401, headers: { "Content-Type": "application/json" } });
+        return { response: fakeResp, url, headers: {}, transformedBody: body };
+      }
+
+      const connectCtrl = new AbortController();
+      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS);
+      const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
+      try {
+        response = await proxyAwareFetch(url, { method: "POST", headers, body: encodedBodyBuf, signal: mergedSignal }, proxyOptions);
+      } finally {
+        clearTimeout(connectTimer);
+      }
+      if (response.status === 504 && attempt === 0) {
+        await response.body?.cancel().catch(() => null);
+        continue;
+      }
+      const inspected = await inspectFirstQoderEvent(response);
+      if (inspected.retry504 && attempt === 0) continue;
+      if (inspected.quota) {
+        response = new Response(JSON.stringify({ error: { message: "qoder quota exhausted", type: "insufficient_quota", code: "qoder_quota_exhausted" } }), { status: 403, headers: { "Content-Type": "application/json" } });
+      } else if (inspected.retry504) {
+        response = new Response(JSON.stringify({ error: { message: "qoder upstream timeout", type: "upstream_error", code: "qoder_upstream_timeout" } }), { status: 504, headers: { "Content-Type": "application/json" } });
+      } else {
+        response = inspected.response;
+      }
+      break;
     }
 
     if (!response.ok) {
@@ -471,6 +546,8 @@ export default QoderExecutor;
 // should import QoderExecutor and use its public methods.
 export const __test__ = {
   normalizeMessages,
+  compactMessages,
+  inspectFirstQoderEvent,
   wrapQoderSSE,
   buildQoderRequestBody,
 };

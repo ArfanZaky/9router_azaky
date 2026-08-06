@@ -22,6 +22,7 @@ import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import ImportAccountsModal from "./ImportAccountsModal";
+import QoderPatImportModal from "./QoderPatImportModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -81,6 +82,7 @@ export default function ProviderDetailPage() {
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
+  const [qoderPatMode, setQoderPatMode] = useState(null);
   const { copied, copy } = useCopyToClipboard();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
@@ -1618,6 +1620,12 @@ export default function ProviderDetailPage() {
                         {translate("Bulk Add")}
                       </Button>
                     )}
+                    {providerId === "qoder" && (
+                      <>
+                        <Button size="sm" icon="key" variant="secondary" onClick={() => setQoderPatMode("single")}>PAT Add</Button>
+                        <Button size="sm" icon="playlist_add" variant="secondary" onClick={() => setQoderPatMode("bulk")}>Bulk PAT</Button>
+                      </>
+                    )}
                     {providerId === "codebuddy" && (
                       <Button size="sm" icon="cookie" variant="secondary" onClick={() => setShowCodeBuddyQuotaCookieModal(true)}>
                         Quota Cookie
@@ -1691,6 +1699,12 @@ export default function ProviderDetailPage() {
                     >
                       {translate("Bulk Add")}
                     </Button>
+                  )}
+                  {providerId === "qoder" && (
+                    <>
+                      <Button size="sm" icon="key" variant="secondary" onClick={() => setQoderPatMode("single")} className="w-full sm:w-auto">PAT Add</Button>
+                      <Button size="sm" icon="playlist_add" variant="secondary" onClick={() => setQoderPatMode("bulk")} className="w-full sm:w-auto">Bulk PAT</Button>
+                    </>
                   )}
                   {providerId === "codebuddy" && (
                     <Button
@@ -1889,6 +1903,16 @@ export default function ProviderDetailPage() {
         <BulkImportCodexModal
           isOpen={showBulkImportCodex}
           onClose={() => setShowBulkImportCodex(false)}
+          onSuccess={fetchConnections}
+        />
+      )}
+
+      {providerId === "qoder" && qoderPatMode && (
+        <QoderPatImportModal
+          key={qoderPatMode}
+          isOpen
+          initialMode={qoderPatMode}
+          onClose={() => setQoderPatMode(null)}
           onSuccess={fetchConnections}
         />
       )}
