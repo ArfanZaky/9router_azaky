@@ -1,4 +1,4 @@
-import { getProxyPoolById } from "../../../models/index.js";
+import { getProxyPoolById, getProxyPools } from "../../../models/index.js";
 import { getSettings } from "../../db/repos/settingsRepo.js";
 
 const RELAY_POOL_TYPES = new Set(["vercel", "cloudflare", "deno"]);
@@ -65,6 +65,26 @@ export function applyBulkImportProxyMode(resolvedProxy, proxyModePreference) {
   }
 
   return resolvedProxy;
+}
+
+export async function resolveAllBulkImportProxies({ httpOnly = false } = {}) {
+  const pools = await getProxyPools({ isActive: true });
+  const proxyUrls = (pools || [])
+    .filter((pool) => pool?.isActive !== false && !RELAY_POOL_TYPES.has(pool?.type))
+    .flatMap((pool) => splitBulkImportProxyUrls(pool?.proxyUrl))
+    .filter((proxyUrl) => !httpOnly || /^https?:\/\//i.test(proxyUrl));
+  const validationError = validateProxyUrls(proxyUrls);
+  if (validationError) {
+    return {
+      proxyUrl: null,
+      proxyUrls: [],
+      proxyMode: "none",
+      proxyPoolId: null,
+      proxySource: "all-active-pools",
+      error: validationError,
+    };
+  }
+  return buildResolvedProxy(proxyUrls, { proxySource: "all-active-pools" });
 }
 
 /**

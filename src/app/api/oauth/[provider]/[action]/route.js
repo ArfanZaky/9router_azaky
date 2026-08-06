@@ -7,6 +7,7 @@ import {
   pollForToken 
 } from "@/lib/oauth/providers";
 import { createProviderConnection } from "@/models";
+import { QoderService } from "@/lib/oauth/services/qoder";
 import {
   startCodexProxy,
   stopCodexProxy,
@@ -193,6 +194,53 @@ export async function POST(request, { params }) {
       body = await request.json();
     } catch {
       return NextResponse.json({ error: "Invalid or empty request body" }, { status: 400 });
+    }
+
+    if (action === "pat-import") {
+      if (provider !== "qoder") {
+        return NextResponse.json({ error: "PAT import is only supported for Qoder" }, { status: 400 });
+      }
+      const source = body.entries;
+      const entries = (Array.isArray(source) ? source : typeof source === "string" ? source.split(/\r?\n/) : [])
+        .map((entry, index) => ({ entry: String(entry || "").trim(), line: index + 1 }))
+        .filter(({ entry }) => entry);
+      if (entries.length === 0) {
+        return NextResponse.json({ error: "At least one Qoder PAT entry is required" }, { status: 400 });
+      }
+
+      const service = new QoderService();
+      const results = [];
+      for (const { entry, line } of entries) {
+        try {
+          const identity = service.parsePatEntry(entry);
+          const tokens = await service.exchangePersonalToken(identity.personalToken);
+          const profile = await service.fetchUserInfo(tokens.accessToken);
+          if (!profile.id) throw new Error("Qoder userinfo returned no user ID");
+          const quota = await service.fetchQuotaUsage(tokens.accessToken);
+          const connection = await createProviderConnection({
+            provider: "qoder",
+            authType: "oauth",
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            expiresAt: new Date(tokens.expireTime).toISOString(),
+            email: profile.email || null,
+            displayName: profile.name || profile.email || profile.id,
+            isActive: quota.active,
+            testStatus: quota.active ? "active" : "inactive",
+            providerSpecificData: {
+              authMethod: "pat",
+              userId: profile.id,
+              organizationId: profile.organizationId || "",
+              ...identity,
+            },
+          });
+          results.push({ ok: true, id: connection.id, email: profile.email || "", remaining: quota.remaining, active: quota.active });
+        } catch (error) {
+          results.push({ ok: false, line, error: error.message || "Qoder PAT import failed" });
+        }
+      }
+      const success = results.filter((result) => result.ok).length;
+      return NextResponse.json({ success, failed: results.length - success, total: results.length, results });
     }
 
     if (action === "exchange") {

@@ -74,11 +74,22 @@ describe("kiro bulk import manager helpers", () => {
     expect(__test__.clampConcurrency("999")).toBe(KIRO_BULK_IMPORT_MAX_CONCURRENCY);
     expect(__test__.clampConcurrency("3")).toBe(3);
   });
+
+  it("counts provider-specific failed statuses in the summary", () => {
+    const summary = __test__.buildSummary([
+      { status: "success" },
+      { status: "failed_otp_timeout" },
+      { status: "failed_exchange" },
+    ]);
+    expect(summary.success).toBe(1);
+    expect(summary.failed).toBe(2);
+  });
 });
 
 describe("KiroBulkImportManager", () => {
   it("processes accounts once and completes with saved connections", async () => {
     const processed = [];
+    const exchangeRequests = [];
     const manager = new KiroBulkImportManager({
       browserLauncher: async () => createFakeBrowser(),
       kiroServiceFactory: () => ({
@@ -96,11 +107,10 @@ describe("KiroBulkImportManager", () => {
           code: `code-${email}`,
         };
       },
-      socialExchange: async ({ code }) => ({
-        connection: {
-          id: `conn-${code}`,
-        },
-      }),
+      socialExchange: async (request) => {
+        exchangeRequests.push(request);
+        return { connection: { id: `conn-${request.code}` } };
+      },
     });
 
     const startedJob = await manager.startJob({
@@ -117,6 +127,7 @@ describe("KiroBulkImportManager", () => {
     });
 
     expect(processed.sort()).toEqual(["user1@gmail.com", "user2@gmail.com"]);
+    expect(exchangeRequests.map((request) => request.email).sort()).toEqual(["user1@gmail.com", "user2@gmail.com"]);
     expect(finishedJob.summary.success).toBe(2);
     expect(finishedJob.summary.failed).toBe(0);
     expect(finishedJob.accounts.every((account) => account.connectionId)).toBe(true);

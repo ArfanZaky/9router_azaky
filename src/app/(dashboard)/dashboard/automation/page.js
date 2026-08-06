@@ -437,7 +437,7 @@ function AutoclawAutomationPanel({ onRefresh }) {
         await refreshAutoclawList();
       }
     } catch {
-    } finally {
+  } finally {
       setRefreshingId(null);
     }
   };
@@ -486,8 +486,8 @@ function AutoclawAutomationPanel({ onRefresh }) {
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{c.name || c.email}</div>
                   <div className="text-xs text-text-muted">
-                    {c.balance !== null && c.balance !== undefined ? `${c.balance} pts` : "—"}
-                    {c.balanceError ? ` · ${c.balanceError}` : ""}
+                    {c.balance !== null && c.balance !== undefined ? `${c.balance} pts` : "-"}
+                    {c.balanceError ? ` . ${c.balanceError}` : ""}
                   </div>
                 </div>
                 <Button
@@ -513,7 +513,69 @@ function AutoclawAutomationPanel({ onRefresh }) {
   );
 }
 
+function GrokCliAutomationPanel({ onRefresh }) {
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
+  const [isDomainBulkOpen, setIsDomainBulkOpen] = useState(false);
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setIsBulkOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">group_add</span>
+            Auto Login Bulk (Google SSO)
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Run bulk Gmail:password automation via Google SSO with Grok CLI device code flow. Import 100+ accounts in parallel.
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setIsDomainBulkOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">alternate_email</span>
+            Auto Signup Bulk (Domain Email)
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Sign up or login xAI accounts with domain email, poll OTP securely, then finish Grok CLI device authorization.
+          </span>
+        </button>
+      </div>
+      <BulkAccountAutomationModal
+        isOpen={isBulkOpen}
+        provider="grok-cli"
+        title="Grok CLI Bulk GSuite Login"
+        serviceName="Grok CLI"
+        onSuccess={onRefresh}
+        onClose={() => setIsBulkOpen(false)}
+      />
+      <BulkAccountAutomationModal
+        isOpen={isDomainBulkOpen}
+        provider="grok-cli-domain"
+        title="Grok CLI Bulk Domain Email Signup"
+        serviceName="Grok CLI Domain Email"
+        onSuccess={onRefresh}
+        onClose={() => setIsDomainBulkOpen(false)}
+      />
+    </>
+  );
+}
+
 const AUTOMATION_PROVIDERS = [
+  {
+    id: "grok-cli",
+    label: "Grok CLI",
+    icon: "auto_awesome",
+    description: "Bulk GSuite auto login via Google SSO and device code flow.",
+    supportedModes: ["bulk-account", "device-oauth"],
+    component: GrokCliAutomationPanel,
+  },
   {
     id: "kiro",
     label: "Kiro AI",

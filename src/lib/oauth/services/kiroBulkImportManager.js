@@ -134,12 +134,7 @@ export function parseKiroBulkAccounts(accounts = []) {
 }
 
 function getFailedCount(accounts) {
-  return accounts.filter((account) => (
-    account.status === "failed"
-    || account.status === "failed_invalid_credentials"
-    || account.status === "failed_exchange"
-    || account.status === "failed_timeout"
-  )).length;
+  return accounts.filter((account) => String(account.status || "").startsWith("failed")).length;
 }
 
 function buildSummary(accounts) {
@@ -290,12 +285,59 @@ async function defaultSocialExchange(args) {
 }
 
 export async function createFreshContext(browser, { locale = "en-US" } = {}) {
-  const context = await browser.newContext({
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    viewport: null,
-    locale,
-  });
-  const page = await context.newPage();
+  // Camoufox/Firefox often opens a default blank window on launch.
+  // Reuse that context instead of newContext() (which would open a 2nd window).
+  let context = null;
+  try {
+    const existing = typeof browser.contexts === "function" ? browser.contexts() : [];
+    for (const ctx of existing) {
+      const pages = typeof ctx.pages === "function" ? ctx.pages() : [];
+      const onlyBlank =
+        pages.length > 0 &&
+        pages.every((p) => {
+          try {
+            const u = p.url() || "";
+            return !u || u === "about:blank" || u.startsWith("about:");
+          } catch {
+            return true;
+          }
+        });
+      if (onlyBlank) {
+        context = ctx;
+        break;
+      }
+    }
+  } catch {
+    context = null;
+  }
+
+  if (!context) {
+    context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      viewport: null,
+      locale,
+    });
+  }
+
+  let page = null;
+  try {
+    const pages = typeof context.pages === "function" ? context.pages() : [];
+    page = pages.find((p) => {
+      try {
+        const u = p.url() || "";
+        return !u || u === "about:blank" || u.startsWith("about:");
+      } catch {
+        return true;
+      }
+    }) || null;
+  } catch {
+    page = null;
+  }
+
+  if (!page) {
+    page = await context.newPage();
+  }
+
   await revealBrowserWindow(page).catch(() => null);
   return { context, page };
 }
@@ -527,6 +569,11 @@ export class KiroBulkImportManager {
   async getJobWithPreview(jobId) {
     const job = this.jobs.get(jobId);
     if (!job) return readJsonFile(getJobFile(jobId, this.storageDir));
+    // Cancelled jobs: do not capture preview (keeps browser/CDP busy) or rewrite status
+    if (job.cancelRequested || job.status === "cancelled") {
+      job.status = "cancelled";
+      return sanitizeJob(job, { preview: job.lastPreview || null });
+    }
     const preview = await this.capturePreviewWithTimeout(job);
     if (preview) job.lastPreview = preview;
     job.lastPreviewCapturedAt = Date.now();
@@ -561,9 +608,14 @@ export class KiroBulkImportManager {
       (persisted.accounts || []).forEach((account) => {
         if (account.status === "queued" || account.status === "running" || account.status === "needs_manual") {
           account.status = "cancelled";
+          account.error = account.error || "Job cancelled";
+          account.currentStep = "cancelled";
+          account.message = "Job cancelled";
         }
       });
       writeJsonFile(getJobFile(jobId, this.storageDir), persisted);
+      // Also mark any in-memory job with same id if map was stale
+      this.jobs.delete(jobId);
       return persisted;
     }
 
@@ -572,7 +624,11 @@ export class KiroBulkImportManager {
     job.finishedAt = nowIso();
     job.accounts.forEach((account) => {
       if (account.status === "queued" || account.status === "running" || account.status === "needs_manual") {
-        // Close any open manual/runtime browser sessions
+        // Close pages first so long page.goto / waits throw Target closed
+        try {
+          const p = account.runtimeSession?.page || account.manualSession?.page;
+          if (p && !p.isClosed?.()) void p.close().catch(() => null);
+        } catch { /* ignore */ }
         if (account.manualSession?.context) {
           void account.manualSession.context.close().catch(() => null);
           account.manualSession = null;
@@ -581,7 +637,14 @@ export class KiroBulkImportManager {
           void account.runtimeSession.context.close().catch(() => null);
           account.runtimeSession = null;
         }
-        account.status = "cancelled";
+        if (account.manualSession?.headedBrowser) {
+          void account.manualSession.headedBrowser.close().catch(() => null);
+        }
+        this.finalizeAccount(account, "cancelled", {
+          error: "Job cancelled",
+          step: "cancelled",
+          message: "Job cancelled by user",
+        });
       }
     });
 
@@ -635,7 +698,9 @@ export class KiroBulkImportManager {
   }
 
   dequeueAccount(job, workerId) {
+    if (job.cancelRequested || job.status === "cancelled") return null;
     while (job.nextIndex < job.accounts.length) {
+      if (job.cancelRequested) return null;
       const account = job.accounts[job.nextIndex];
       job.nextIndex += 1;
       if (account.status !== "queued") continue;
@@ -664,6 +729,8 @@ export class KiroBulkImportManager {
   }
 
   setAccountStep(account, step, message, level = "info") {
+    // Skip noisy steps after cancel so UI does not look "alive"
+    if (account?.status === "cancelled") return;
     appendAccountLog(account, step, message, level);
   }
 
@@ -688,8 +755,20 @@ export class KiroBulkImportManager {
   async persistJobSnapshot(job, { forcePreview = false } = {}) {
     if (!job) return;
 
+    // Never let a late worker snapshot resurrect a cancelled job as "running"
+    if (job.cancelRequested) {
+      job.status = "cancelled";
+      job.finishedAt = job.finishedAt || nowIso();
+    }
+
     const runPersist = async () => {
-      const shouldCapturePreview = forcePreview || (Date.now() - (job.lastPreviewCapturedAt || 0) >= PREVIEW_CAPTURE_INTERVAL_MS);
+      if (job.cancelRequested) {
+        job.status = "cancelled";
+      }
+      const skipPreview = job.cancelRequested || job.status === "cancelled";
+      const shouldCapturePreview =
+        !skipPreview &&
+        (forcePreview || (Date.now() - (job.lastPreviewCapturedAt || 0) >= PREVIEW_CAPTURE_INTERVAL_MS));
       if (shouldCapturePreview) {
         const preview = await this.capturePreviewWithTimeout(job);
         if (preview) {
@@ -812,6 +891,7 @@ export class KiroBulkImportManager {
           code: callback.code,
           codeVerifier,
           provider: "google",
+          email: account.email,
         });
 
         this.finalizeAccount(account, "success", {
@@ -881,6 +961,7 @@ export class KiroBulkImportManager {
           code: automationResult.code,
           codeVerifier: socialAuth.codeVerifier,
           provider: "google",
+          email: account.email,
         });
         this.finalizeAccount(account, "success", {
           connectionId: connection.id,
@@ -948,6 +1029,7 @@ export class KiroBulkImportManager {
     let workerBrowser = browser;
     const ownsBrowser = !workerBrowser;
     try {
+      if (job.cancelRequested) return;
       if (!workerBrowser) {
         const proxyUrl = resolveWorkerProxyUrl(job, workerId);
         workerBrowser = await this.browserLauncher({ ...job, proxyUrl });
@@ -955,15 +1037,26 @@ export class KiroBulkImportManager {
         job.workerBrowsers.add(workerBrowser);
       }
 
-      while (!job.cancelRequested) {
+      while (!job.cancelRequested && job.status !== "cancelled") {
         const account = this.dequeueAccount(job, workerId);
         if (!account) return;
+        if (job.cancelRequested) {
+          this.finalizeAccount(account, "cancelled", {
+            error: "Job cancelled",
+            step: "cancelled",
+            message: "Job cancelled before account started",
+          });
+          return;
+        }
         await this.processAccount(job, account, workerId, workerBrowser);
       }
     } finally {
-      if (ownsBrowser && workerBrowser && job.cancelRequested) {
-        job.workerBrowsers.delete(workerBrowser);
-        await workerBrowser.close().catch(() => null);
+      // Always close per-worker browsers on cancel
+      if (ownsBrowser && workerBrowser) {
+        job.workerBrowsers?.delete?.(workerBrowser);
+        if (job.cancelRequested) {
+          await workerBrowser.close().catch(() => null);
+        }
       }
     }
   }
@@ -1002,7 +1095,7 @@ export class KiroBulkImportManager {
       if (job.cancelRequested) {
         job.status = "cancelled";
         job.accounts.forEach((account) => {
-          if (account.status === "queued" || account.status === "running") {
+          if (account.status === "queued" || account.status === "running" || account.status === "needs_manual") {
             this.finalizeAccount(account, "cancelled", {
               error: "Job cancelled",
               step: "cancelled",
@@ -1010,7 +1103,7 @@ export class KiroBulkImportManager {
             });
           }
         });
-      } else {
+      } else if (job.status !== "cancelled") {
         job.status = resolveFinishedJobStatus(job.accounts);
         if (job.status === "failed") {
           job.error = "All accounts failed.";
@@ -1018,18 +1111,22 @@ export class KiroBulkImportManager {
       }
       await this.persistJobSnapshot(job, { forcePreview: true });
     } catch (error) {
-      job.status = "failed";
-      job.error = error.message || "Failed to start Kiro bulk import job.";
-      job.accounts.forEach((account) => {
-        if (account.status === "queued" || account.status === "running") {
-          this.finalizeAccount(account, "failed", {
-            error: job.error,
-            step: "failed",
-            message: job.error,
-          });
-          account.password = undefined;
-        }
-      });
+      if (job.cancelRequested) {
+        job.status = "cancelled";
+      } else {
+        job.status = "failed";
+        job.error = error.message || "Failed to start Kiro bulk import job.";
+        job.accounts.forEach((account) => {
+          if (account.status === "queued" || account.status === "running") {
+            this.finalizeAccount(account, "failed", {
+              error: job.error,
+              step: "failed",
+              message: job.error,
+            });
+            account.password = undefined;
+          }
+        });
+      }
       await this.persistJobSnapshot(job, { forcePreview: true });
     } finally {
       if (job.browser) {
@@ -1040,6 +1137,7 @@ export class KiroBulkImportManager {
         await Promise.allSettled([...job.workerBrowsers].map((browser) => browser.close().catch(() => null)));
         job.workerBrowsers.clear();
       }
+      if (job.cancelRequested) job.status = "cancelled";
       job.finishedAt = job.status === "needs_manual" ? null : nowIso();
       await this.persistJobSnapshot(job, { forcePreview: true });
     }

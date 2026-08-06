@@ -62,12 +62,29 @@ export default {
   normalize: (responseBody, prompt) => {
     const candidates = responseBody.candidates || responseBody.response?.candidates || [];
     const parts = candidates[0]?.content?.parts || [];
-    const images = parts.filter((p) => p.inlineData?.data).map((p) => ({
-      b64_json: p.inlineData.data,
-    }));
+    const images = parts
+      .map((p) => {
+        const inline = p?.inlineData || p?.inline_data;
+        const data = inline?.data;
+        if (!data || typeof data !== "string") return null;
+        return { b64_json: data };
+      })
+      .filter(Boolean);
+    // Prefer empty data[] over fake empty b64 so the UI can fail loudly.
     return {
       created: nowSec(),
-      data: images.length > 0 ? images : [{ b64_json: "", revised_prompt: prompt }],
+      data: images,
+      ...(images.length === 0
+        ? {
+            error: {
+              message:
+                responseBody?.error?.message ||
+                candidates[0]?.finishReason ||
+                "No image returned from Antigravity",
+            },
+          }
+        : {}),
+      revised_prompt: prompt,
     };
   },
 };

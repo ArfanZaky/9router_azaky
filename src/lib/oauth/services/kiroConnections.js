@@ -17,9 +17,10 @@ export async function saveKiroOAuthConnection({
   profileArn,
   authMethod,
   providerLabel,
+  email: fallbackEmail,
 }) {
   const kiroService = new KiroService();
-  const email = kiroService.extractEmailFromJWT(accessToken);
+  const email = kiroService.extractEmailFromJWT(accessToken) || fallbackEmail;
 
   const connection = await createProviderConnection({
     provider: "kiro",
@@ -47,6 +48,7 @@ export async function exchangeAndSaveKiroSocialConnection({
   code,
   codeVerifier,
   provider = "google",
+  email,
 }) {
   if (!code || !codeVerifier) {
     throw new Error("Missing required social exchange fields");
@@ -65,6 +67,7 @@ export async function exchangeAndSaveKiroSocialConnection({
     profileArn: tokenData.profileArn,
     authMethod: provider,
     providerLabel: formatSocialProvider(provider),
+    email,
   });
 
   return {

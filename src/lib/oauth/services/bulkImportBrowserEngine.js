@@ -228,7 +228,10 @@ async function launchCamoufox({ proxyUrl, headless = true, args = [] } = {}) {
   const proxy = buildBrowserProxyOption(proxyUrl);
   if (proxy) launchOptions.proxy = proxy;
 
-  return firefox.launch(launchOptions);
+  const browser = await firefox.launch(launchOptions);
+  // Firefox/Camoufox may open a default blank window; mark for reuse by createFreshContext
+  // (do not close here — createFreshContext reuses blank contexts to avoid 2 windows)
+  return browser;
 }
 
 export async function launchBulkImportBrowser({ engine = DEFAULT_BULK_IMPORT_ENGINE, proxyUrl, headless = true, args = [] } = {}) {

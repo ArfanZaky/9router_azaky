@@ -112,6 +112,13 @@ const getPageInfo = (pathname) => {
       icon: "vpn_key",
       breadcrumbs: [],
     };
+  if (pathname.includes("/email"))
+    return {
+      title: "Email",
+      description: "Compare email accounts across providers",
+      icon: "alternate_email",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/quota"))
     return {
       title: "Quota Tracker",

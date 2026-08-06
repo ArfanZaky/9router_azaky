@@ -19,7 +19,8 @@ export {
   getPricing, getPricingForModel, updatePricing, resetPricing, resetAllPricing,
   exportDb, importDb,
   listChatSessions, getChatSession, createChatSession, updateChatSession, deleteChatSession,
-  listChatMessages, createChatMessage, updateChatMessage, deleteChatMessage, replaceChatMessages,
+   listChatMessages, createChatMessage, updateChatMessage, deleteChatMessage, replaceChatMessages,
+   createChatRun, getChatRunRecord, updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
   getImageAsset, addImageAssets,
 } from "./db/index.js";

@@ -700,6 +700,29 @@ async function handleGoogleOnboarding(page, pageText) {
   // primary action selector before the generic skip pass so we don't fall
   // through to a non-existent "Not now" link.
   if (includesAny(text, GOOGLE_WORKSPACE_WELCOME_MARKERS)) {
+    // The speedbump page has a scrollable terms container that must be
+    // scrolled to the bottom before the "I understand" button becomes active.
+    // First try clicking the "Scroll down" arrow button if present.
+    const scrollBtn = await page.locator('button[aria-label="Scroll down"], button[jsname="NakZHc"]').first();
+    const scrollBtnVisible = await scrollBtn.isVisible().catch(() => false);
+    if (scrollBtnVisible) {
+      // Click scroll button repeatedly to scroll through terms
+      for (let i = 0; i < 10; i++) {
+        const stillVisible = await scrollBtn.isVisible().catch(() => false);
+        if (!stillVisible) break;
+        await scrollBtn.click({ timeout: 2000 }).catch(() => null);
+        await page.waitForTimeout(300);
+      }
+      await page.waitForTimeout(500);
+    }
+    // Also try scrolling any scrollable container within the page
+    await page.evaluate(() => {
+      document.querySelectorAll('[jsname="MZArnb"], [jsname="bN97Pc"], .yTaH4c, main').forEach(el => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }).catch(() => null);
+    await page.waitForTimeout(500);
+
     const acknowledged = await clickFirstActionable(page, APPROVE_BUTTON_SELECTORS);
     if (acknowledged) {
       await page.waitForTimeout(700);
@@ -1341,6 +1364,43 @@ async function handleProviderLoginGate(page, reportStep) {
   return false;
 }
 
+/**
+ * Handle Google Workspace Education speedbump page
+ * This appears after password entry for new Workspace accounts
+ */
+async function handleGoogleWorkspaceSpeedbump(page, reportStep) {
+  try {
+    const url = page.url();
+
+    // Check if we're on the workspace terms speedbump page
+    if (!url.includes('/speedbump/workspacetermsofservice')) {
+      return false;
+    }
+
+    reportStep("google_workspace_speedbump", "Handling Google Workspace terms speedbump");
+
+    // Selectors for "I understand" button
+    const understandSelectors = [
+      'button:has-text("I understand")',
+      '#gaplustosNext',
+      'button[jsname="Njthtb"]',
+      'button.VfPpkd-LgbsSe:has-text("I understand")',
+    ];
+
+    const clicked = await clickFirstVisible(page, understandSelectors);
+    if (clicked) {
+      reportStep("speedbump_accepted", "Clicked 'I understand' on workspace terms");
+      await page.waitForTimeout(2000);
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    console.log('[GoogleAuth] Error handling workspace speedbump:', error.message);
+    return false;
+  }
+}
+
 export function createKiroCallbackMonitor(context, page, timeoutMs = DEFAULT_MANUAL_TIMEOUT_MS) {
   return createOAuthCallbackMonitor(context, page, {
     timeoutMs,
@@ -1447,7 +1507,6 @@ export function createOAuthCallbackMonitor(context, page, {
 export async function runGoogleAccountAutomation({
   page,
   authUrl,
-  skipNavigation = false,
   email,
   password,
   successPromise,
@@ -1458,12 +1517,15 @@ export async function runGoogleAccountAutomation({
   successStep = "oauth_success_received",
   successMessage = "OAuth success received",
   onStep,
+  skipNavigation = false,
 }) {
   const startTime = Date.now();
   const reportStep = (step, message) => {
     onStep?.(step, message);
   };
-  const useProviderLoginGate = serviceLabel !== "Antigravity";
+  const useProviderLoginGate = serviceLabel !== "Antigravity" && serviceLabel !== "Grok CLI";
+  const isGrok = serviceLabel === "Grok CLI";
+  let grokDeviceSettled = false;
 
   reportStep(openingStep, openingMessage);
   if (!skipNavigation && authUrl) {
@@ -1487,18 +1549,20 @@ export async function runGoogleAccountAutomation({
 
   if (useProviderLoginGate) await handleProviderLoginGate(page, reportStep);
 
-  const emailInput = await waitForFirstVisibleLocator(page, EMAIL_INPUT_SELECTOR, { timeout: 15_000 });
-  if (emailInput) {
-    reportStep("entering_email", "Entering Google email");
-    await page.mouse.move(100 + Math.floor(Math.random() * 400), 200 + Math.floor(Math.random() * 300));
-    await page.waitForTimeout(300 + Math.floor(Math.random() * 500));
-    const filled = await fillInputResilient(emailInput, email);
-    if (!filled) {
-      reportStep("email_fill_failed", "Could not fill the Google email field; will retry in the polling loop");
-    } else {
-      reportStep("submitting_email", "Submitting email");
-      await page.waitForTimeout(500 + Math.floor(Math.random() * 500));
-      await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
+  if (isGoogleAuthPage(page)) {
+    const emailInput = await waitForFirstVisibleLocator(page, EMAIL_INPUT_SELECTOR, { timeout: 15_000 });
+    if (emailInput) {
+      reportStep("entering_email", "Entering Google email");
+      await page.mouse.move(100 + Math.floor(Math.random() * 400), 200 + Math.floor(Math.random() * 300));
+      await page.waitForTimeout(300 + Math.floor(Math.random() * 500));
+      const filled = await fillInputResilient(emailInput, email);
+      if (!filled) {
+        reportStep("email_fill_failed", "Could not fill the Google email field; will retry in the polling loop");
+      } else {
+        reportStep("submitting_email", "Submitting email");
+        await page.waitForTimeout(500 + Math.floor(Math.random() * 500));
+        await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
+      }
     }
   }
 
@@ -1513,10 +1577,27 @@ export async function runGoogleAccountAutomation({
   await page.waitForTimeout(1000);
 
   while (Date.now() - startTime < shortTimeoutMs) {
-    const successResult = await Promise.race([
-      successPromise.then((result) => ({ kind: "success", result })).catch((error) => ({ kind: "success_error", error })),
-      new Promise((resolve) => setTimeout(() => resolve(null), 800)),
-    ]);
+    // Grok: exit as soon as device authorize UI is done (manager polls token after)
+    if (isGrok) {
+      try {
+        const doneUrl = page.url() || "";
+        if (doneUrl.includes("/oauth2/device/done")) {
+          reportStep("device_done_page", "Grok device authorized page");
+          reportStep("browser_authorized", "Browser device authorization complete");
+          return { status: "success", browserAuthorized: true };
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (!successPromise) {
+      await page.waitForTimeout(800);
+    }
+    const successResult = successPromise
+      ? await Promise.race([
+          successPromise.then((result) => ({ kind: "success", result })).catch((error) => ({ kind: "success_error", error })),
+          new Promise((resolve) => setTimeout(() => resolve(null), 800)),
+        ])
+      : null;
 
     if (successResult?.kind === "success") {
       reportStep(successStep, successMessage);
@@ -1527,6 +1608,16 @@ export async function runGoogleAccountAutomation({
     }
 
     if (successResult?.kind === "success_error") {
+      // Grok: token poll can fail early (invalid_grant noise) while browser is still
+      // mid-SSO or already on /done. Keep driving UI; manager re-polls after.
+      if (isGrok) {
+        reportStep(
+          "token_poll_error_soft",
+          `Token poll error (continuing UI): ${successResult.error?.message || "unknown"}`
+        );
+        await page.waitForTimeout(800);
+        continue;
+      }
       reportStep("oauth_timeout", `Timed out waiting for ${serviceLabel} authorization`);
       return {
         status: "failed_timeout",
@@ -1585,47 +1676,130 @@ export async function runGoogleAccountAutomation({
       continue;
     }
 
-    const nextEmailInput = await getFirstVisibleLocator(page, EMAIL_INPUT_SELECTOR);
-    if (nextEmailInput) {
-      reportStep("entering_email", "Entering Google email");
-      const filled = await fillInputResilient(nextEmailInput, email);
-      if (filled) {
-        reportStep("submitting_email", "Submitting email");
-        await page.waitForTimeout(500 + Math.floor(Math.random() * 500));
-        await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
-        // Navigation guard: wait for URL to leave /identifier? path so the
-        // loop does not re-detect the stale email input and re-submit.
-        try {
-          await page.waitForURL((url) => !url.toString().includes("/identifier?"), { timeout: 10_000 });
-        } catch {
-          // Page didn't navigate; the loop will handle retry.
+    // Grok device/consent pages live on x.ai — never run Google email/password fill there
+    const onGoogleHost = isGoogleAuthPage(page);
+    if (isGrok && !onGoogleHost) {
+      try {
+        const u = page.url();
+        if (u.includes("/oauth2/device/consent")) {
+          // Cookie banner blocks Allow — dismiss first
+          try {
+            const cookieBtn = page.locator(
+              'button:has-text("Accept All Cookies"), button:has-text("Reject All"), button:has-text("Accept All")'
+            ).first();
+            if (await cookieBtn.isVisible().catch(() => false)) {
+              reportStep("dismissing_cookie_banner", "Dismissing cookie banner on consent");
+              await cookieBtn.click({ timeout: 3000 }).catch(() => null);
+              await page.waitForTimeout(1000);
+            }
+          } catch { /* ignore */ }
+          try {
+            await page.evaluate(() => {
+              const root = document.scrollingElement || document.documentElement || document.body;
+              if (root) root.scrollTop = root.scrollHeight;
+            });
+          } catch { /* ignore */ }
+          await page.waitForTimeout(400);
+          let allowClicked = await clickFirstVisible(page, [
+            'button:has-text("Allow")',
+            'button:has-text("Authorize")',
+            'button[type="submit"]:has-text("Allow")',
+            'button[type="submit"]:has-text("Authorize")',
+            'button:has-text("Approve")',
+          ]);
+          if (!allowClicked) {
+            allowClicked = await page.evaluate(() => {
+              const labels = ["allow", "authorize", "approve"];
+              const buttons = [...document.querySelectorAll("button, [role=button], input[type=submit]")];
+              for (const b of buttons.reverse()) {
+                const t = (b.innerText || b.value || "").trim().toLowerCase();
+                if (labels.some((l) => t === l || t.startsWith(l + " "))) {
+                  b.scrollIntoView({ block: "center" });
+                  b.click();
+                  return true;
+                }
+              }
+              return false;
+            }).catch(() => false);
+          }
+          if (allowClicked) {
+            reportStep("approving_consent", "Approving Grok device consent");
+            await page.waitForTimeout(1000);
+          }
+        } else if (u.includes("/oauth2/device/done")) {
+          reportStep("device_done_page", "Grok device authorized page");
+          reportStep("browser_authorized", "Browser device authorization complete");
+          return { status: "success", browserAuthorized: true };
+        } else if (
+          u.includes("/oauth2/device") &&
+          !u.includes("/consent") &&
+          !u.includes("/done")
+        ) {
+          // After Google: settle then Continue only — never re-type user_code (unbinds device_code)
+          if (!grokDeviceSettled) {
+            reportStep("device_page_settle", "Device code page after Google — waiting 10s for load");
+            await page.waitForTimeout(10_000);
+            grokDeviceSettled = true;
+          }
+          const cont = await clickFirstVisible(page, [
+            'button:has-text("Continue")',
+            'button[type="submit"]:has-text("Continue")',
+            'button:has-text("Next")',
+          ]);
+          if (cont) {
+            reportStep("device_continue_clicked", "Clicked Continue on device page");
+            await page.waitForTimeout(2000);
+          }
         }
-        await page.waitForTimeout(2000);
-      } else {
-        reportStep("email_fill_failed", "Could not fill the Google email field; retrying loop");
-      }
+      } catch { /* ignore */ }
+      await page.waitForTimeout(700);
       continue;
     }
 
-    const passwordInput = await getFirstVisibleLocator(page, PASSWORD_INPUT_SELECTOR);
-    if (passwordInput) {
-      reportStep("entering_password", "Entering Google password");
-      await page.waitForTimeout(500 + Math.floor(Math.random() * 800));
-      await page.mouse.move(100 + Math.floor(Math.random() * 400), 200 + Math.floor(Math.random() * 300));
-      await page.waitForTimeout(200 + Math.floor(Math.random() * 400));
-      const filled = await fillInputResilient(passwordInput, password);
-      if (filled) {
-        reportStep("submitting_password", "Submitting password");
-        await page.waitForTimeout(400 + Math.floor(Math.random() * 600));
-        await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
-      } else {
-        reportStep("password_fill_failed", "Could not fill the Google password field; retrying loop");
+    if (onGoogleHost) {
+      const nextEmailInput = await getFirstVisibleLocator(page, EMAIL_INPUT_SELECTOR);
+      if (nextEmailInput) {
+        reportStep("entering_email", "Entering Google email");
+        await page.mouse.move(100 + Math.floor(Math.random() * 400), 200 + Math.floor(Math.random() * 300));
+        await page.waitForTimeout(300 + Math.floor(Math.random() * 500));
+        const filled = await fillInputResilient(nextEmailInput, email);
+        if (filled) {
+          reportStep("submitting_email", "Submitting email");
+          await page.waitForTimeout(500 + Math.floor(Math.random() * 500));
+          await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
+          try {
+            await page.waitForURL((url) => !url.toString().includes("/identifier?"), { timeout: 10_000 });
+          } catch {
+            // Page didn't navigate; the loop will handle retry.
+          }
+          await page.waitForTimeout(2000);
+        } else {
+          reportStep("email_fill_failed", "Could not fill the Google email field; retrying loop");
+          await page.waitForTimeout(700);
+        }
+        continue;
       }
-      try {
-        await page.waitForURL((url) => !url.toString().includes("/challenge/pwd?"), { timeout: 10_000 });
-      } catch {}
-      await page.waitForTimeout(2000);
-      continue;
+
+      const passwordInput = await getFirstVisibleLocator(page, PASSWORD_INPUT_SELECTOR);
+      if (passwordInput) {
+        reportStep("entering_password", "Entering Google password");
+        await page.waitForTimeout(500 + Math.floor(Math.random() * 800));
+        await page.mouse.move(100 + Math.floor(Math.random() * 400), 200 + Math.floor(Math.random() * 300));
+        await page.waitForTimeout(200 + Math.floor(Math.random() * 400));
+        const filled = await fillInputResilient(passwordInput, password);
+        if (filled) {
+          reportStep("submitting_password", "Submitting password");
+          await page.waitForTimeout(400 + Math.floor(Math.random() * 600));
+          await clickFirstVisible(page, NEXT_BUTTON_SELECTORS);
+        } else {
+          reportStep("password_fill_failed", "Could not fill the Google password field; retrying loop");
+        }
+        try {
+          await page.waitForURL((url) => !url.toString().includes("/challenge/pwd?"), { timeout: 10_000 });
+        } catch {}
+        await page.waitForTimeout(2000);
+        continue;
+      }
     }
 
     if (useProviderLoginGate) {
@@ -1635,15 +1809,36 @@ export async function runGoogleAccountAutomation({
       }
     }
 
-    const clickedApprove = await clickFirstVisible(page, APPROVE_BUTTON_SELECTORS);
-    if (clickedApprove) {
-      reportStep("approving_consent", `Approving Google or ${serviceLabel} consent`);
-      await page.waitForTimeout(700);
+    // Handle Google Workspace Education speedbump ("I understand" page)
+    const handledSpeedbump = await handleGoogleWorkspaceSpeedbump(page, reportStep);
+    if (handledSpeedbump) {
       continue;
+    }
+
+    // Only click generic approve on Google consent (not x.ai Continue / device code)
+    if (onGoogleHost) {
+      const clickedApprove = await clickFirstVisible(page, APPROVE_BUTTON_SELECTORS);
+      if (clickedApprove) {
+        reportStep("approving_consent", `Approving Google or ${serviceLabel} consent`);
+        await page.waitForTimeout(700);
+        continue;
+      }
     }
 
     reportStep("waiting_for_next_screen", `Waiting for the next Google or ${serviceLabel} screen`);
     await page.waitForTimeout(700);
+  }
+
+  // Grok: timeout may land on /done — treat as browser authorized
+  if (isGrok) {
+    try {
+      const finalUrl = page.url() || "";
+      if (finalUrl.includes("/oauth2/device/done")) {
+        reportStep("device_done_page", "Grok device authorized page (after loop)");
+        reportStep("browser_authorized", "Browser device authorization complete");
+        return { status: "success", browserAuthorized: true };
+      }
+    } catch { /* ignore */ }
   }
 
   reportStep("manual_assist_required", `Flow did not complete ${serviceLabel} authorization automatically`);

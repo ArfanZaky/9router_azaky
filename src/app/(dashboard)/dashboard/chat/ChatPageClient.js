@@ -3,6 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button, ModelSelectModal } from "@/shared/components";
+import {
+  abortChatRun,
+  buildStopSummary,
+  clearChatRun,
+  getChatRun,
+  makeSessionTitle as makeRunTitle,
+  patchChatRun,
+  patchChatSession as patchRunSession,
+  persistChatMessages,
+  startChatRun,
+  subscribeChatRun,
+} from "@/lib/chat/chatRunRuntime";
 
 const SYSTEM_PRESETS = [
   { id: "none", label: "None", value: "" },
@@ -40,9 +52,7 @@ function textValue(value) {
 }
 
 function makeSessionTitle(text = "") {
-  const normalized = textValue(text).replace(/\s+/g, " ").trim();
-  if (!normalized) return "New chat";
-  return normalized.length > 52 ? `${normalized.slice(0, 52).trimEnd()}…` : normalized;
+  return makeRunTitle(textValue(text));
 }
 
 function formatRelativeTime(value) {
@@ -154,10 +164,17 @@ export default function ChatPageClient() {
   const [imagePreview, setImagePreview] = useState(null); // { src, name }
 
   const abortRef = useRef(null);
+  const mountedRef = useRef(true);
+  const activeSessionIdRef = useRef(activeSessionId);
   const fileInputRef = useRef(null);
   const bottomRef = useRef(null);
   const listRef = useRef(null);
   const composerRef = useRef(null);
+  const websocketRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const liveRunRef = useRef(null);
+
+  activeSessionIdRef.current = activeSessionId;
 
   useEffect(() => {
     try {
@@ -241,6 +258,97 @@ export default function ChatPageClient() {
     return data;
   }, []);
 
+  // Keep stream alive across menu navigation — only explicit Stop aborts.
+  useEffect(() => {
+    mountedRef.current = true;
+    const unsub = subscribeChatRun((run) => {
+      if (!mountedRef.current) return;
+      if (!run) {
+        setIsSending(false);
+        setAgentStatus("");
+        return;
+      }
+      if (run.sessionId !== activeSessionIdRef.current) return;
+      setMessages(run.messages || []);
+      setIsSending(!!run.isSending);
+      setAgentStatus(run.agentStatus || "");
+      if (run.error) setError(run.error);
+    });
+    // Reattach transport if a server run is still active after remount.
+    const existing = getChatRun();
+    if (existing?.isSending && existing.runId) {
+      if (!liveRunRef.current || liveRunRef.current.runId !== existing.runId) {
+        let lastSeq = 0;
+        liveRunRef.current = {
+          runId: existing.runId,
+          lastSeq: () => lastSeq,
+          isActive: () => !!getChatRun()?.isSending,
+          applyEvent: (event) => {
+            if (!event || event.seq <= lastSeq) return;
+            lastSeq = event.seq;
+            const data = event.data || {};
+            if (event.type === "text" || (event.type === "message" && data.role === "assistant")) {
+              const content = data.content || existing.assistantText || "";
+              patchChatRun({
+                assistantText: content,
+                messages: (getChatRun()?.messages || []).map((m) =>
+                  m.id === existing.assistantId
+                    ? {
+                        ...m,
+                        content,
+                        tool_calls: data.tool_calls || m.tool_calls || null,
+                        status: data.tool_calls?.length ? "tool_calls" : "streaming",
+                      }
+                    : m
+                ),
+              });
+            } else if (event.type === "status") {
+              patchChatRun({
+                agentStatus:
+                  data.phase === "thinking"
+                    ? `Thinking (step ${data.step || "?"})…`
+                    : data.phase || "Working…",
+              });
+            } else if (event.type === "tool_start" || event.type === "tool_result") {
+              // Reload session messages on tool boundaries after remount.
+              loadSessionDetail(existing.sessionId).catch(() => {});
+              patchChatRun({
+                agentStatus:
+                  event.type === "tool_start"
+                    ? `Tool: ${data.name}…`
+                    : `Tool done: ${data.name}`,
+              });
+            } else if (event.type === "done" || event.type === "error") {
+              const finalMessages = data.messages || getChatRun()?.messages || [];
+              patchChatRun({
+                messages: finalMessages,
+                assistantText: data.finalText || data.message || "",
+                isSending: false,
+                agentStatus: "",
+                error: event.type === "error" ? data.message || "Chat failed" : "",
+              });
+              clearChatRun();
+              liveRunRef.current = null;
+              stopRunTransport();
+              if (mountedRef.current && activeSessionIdRef.current === existing.sessionId) {
+                setMessages(finalMessages);
+                setIsSending(false);
+                setAgentStatus("");
+                if (event.type === "error") setError(data.message || "Chat failed");
+              }
+            }
+          },
+        };
+      }
+      connectRunSocket(existing.runId, 0);
+    }
+    return () => {
+      mountedRef.current = false;
+      unsub();
+      // do NOT abort — chat continues in background; transport reattaches on remount
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -272,7 +380,18 @@ export default function ChatPageClient() {
             setActiveSessionId(created.id);
           }
         }
-        if (!cancelled && list[0]?.id) await loadSessionDetail(list[0].id);
+        const preferRun = getChatRun();
+        const bootId = preferRun?.sessionId || list[0]?.id;
+        if (!cancelled && bootId) {
+          setActiveSessionId(bootId);
+          if (preferRun?.isSending && preferRun.sessionId === bootId) {
+            setMessages(preferRun.messages || []);
+            setIsSending(true);
+            setAgentStatus(preferRun.agentStatus || "");
+          } else {
+            await loadSessionDetail(bootId);
+          }
+        }
       } catch (e) {
         if (!cancelled) setError(textValue(e.message) || "Failed to init chat");
       } finally {
@@ -281,12 +400,21 @@ export default function ChatPageClient() {
     })();
     return () => {
       cancelled = true;
-      abortRef.current?.abort();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!activeSessionId) return;
+    const run = getChatRun();
+    if (run?.isSending && run.sessionId === activeSessionId) {
+      setMessages(run.messages || []);
+      setIsSending(true);
+      setAgentStatus(run.agentStatus || "");
+      return;
+    }
+    // Other session (or idle): don't show Stop for a background run elsewhere
+    setIsSending(false);
+    setAgentStatus("");
     loadSessionDetail(activeSessionId).catch((e) => setError(textValue(e.message)));
   }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -457,14 +585,143 @@ export default function ChatPageClient() {
   };
 
   const persistMessages = async (sessionId, nextMessages) => {
-    await fetch(`/api/chat/sessions/${sessionId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: nextMessages }),
-    });
+    await persistChatMessages(sessionId, nextMessages);
   };
 
-  const handleStop = () => abortRef.current?.abort();
+  const handleStop = () => {
+    abortChatRun();
+    abortRef.current?.abort();
+  };
+
+  const stopRunTransport = () => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (websocketRef.current) {
+      try {
+        websocketRef.current.onclose = null;
+        websocketRef.current.onerror = null;
+        websocketRef.current.close();
+      } catch {
+        // ignore
+      }
+      websocketRef.current = null;
+    }
+  };
+
+  const connectRunSocket = (runId, after = 0) => {
+    if (!runId || typeof WebSocket === "undefined") return;
+    stopRunTransport();
+    const protocol = globalThis.location?.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${globalThis.location.host}/api/chat/ws`);
+    websocketRef.current = socket;
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ type: "subscribe", runId, after }));
+    };
+    socket.onmessage = (message) => {
+      let payload;
+      try {
+        payload = JSON.parse(message.data);
+      } catch {
+        return;
+      }
+      if (payload.type === "snapshot" && payload.run?.events) {
+        for (const event of payload.run.events) liveRunRef.current?.applyEvent(event);
+        return;
+      }
+      const event = payload.type === "event" ? payload.event : null;
+      if (!event || !liveRunRef.current || liveRunRef.current.runId !== runId) return;
+      liveRunRef.current.applyEvent(event);
+    };
+    socket.onclose = () => {
+      if (liveRunRef.current?.runId === runId && liveRunRef.current.isActive()) {
+        reconnectTimerRef.current = setTimeout(
+          () => connectRunSocket(runId, liveRunRef.current?.lastSeq?.() || 0),
+          1000
+        );
+      }
+    };
+  };
+
+  const applyUiIfActive = (sessionId, fn) => {
+    if (!mountedRef.current) return;
+    if (activeSessionIdRef.current !== sessionId) return;
+    fn();
+  };
+
+  const finalizeRun = async ({
+    sessionId,
+    sessionMeta,
+    titleSeed,
+    assistantId,
+    liveMessages,
+    assistantText,
+    tokenUsage = null,
+    stopped = false,
+    errorText = "",
+  }) => {
+    const summary = errorText
+      ? errorText
+      : buildStopSummary(liveMessages, assistantText, { stopped });
+    const finalMessages = liveMessages.map((m) => {
+      if (m.id === assistantId) {
+        return {
+          ...m,
+          content: summary,
+          status: errorText ? "error" : "done",
+          error: errorText || undefined,
+          tokenUsage: tokenUsage || m.tokenUsage,
+        };
+      }
+      if (m.role === "tool" && m.status === "running") {
+        return {
+          ...m,
+          status: "done",
+          content: stopped ? `${textValue(m.content) || ""}${textValue(m.content) ? "\n" : ""}(stopped)`.trim() : m.content,
+        };
+      }
+      return m;
+    });
+
+    const title =
+      sessionMeta?.title === "New chat" || !sessionMeta?.title
+        ? makeSessionTitle(titleSeed)
+        : sessionMeta.title;
+
+    await patchRunSession(sessionId, {
+      title,
+      model: sessionMeta?.model,
+      providerId: sessionMeta?.providerId,
+    }).catch(() => {});
+    await persistChatMessages(sessionId, finalMessages).catch(() => {});
+
+    patchChatRun({
+      messages: finalMessages,
+      assistantText: summary,
+      isSending: false,
+      agentStatus: "",
+      error: errorText || "",
+    });
+    clearChatRun();
+
+    // session list always refresh; transcript only if viewing this session
+    if (mountedRef.current) {
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId ? { ...s, title, updatedAt: new Date().toISOString() } : s
+        )
+      );
+    }
+    applyUiIfActive(sessionId, () => {
+      setMessages(finalMessages);
+      setIsSending(false);
+      setAgentStatus("");
+      if (errorText) setError(errorText);
+    });
+
+    return finalMessages;
+  };
 
   const sendMessage = async ({ regenerate = false } = {}) => {
     if (!activeSession?.model) {
@@ -475,6 +732,17 @@ export default function ChatPageClient() {
       setError("No API key. Create one in Endpoint & Key.");
       return;
     }
+    if (getChatRun()?.isSending) {
+      setError("A chat is already running. Stop it first or wait.");
+      return;
+    }
+
+    const sessionId = activeSessionId;
+    const sessionMeta = {
+      title: activeSession.title,
+      model: activeSession.model,
+      providerId: activeSession.providerId,
+    };
 
     let workingMessages = [...messages];
     if (regenerate) {
@@ -517,8 +785,20 @@ export default function ChatPageClient() {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
 
-    const titleSeed =
-      workingMessages.find((m) => m.role === "user")?.content || activeSession.title;
+    const titleSeed = textValue(
+      workingMessages.find((m) => m.role === "user")?.content || activeSession.title
+    );
+
+    startChatRun({
+      sessionId,
+      abortController: abortRef.current,
+      messages: workingMessages,
+      assistantId,
+      assistantText: "",
+      agentStatus: agentMode ? "Agent starting…" : "",
+      titleSeed,
+      sessionMeta,
+    });
 
     // Build request history. Agent loop sanitizes tool pairing again server-side.
     // Client-side: drop orphan tool rows early so plain chat path is clean too.
@@ -579,289 +859,186 @@ export default function ChatPageClient() {
     }
 
     let assistantText = "";
-    let tokenUsage = null;
     let liveMessages = workingMessages;
 
-    try {
-      if (agentMode) {
-        setAgentStatus("Agent starting…");
-        const response = await fetch("/api/chat/agent", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: activeSession.model,
-            messages: requestMessages,
-            systemPrompt: activeSession.systemPrompt || "",
-            apiKey,
-            accessMode,
-            params: {
-              temperature: params.temperature,
-              max_tokens: params.max_tokens,
-              top_p: params.top_p,
-            },
-            maxSteps: 12,
-          }),
-          signal: abortRef.current.signal,
-        });
+    const pushLive = (next, statusText) => {
+      liveMessages = next;
+      patchChatRun({
+        messages: next,
+        assistantText,
+        agentStatus: statusText ?? getChatRun()?.agentStatus ?? "",
+      });
+      applyUiIfActive(sessionId, () => {
+        setMessages(next);
+        if (statusText != null) setAgentStatus(statusText);
+      });
+    };
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(
-            textValue(errorData.error?.message || errorData.error || errorData.message) ||
-              `Agent failed (${response.status})`
-          );
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error("No agent stream");
-
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let eventName = "message";
-
-        const upsertAssistant = (patch) => {
-          liveMessages = liveMessages.map((m) =>
-            m.id === assistantId ? { ...m, ...patch } : m
-          );
-          setMessages(liveMessages);
-        };
-
-        const appendMsg = (msg) => {
-          liveMessages = [...liveMessages, msg];
-          setMessages(liveMessages);
-        };
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split(/\r?\n/);
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            if (line.startsWith("event:")) {
-              eventName = line.slice(6).trim() || "message";
-              continue;
-            }
-            if (!line.startsWith("data:")) continue;
-            const payload = line.slice(5).trim();
-            if (!payload) continue;
-            let data;
-            try {
-              data = JSON.parse(payload);
-            } catch {
-              continue;
-            }
-
-            if (eventName === "status") {
-              setAgentStatus(
-                data.phase === "thinking"
-                  ? `Thinking (step ${data.step || "?"})…`
-                  : data.phase === "init"
-                    ? `Workspace: ${data.workspace || "…"}`
-                    : data.phase || "…"
-              );
-            } else if (eventName === "text") {
-              assistantText = data.content || assistantText;
-              upsertAssistant({ content: assistantText, status: "streaming" });
-            } else if (eventName === "message" && data.role === "assistant") {
-              assistantText = data.content || assistantText;
-              upsertAssistant({
-                content: assistantText,
-                tool_calls: data.tool_calls || null,
-                status: data.tool_calls?.length ? "tool_calls" : "streaming",
-              });
-            } else if (eventName === "tool_start") {
-              setAgentStatus(`Tool: ${data.name}…`);
-              appendMsg({
-                id: data.id || createId(),
-                role: "tool",
-                tool_call_id: data.id,
-                name: data.name,
-                content: JSON.stringify({ status: "running", arguments: data.arguments }, null, 0),
-                status: "running",
-                createdAt: new Date().toISOString(),
-              });
-            } else if (eventName === "tool_result") {
-              setAgentStatus(`Tool done: ${data.name}`);
-              const existingIdx = liveMessages.findIndex(
-                (m) => m.role === "tool" && m.tool_call_id === data.id && m.status === "running"
-              );
-              const toolMsg = {
-                id: data.id || createId(),
-                role: "tool",
-                tool_call_id: data.id,
-                name: data.name,
-                content: data.content,
-                status: "done",
-                createdAt: new Date().toISOString(),
-              };
-              if (existingIdx >= 0) {
-                liveMessages = liveMessages.map((m, i) => (i === existingIdx ? toolMsg : m));
-                setMessages(liveMessages);
-              } else {
-                appendMsg(toolMsg);
-              }
-            } else if (eventName === "error") {
-              throw new Error(data.message || "Agent error");
-            } else if (eventName === "done") {
-              assistantText = data.finalText || assistantText;
-              upsertAssistant({ content: assistantText || "(done)", status: "done" });
-              setAgentStatus("");
-            }
-            eventName = "message";
-          }
-        }
-
-        const finalMessages = liveMessages.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: assistantText || m.content, status: "done" }
-            : m.status === "running"
-              ? { ...m, status: "done" }
-              : m
+    const finalizeServerEvent = (data, isError = false) => {
+      const finalMessages = data.messages || liveMessages;
+      const finalText = data.finalText || assistantText || (isError ? data.message : "") || "";
+      const title =
+        sessionMeta?.title === "New chat" || !sessionMeta?.title
+          ? makeSessionTitle(titleSeed)
+          : sessionMeta.title;
+      patchChatRun({
+        messages: finalMessages,
+        assistantText: finalText,
+        isSending: false,
+        agentStatus: "",
+        error: isError ? data.message || "Chat failed" : "",
+      });
+      clearChatRun();
+      liveRunRef.current = null;
+      stopRunTransport();
+      if (mountedRef.current) {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId ? { ...s, title: data.title || title, updatedAt: new Date().toISOString() } : s
+          )
         );
+      }
+      applyUiIfActive(sessionId, () => {
         setMessages(finalMessages);
+        setIsSending(false);
         setAgentStatus("");
+        if (isError) setError(data.message || "Chat failed");
+      });
+    };
 
-        const title =
-          activeSession.title === "New chat" ? makeSessionTitle(titleSeed) : activeSession.title;
-        await patchSession(activeSessionId, {
-          title,
+    try {
+      applyUiIfActive(sessionId, () => setAgentStatus(agentMode ? "Agent starting…" : "Sending…"));
+      const response = await fetch("/api/chat/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          mode: agentMode ? "agent" : "plain",
+          providerId: sessionMeta.providerId,
+          assistantId,
+          titleSeed,
+          persistedMessages: workingMessages,
           model: activeSession.model,
-          providerId: activeSession.providerId,
-        });
-        await persistMessages(activeSessionId, finalMessages);
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === activeSessionId ? { ...s, title, updatedAt: new Date().toISOString() } : s
-          )
-        );
-      } else {
-        const body = {
-          model: activeSession.model,
-          messages: requestMessages.filter((m) => m.role !== "tool"),
-          stream: true,
-          temperature: params.temperature,
-          max_tokens: params.max_tokens,
-          top_p: params.top_p,
-        };
-
-        const response = await fetch("/api/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-            Authorization: `Bearer ${apiKey}`,
+          messages: requestMessages,
+          systemPrompt: activeSession.systemPrompt || "",
+          apiKey,
+          accessMode,
+          params: {
+            temperature: params.temperature,
+            max_tokens: params.max_tokens,
+            top_p: params.top_p,
           },
-          body: JSON.stringify(body),
-          signal: abortRef.current.signal,
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(
-            textValue(errorData.error?.message || errorData.error || errorData.message) ||
-              `Request failed (${response.status})`
-          );
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          const data = await response.json().catch(() => ({}));
-          assistantText = textValue(data?.choices?.[0]?.message?.content || "");
-          tokenUsage = data?.usage || null;
-        } else {
-          const decoder = new TextDecoder();
-          let buffer = "";
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split(/\r?\n/);
-            buffer = lines.pop() || "";
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data:")) continue;
-              const payload = trimmed.slice(5).trim();
-              if (!payload || payload === "[DONE]") continue;
-              try {
-                const chunk = JSON.parse(payload);
-                if (chunk.usage) tokenUsage = chunk.usage;
-                const text = readAssistantText(chunk);
-                if (!text) continue;
-                assistantText += text;
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantId
-                      ? { ...m, content: assistantText, status: "streaming" }
-                      : m
-                  )
-                );
-              } catch {
-                // ignore malformed chunk
-              }
-            }
+          maxSteps: 12,
+        }),
+      });
+      const started = await response.json().catch(() => ({}));
+      if (!response.ok || !started.id) {
+        throw new Error(started.error || "Unable to start background chat");
+      }
+      if (abortRef.current.signal.aborted) {
+        await fetch(`/api/chat/runs/${started.id}`, { method: "DELETE" }).catch(() => {});
+        return;
+      }
+      patchChatRun({ runId: started.id, agentStatus: agentMode ? "Agent running…" : "Streaming…" });
+      let lastSeq = 0;
+      liveRunRef.current = {
+        runId: started.id,
+        lastSeq: () => lastSeq,
+        isActive: () => !!getChatRun()?.isSending,
+        applyEvent: (event) => {
+          if (!event || event.seq <= lastSeq) return;
+          lastSeq = event.seq;
+          const data = event.data || {};
+          if (event.type === "text") {
+            assistantText = data.content || assistantText;
+            pushLive(
+              liveMessages.map((m) =>
+                m.id === assistantId ? { ...m, content: assistantText, status: "streaming" } : m
+              )
+            );
+          } else if (event.type === "message" && data.role === "assistant") {
+            assistantText = data.content || assistantText;
+            pushLive(
+              liveMessages.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      content: assistantText,
+                      tool_calls: data.tool_calls || null,
+                      status: data.tool_calls?.length ? "tool_calls" : "streaming",
+                    }
+                  : m
+              )
+            );
+          } else if (event.type === "status") {
+            const st =
+              data.phase === "thinking"
+                ? `Thinking (step ${data.step || "?"})…`
+                : data.phase === "init"
+                  ? `Workspace: ${data.workspace || "…"}`
+                  : data.phase || "Working…";
+            pushLive(liveMessages, st);
+          } else if (event.type === "tool_start") {
+            pushLive(
+              [
+                ...liveMessages,
+                {
+                  id: data.id || createId(),
+                  role: "tool",
+                  tool_call_id: data.id,
+                  name: data.name,
+                  content: JSON.stringify({ status: "running", arguments: data.arguments }),
+                  status: "running",
+                  createdAt: new Date().toISOString(),
+                },
+              ],
+              `Tool: ${data.name}…`
+            );
+          } else if (event.type === "tool_result") {
+            const next = {
+              id: data.id || createId(),
+              role: "tool",
+              tool_call_id: data.id,
+              name: data.name,
+              content: data.content,
+              status: "done",
+              createdAt: new Date().toISOString(),
+            };
+            const index = liveMessages.findIndex(
+              (m) => m.role === "tool" && m.tool_call_id === data.id && m.status === "running"
+            );
+            pushLive(
+              index >= 0
+                ? liveMessages.map((m, i) => (i === index ? next : m))
+                : [...liveMessages, next],
+              `Tool done: ${data.name}`
+            );
+          } else if (event.type === "done") {
+            finalizeServerEvent(data);
+          } else if (event.type === "error") {
+            finalizeServerEvent(data, true);
           }
-        }
-
-        const finalMessages = workingMessages.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: assistantText || m.content,
-                status: "done",
-                tokenUsage,
-              }
-            : m
-        );
-        setMessages(finalMessages);
-
-        const title =
-          activeSession.title === "New chat" ? makeSessionTitle(titleSeed) : activeSession.title;
-        await patchSession(activeSessionId, {
-          title,
-          model: activeSession.model,
-          providerId: activeSession.providerId,
-        });
-        await persistMessages(activeSessionId, finalMessages);
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === activeSessionId
-              ? { ...s, title, updatedAt: new Date().toISOString() }
-              : s
-          )
-        );
-      }
+        },
+      };
+      connectRunSocket(started.id, 0);
     } catch (e) {
-      if (e.name === "AbortError") {
-        const finalMessages = liveMessages.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: assistantText || m.content || "(stopped)", status: "done" }
-            : m.status === "running"
-              ? { ...m, status: "done", content: m.content || "(stopped)" }
-              : m
-        );
-        setMessages(finalMessages);
-        await persistMessages(activeSessionId, finalMessages).catch(() => {});
-      } else {
-        const errText = textValue(e.message) || "Failed to send";
-        setError(errText);
-        const finalMessages = liveMessages.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: m.content || `Error: ${errText}`, status: "error", error: errText }
-            : m
-        );
-        setMessages(finalMessages);
-        await persistMessages(activeSessionId, finalMessages).catch(() => {});
-      }
-    } finally {
-      setIsSending(false);
-      setAgentStatus("");
-      abortRef.current = null;
+      const errText = textValue(e.message) || "Failed to send";
+      await finalizeRun({
+        sessionId,
+        sessionMeta,
+        titleSeed,
+        assistantId,
+        liveMessages,
+        assistantText: assistantText || `Error: ${errText}`,
+        stopped: false,
+        errorText: errText,
+      });
+      liveRunRef.current = null;
+      stopRunTransport();
+      applyUiIfActive(sessionId, () => {
+        setIsSending(false);
+        setAgentStatus("");
+      });
     }
   };
 

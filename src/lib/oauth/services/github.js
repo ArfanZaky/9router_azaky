@@ -1,6 +1,7 @@
 import { OAuthService } from "./oauth.js";
 import { GITHUB_CONFIG } from "../constants/oauth.js";
 import { spinner as createSpinner } from "../utils/ui.js";
+import { getServerCredentials } from "../config/index.js";
 
 /**
  * GitHub Copilot OAuth Service
@@ -188,11 +189,11 @@ export class GitHubService extends OAuthService {
   async connect() {
     try {
       // Authenticate with GitHub
-      const authResult = await this.authenticate();
-      
-      // Send credentials to server
-      const { server, token, userId } = await import("../config/index.js").then(m => m.getServerCredentials());
-      const spinner = (await import("../utils/ui.js")).spinner("Connecting to server...").start();
+    const authResult = await this.authenticate();
+    
+    // Send credentials to server
+    const { server, token, userId } = getServerCredentials();
+    const spinner = (await import("../utils/ui.js")).spinner("Connecting to server...").start();
       
       const response = await fetch(`${server}/api/cli/providers/github`, {
         method: "POST",

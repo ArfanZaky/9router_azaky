@@ -113,6 +113,7 @@ class QoderBulkImportManager extends KiroBulkImportManager {
         const tokenData = automationResult.tokenData || automationResult;
         let displayName = "";
         let organizationId = "";
+        let canonicalUserId = "";
         let planTier = "";
 
         this.setAccountStep(account, "fetching_profile", "Fetching Qoder profile");
@@ -121,6 +122,7 @@ class QoderBulkImportManager extends KiroBulkImportManager {
           const userInfo = await qoderService.fetchUserInfo(tokenData.accessToken);
           displayName = userInfo.name || userInfo.email || "";
           organizationId = userInfo.organizationId || "";
+          canonicalUserId = userInfo.id || "";
         } catch {}
 
         this.setAccountStep(account, "checking_plan", "Reading plan tier via browser session");
@@ -152,7 +154,7 @@ class QoderBulkImportManager extends KiroBulkImportManager {
           tokens: {
             accessToken: tokenData.accessToken,
             refreshToken: tokenData.refreshToken || "",
-            userId: tokenData.userId || "",
+            userId: canonicalUserId || tokenData.userId || "",
             machineId,
             organizationId: organizationId || tokenData.organizationId || "",
             expireTime: tokenData.expireTime || null,
@@ -259,17 +261,20 @@ class QoderBulkImportManager extends KiroBulkImportManager {
 
         let displayName = "";
         let organizationId = "";
+        let canonicalUserId = "";
         try {
           const userInfo = await qoderService.fetchUserInfo(tokenData.accessToken);
           displayName = userInfo.name || userInfo.email || "";
           organizationId = userInfo.organizationId || "";
+          canonicalUserId = userInfo.id || "";
+          canonicalUserId = userInfo.id || "";
         } catch {}
 
         const { connection } = await this.saveConnection({
           tokens: {
             accessToken: tokenData.accessToken,
             refreshToken: tokenData.refreshToken || "",
-            userId: tokenData.userId || "",
+            userId: canonicalUserId || tokenData.userId || "",
             machineId,
             organizationId: organizationId || tokenData.organizationId || "",
             expireTime: tokenData.expireTime || null,

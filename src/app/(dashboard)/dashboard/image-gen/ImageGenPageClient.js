@@ -268,6 +268,16 @@ export default function ImageGenPageClient() {
         );
       }
 
+      const imageItems = (Array.isArray(data.data) ? data.data : []).filter(
+        (item) => item?.b64_json || item?.url
+      );
+      if (imageItems.length === 0) {
+        throw new Error(
+          textValue(data.error?.message || data.error || data.message) ||
+            "Provider returned no image data"
+        );
+      }
+
       const providerId = model.includes("/") ? model.split("/")[0] : "";
       const saveRes = await fetch("/api/image-gen/jobs", {
         method: "POST",
@@ -287,11 +297,14 @@ export default function ImageGenPageClient() {
             hasRefImage: !!refImage,
           },
           status: "done",
-          data: data.data || [],
+          data: imageItems,
         }),
       });
       const job = await saveRes.json().catch(() => ({}));
       if (!saveRes.ok) throw new Error(job.error || "Failed to save job");
+      if (!job.assets?.length) {
+        throw new Error("Image generated but failed to save asset");
+      }
       setJobs((prev) => [job, ...prev]);
       if (job.assets?.[0]) {
         setLightbox({ job, asset: job.assets[0] });

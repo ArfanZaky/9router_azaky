@@ -23,6 +23,31 @@ import {
 const FETCH_TIMEOUT_MS = 15_000;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1h, same as the Kiro catalog
 
+export const QODER_FALLBACK_CONFIGS = Object.freeze({
+  qmodel_latest: { key: "qmodel_latest", display_name: "Qoder Qwen 3.7 Max", max_input_tokens: 180000, max_output_tokens: 64000, is_reasoning: false, enable: true, source: "system", format: "openai" },
+  efficient: { key: "efficient", display_name: "Qoder Efficient", max_input_tokens: 180000, max_output_tokens: 64000, is_reasoning: false, enable: true, source: "system", format: "openai" },
+  dfmodel: { key: "dfmodel", display_name: "DeepSeek V4 Flash", max_input_tokens: 180000, max_output_tokens: 64000, is_reasoning: false, enable: true, source: "system", format: "openai" },
+  qmodel: { key: "qmodel", display_name: "Qwen 3.6 Plus", max_input_tokens: 180000, max_output_tokens: 64000, is_reasoning: false, enable: true, source: "system", format: "openai" },
+  kmodel: { key: "kmodel", display_name: "Kimi K2.6", max_input_tokens: 180000, max_output_tokens: 64000, is_reasoning: false, enable: true, source: "system", format: "openai" },
+  dmodel: { key: "dmodel", display_name: "DeepSeek V4 Pro", max_input_tokens: 180000, max_output_tokens: 64000, is_reasoning: false, enable: true, source: "system", format: "openai" },
+  mmodel: { key: "mmodel", display_name: "MiniMax M2.7", max_input_tokens: 180000, max_output_tokens: 64000, is_reasoning: false, enable: true, source: "system", format: "openai" },
+  gm51model: { key: "gm51model", display_name: "GLM 5.1", max_input_tokens: 180000, max_output_tokens: 64000, is_reasoning: false, enable: true, source: "system", format: "openai" },
+});
+
+function fallbackCatalog() {
+  const rawConfigs = new Map(Object.entries(QODER_FALLBACK_CONFIGS));
+  const models = Object.values(QODER_FALLBACK_CONFIGS).map((entry) => ({
+    id: entry.key,
+    name: entry.display_name,
+    contextLength: entry.max_input_tokens,
+    isVL: false,
+    isReasoning: entry.is_reasoning,
+    maxOutputTokens: entry.max_output_tokens,
+    description: "",
+  }));
+  return { expiresAt: Date.now() + CACHE_TTL_MS, models, rawConfigs, fetched: false };
+}
+
 /** @type {Map<string, { expiresAt: number, models: any[], rawConfigs: Map<string, object>, fetched: boolean }>} */
 const catalogCache = new Map();
 
@@ -55,6 +80,8 @@ function cosyCredsFromConnection(credentials) {
     name: credentials.displayName || "",
     email: credentials.email || "",
     machineId: psd.machineId || "",
+    machineToken: psd.machineToken || "",
+    machineType: psd.machineType || "",
   };
 }
 
@@ -183,11 +210,12 @@ export async function resolveQoderModels(credentials, options = {}) {
 
   const fetchPromise = (async () => {
     const fetched = await fetchQoderCatalogRaw(credentials, options.signal, options.proxyOptions);
-    if (!fetched) return null;
+    if (!fetched) return fallbackCatalog();
+    const fallback = fallbackCatalog();
     const entry = {
       expiresAt: Date.now() + CACHE_TTL_MS,
-      models: fetched.models,
-      rawConfigs: fetched.rawConfigs,
+      models: [...fallback.models.filter((model) => !fetched.rawConfigs.has(model.id)), ...fetched.models],
+      rawConfigs: new Map([...fallback.rawConfigs, ...fetched.rawConfigs]),
       fetched: true,
     };
     catalogCache.set(key, entry);

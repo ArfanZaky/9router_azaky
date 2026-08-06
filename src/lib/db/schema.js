@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -199,6 +199,38 @@ export const TABLES = {
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_cm_session ON chatMessages(sessionId, createdAt)",
     ],
+  },
+  // Server-owned runs make chat generation recoverable/replayable independently
+  // of a browser request or WebSocket connection.
+  chatRuns: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      sessionId: "TEXT NOT NULL",
+      mode: "TEXT NOT NULL",
+      status: "TEXT NOT NULL",
+      request: "TEXT",
+      result: "TEXT",
+      error: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      startedAt: "TEXT",
+      finishedAt: "TEXT",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_cr_session ON chatRuns(sessionId, createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_cr_status ON chatRuns(status, updatedAt DESC)",
+    ],
+  },
+  chatRunEvents: {
+    columns: {
+      runId: "TEXT NOT NULL",
+      seq: "INTEGER NOT NULL",
+      type: "TEXT NOT NULL",
+      data: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+    },
+    primaryKey: "PRIMARY KEY (runId, seq)",
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_cre_run_seq ON chatRunEvents(runId, seq)"],
   },
   imageJobs: {
     columns: {
