@@ -11,6 +11,7 @@
  */
 
 import { runGoogleAccountAutomation } from "./googleAutomation.js";
+import { obtainGrokCliPkceTokens } from "./grokCliPkce.js";
 import {
   GROK_DEVICE_CODE_INPUT_SELECTORS,
   GROK_CONTINUE_BUTTON_SELECTORS,
@@ -456,6 +457,7 @@ export async function runGrokCliGoogleAutomation({
   successPromise,
   shortTimeoutMs = DEFAULT_TIMEOUT_MS,
   onStep,
+  proxyDispatcher,
 }) {
   const reportStep = (step, message) => {
     let url = "(closed)";
@@ -475,6 +477,45 @@ export async function runGrokCliGoogleAutomation({
       throw err;
     }
   };
+
+  let pkceGoogleLoginAttempted = false;
+  const retrievePkceTokens = () => obtainGrokCliPkceTokens({
+    page,
+    proxyDispatcher,
+    reportStep,
+    handleAuthorizationPage: async () => {
+      await dismissGrokCookieBanner(page, reportStep);
+      const url = page.url();
+      if (url.includes("/oauth2/consent")) {
+        const approved = await clickFirstVisible(page, GROK_ALLOW_BUTTON_SELECTORS);
+        if (approved) reportStep("approving_pkce_consent", "Approving Grok CLI PKCE consent");
+        return;
+      }
+      if (pkceGoogleLoginAttempted) return;
+      const googleClicked = await clickGoogleLoginButton(page, reportStep);
+      if (!googleClicked) return;
+      pkceGoogleLoginAttempted = true;
+      reportStep("continuing_pkce_google_flow", "Continuing Google authentication for Grok CLI PKCE");
+      const loginResult = await runGoogleAccountAutomation({
+        page,
+        authUrl: page.url(),
+        email,
+        password,
+        successPromise: null,
+        shortTimeoutMs,
+        serviceLabel: GROK_CLI_LABEL,
+        openingStep: "continuing_pkce_google_flow",
+        openingMessage: "Continuing Google authentication for Grok CLI PKCE",
+        successStep: "pkce_google_authorized",
+        successMessage: "Google authentication for Grok CLI PKCE complete",
+        onStep,
+        skipNavigation: true,
+      });
+      if (loginResult.status !== "success" && loginResult.status !== "needs_manual") {
+        throw new Error(loginResult.error || "Google authentication failed during Grok CLI PKCE");
+      }
+    },
+  });
 
   try {
     console.log(
@@ -556,7 +597,7 @@ export async function runGrokCliGoogleAutomation({
     }
     await page.waitForTimeout(1500);
 
-    // Step 7: Google SSO UI only (manager polls token AFTER /done — early poll kills device_code)
+    // Step 7: Complete Google SSO before starting PKCE token authorization.
     reportStep("starting_google_automation", "Starting Google SSO automation");
 
     const result = await runGoogleAccountAutomation({
@@ -584,12 +625,13 @@ export async function runGrokCliGoogleAutomation({
       return { status: "success", tokens: result.tokens || result };
     }
     if (result.status === "success" && result.browserAuthorized) {
-      console.log(`[GrokCLI:${email}] browserAuthorized=true — manager will poll`);
-      return result;
+      console.log(`[GrokCLI:${email}] browserAuthorized=true — retrieving tokens via PKCE`);
+      const tokens = await retrievePkceTokens();
+      return { ...result, tokens };
     }
 
-    // Step 8: Drive x.ai to /done, then signal manager to poll
-    reportStep("checking_post_redirect", "Handling post-Google x.ai pages (poll after /done)");
+    // Step 8: Drive x.ai to /done, then acquire tokens through PKCE.
+    reportStep("checking_post_redirect", "Handling post-Google x.ai pages before PKCE");
     await page.waitForTimeout(2000);
     await handleGoogleWorkspaceWelcome(page, reportStep);
 
@@ -600,9 +642,10 @@ export async function runGrokCliGoogleAutomation({
       try { url = page.url(); } catch { break; }
 
       if (url.includes("/oauth2/device/done")) {
-        reportStep("already_authorized", "On device done page — ready for token poll");
+        reportStep("already_authorized", "On device done page — starting PKCE token retrieval");
         reportStep("browser_authorized", "Browser device authorization complete");
-        return { status: "success", browserAuthorized: true };
+        const tokens = await retrievePkceTokens();
+        return { status: "success", browserAuthorized: true, tokens };
       }
 
       if (url.includes("exchange-token-error")) {
@@ -658,7 +701,8 @@ export async function runGrokCliGoogleAutomation({
           try {
             await page.waitForURL("**/oauth2/device/done", { timeout: 20_000 });
             reportStep("browser_authorized", "Reached /done after consent");
-            return { status: "success", browserAuthorized: true };
+            const tokens = await retrievePkceTokens();
+            return { status: "success", browserAuthorized: true, tokens };
           } catch {
             await page.waitForTimeout(2000);
           }
@@ -699,7 +743,8 @@ export async function runGrokCliGoogleAutomation({
     try {
       if (page.url().includes("/oauth2/device/done")) {
         reportStep("browser_authorized", "Browser device authorization complete");
-        return { status: "success", browserAuthorized: true };
+        const tokens = await retrievePkceTokens();
+        return { status: "success", browserAuthorized: true, tokens };
       }
     } catch { /* ignore */ }
 

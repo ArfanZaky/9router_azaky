@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { GrokDomainOtpClient, __test__ } from "../../src/lib/oauth/services/grokDomainOtpClient.js";
 import { __test__ as automationTest } from "../../src/lib/oauth/services/grokCliDomainAutomation.js";
+import { obtainGrokCliPkceTokens } from "../../src/lib/oauth/services/grokCliPkce.js";
+import { __test__ as googleAutomationTest } from "../../src/lib/oauth/services/kiroGoogleAutomation.js";
 
 function jsonResponse(payload, status = 200, headers = {}) {
   return new Response(JSON.stringify(payload), {
@@ -75,9 +77,38 @@ describe("GrokDomainOtpClient", () => {
       signal: controller.signal,
     })).rejects.toThrow("cancelled");
   });
+
+  it("times out after the configured OTP wait budget", async () => {
+    let now = 0;
+    const originalNow = Date.now;
+    Date.now = () => now;
+    const client = new GrokDomainOtpClient({
+      fetchImpl: vi.fn().mockImplementation(async () => jsonResponse({ waiting: true })),
+      waitImpl: async (ms) => {
+        now += ms;
+      },
+    });
+
+    try {
+      await expect(client.waitForCode("user@example.com", {
+        timeoutMs: 60_000,
+        intervalMs: 3_000,
+      })).rejects.toThrow(/OTP timeout after 60s/);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
 });
 
 describe("Grok domain signup helpers", () => {
+  it("includes Google post-password Confirm actions used by Grok SSO", () => {
+    expect(googleAutomationTest.APPROVE_BUTTON_SELECTORS).toEqual(expect.arrayContaining([
+      'button:has-text("Confirm")',
+      'div[role="button"]:has-text("Confirm")',
+      'input[type="submit"][value="Confirm"]',
+    ]));
+  });
+
   it("normalizes xAI XXX-XXX codes to six alphanumeric characters", () => {
     expect(automationTest.normalizeOtp("E7F-AAC")).toBe("E7FAAC");
   });
@@ -102,13 +133,60 @@ describe("Grok domain signup helpers", () => {
     expect(automationTest.callbackCode("https://evil.example/callback?code=abc")).toBeNull();
   });
 
+  it("exchanges a captured PKCE callback using the supplied proxy dispatcher", async () => {
+    let routeHandler;
+    const dispatcher = { name: "test-proxy" };
+    const page = {
+      route: vi.fn(async (_pattern, handler) => { routeHandler = handler; }),
+      unroute: vi.fn(async () => {}),
+      goto: vi.fn(async () => {
+        const authorizeUrl = new URL(page.goto.mock.calls.at(-1)[0]);
+        await routeHandler({
+          request: () => ({
+            url: () => `http://127.0.0.1:56121/callback?code=pkce-code&state=${authorizeUrl.searchParams.get("state")}`,
+          }),
+          abort: vi.fn(async () => {}),
+          continue: vi.fn(async () => {}),
+        });
+      }),
+      url: vi.fn(() => "https://auth.x.ai/oauth2/authorize"),
+      waitForTimeout: vi.fn(async () => {}),
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      expires_in: 3600,
+    }));
+
+    const tokens = await obtainGrokCliPkceTokens({ page, proxyDispatcher: dispatcher, fetchImpl });
+
+    expect(tokens.accessToken).toBe("access-token");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://auth.x.ai/oauth2/token",
+      expect.objectContaining({ dispatcher })
+    );
+    const request = fetchImpl.mock.calls[0][1];
+    expect(request.body.get("grant_type")).toBe("authorization_code");
+    expect(request.body.get("code")).toBe("pkce-code");
+    expect(request.body.get("code_verifier").length).toBeGreaterThan(80);
+  });
+
+  it("rejects a PKCE callback with a mismatched state", () => {
+    expect(automationTest.callbackCode(
+      "http://127.0.0.1:56121/callback?code=abc&state=wrong",
+      "expected"
+    )).toBeNull();
+  });
+
   it("classifies Turnstile as solved from any harvested token", () => {
     expect(automationTest.classifyTurnstileSnapshot({ tokenLength: 128 })).toBe("solved");
   });
 
-  it("requires manual Turnstile only for an interactive challenge", () => {
+  it("classifies interactive or broken Turnstile as interactive", () => {
     expect(automationTest.classifyTurnstileSnapshot({ interactiveVisible: true })).toBe("interactive");
+    expect(automationTest.classifyTurnstileSnapshot({ broken: true })).toBe("interactive");
     expect(automationTest.classifyTurnstileSnapshot({}, "Verify you are human")).toBe("interactive");
+    expect(automationTest.classifyTurnstileSnapshot({}, "Unable to find onload callback")).toBe("interactive");
   });
 
   it("keeps mounted non-interactive Turnstile in automatic checking", () => {
@@ -119,4 +197,21 @@ describe("Grok domain signup helpers", () => {
     expect(automationTest.classifyTurnstileSnapshot()).toBe("loading");
   });
 
+  it("exposes same-session Turnstile click helper for managed checkbox", () => {
+    expect(typeof automationTest.tryClickTurnstile).toBe("function");
+  });
+
+  it("detects xAI sign-in only on sign-in URLs", () => {
+    expect(automationTest.isXaiSignInPage({ url: () => "https://accounts.x.ai/sign-in" })).toBe(true);
+    expect(automationTest.isXaiSignInPage({
+      url: () => "https://accounts.x.ai/sign-in?redirect=oauth2-provider&return_to=/oauth2/consent",
+    })).toBe(true);
+    expect(automationTest.isXaiSignInPage({ url: () => "https://accounts.x.ai/sign-up" })).toBe(false);
+    expect(automationTest.isXaiSignInPage({ url: () => "https://accounts.x.ai/sign-up/complete" })).toBe(false);
+    expect(automationTest.isXaiSignInPage({ url: () => "https://auth.x.ai/oauth2/consent" })).toBe(false);
+  });
+
+  it("exposes incremental domain email login helper for PKCE sign-in", () => {
+    expect(typeof automationTest.progressDomainEmailLogin).toBe("function");
+  });
 });

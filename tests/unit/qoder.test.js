@@ -473,6 +473,58 @@ describe("inspectFirstQoderEvent", () => {
   });
 });
 
+describe("Qoder flattened response tool recovery", () => {
+  const { recoverFlattenedToolCalls, recoverQoderToolCallStream } = qoderExecutorInternals;
+
+  it("recovers an unbracketed edit call with escaped multiline content", () => {
+    const args = {
+      filePath: "F:\\project\\app\\myprofile.tsx",
+      oldString: "const submit = async () => {",
+      newString: "const submit = async () => {\n\tif (!image) return;",
+    };
+    const recovered = recoverFlattenedToolCalls(
+      `Updating frontend.\nassistant requested tools\nedit(${JSON.stringify(args)})`,
+      new Set(["edit"]),
+    );
+    expect(recovered.content).toBe("Updating frontend.");
+    expect(recovered.toolCalls).toHaveLength(1);
+    expect(recovered.toolCalls[0].function.name).toBe("edit");
+    expect(JSON.parse(recovered.toolCalls[0].function.arguments)).toEqual(args);
+  });
+
+  it("converts flattened content into standard OpenAI streaming tool calls", async () => {
+    const source = [
+      { choices: [{ delta: { content: "assistant requested tools\n" }, finish_reason: null }] },
+      { choices: [{ delta: { content: 'grep({"pattern":"story","path":"src"})\n' }, finish_reason: null }] },
+      { choices: [{ delta: { content: 'glob({"pattern":"pages/**/*.tsx","path":"src"})' }, finish_reason: "stop" }] },
+    ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n";
+    const response = recoverQoderToolCallStream(
+      new Response(source, { headers: { "Content-Type": "text/event-stream" } }),
+      "qoder/qmodel_latest",
+      [{ type: "function", function: { name: "grep" } }, { type: "function", function: { name: "glob" } }],
+    );
+    const output = await response.text();
+    expect(output).toContain('"name":"grep"');
+    expect(output).toContain('"name":"glob"');
+    expect(output).toContain('"finish_reason":"tool_calls"');
+    expect(output).not.toContain("assistant requested tools");
+  });
+
+  it("leaves unknown flattened tools as ordinary content", async () => {
+    const source = `data: ${JSON.stringify({ choices: [{ delta: { content: 'assistant requested tools\nunknown({"x":1})' }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    const response = recoverQoderToolCallStream(
+      new Response(source, { headers: { "Content-Type": "text/event-stream" } }),
+      "qoder/qmodel_latest",
+      [{ type: "function", function: { name: "edit" } }],
+    );
+    const output = await response.text();
+    expect(output).toContain("assistant requested tools");
+    expect(output).toContain("unknown");
+    expect(output).not.toContain('"tool_calls"');
+    expect(output).toContain("data: [DONE]");
+  });
+});
+
 describe("Qoder transport", () => {
   it("uses five-minute connect and stall timeouts", () => {
     expect(qoderProvider.transport.timeoutMs).toBe(300000);
