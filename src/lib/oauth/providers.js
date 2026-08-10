@@ -28,6 +28,7 @@ import {
   CODEBUDDY_CONFIG,
   KIMCHI_CONFIG,
   GROK_CLI_CONFIG,
+  COMMANDCODE_CONFIG,
   getOAuthClientMetadata,
 } from "./constants/oauth";
 import { XAI_CONFIG, XAI_PKCE_VERIFIER_BYTES } from "./constants/xai";
@@ -1571,6 +1572,19 @@ const PROVIDERS = {
         },
       };
     },
+  },
+
+  commandcode: {
+    config: COMMANDCODE_CONFIG,
+    flowType: "import_token",
+    mapTokens: (tokens) => ({
+      accessToken: tokens.apiKey,
+      refreshToken: null,
+      providerSpecificData: {
+        authMethod: "auto_imported",
+        source: "auth.json",
+      },
+    }),
   },
 };
 

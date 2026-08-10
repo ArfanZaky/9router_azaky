@@ -119,6 +119,12 @@ export const KIMCHI_CONFIG = { ...PROVIDER_OAUTH["kimchi"] };
 // Endpoint: cli-chat-proxy.grok.com — same client_id as xai, different flow + scopes
 export const GROK_CLI_CONFIG = { ...PROVIDER_OAUTH["grok-cli"] };
 
+// Command Code — import_token flow (reads ~/.commandcode/auth.json)
+// No OAuth endpoints; tokens are auto-detected from local CLI config
+export const COMMANDCODE_CONFIG = {
+  authFilePath: "~/.commandcode/auth.json",
+};
+
 // OAuth timeout (5 minutes)
 export const OAUTH_TIMEOUT = 300000;
 
@@ -144,4 +150,5 @@ export const PROVIDERS = {
   CODEBUDDY_CN: "codebuddy-cn",
   KIMCHI: "kimchi",
   GROK_CLI: "grok-cli",
+  COMMANDCODE: "commandcode",
 };
