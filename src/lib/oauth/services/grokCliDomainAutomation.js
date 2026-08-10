@@ -6,16 +6,10 @@ import {
   readPageText,
 } from "./grokCliAutomation.js";
 import { GrokDomainOtpClient } from "./grokDomainOtpClient.js";
+import { obtainGrokCliPkceTokens, __test__ as pkceTest } from "./grokCliPkce.js";
 import {
   GROK_ALLOW_BUTTON_SELECTORS,
 } from "../constants/grok.js";
-import crypto from "node:crypto";
-
-const XAI_AUTHORIZE_URL = "https://auth.x.ai/oauth2/authorize";
-const XAI_TOKEN_URL = "https://auth.x.ai/oauth2/token";
-const XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
-const XAI_REDIRECT_URI = "http://127.0.0.1:56121/callback";
-const XAI_SCOPE = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write";
 
 const SIGN_UP_SELECTORS = [
   'button:text-is("Sign up")',
@@ -39,13 +33,22 @@ const EMAIL_SIGNUP_SELECTORS = [
 const EMAIL_INPUT_SELECTORS = [
   'input[type="email"]',
   'input[name="email"]',
+  'input[name="username"]',
   'input[autocomplete="email"]',
+  'input[autocomplete="username"]',
+  'input[inputmode="email"]',
+  'input[placeholder*="email" i]',
+  'input[placeholder*="Email" i]',
+  'input[id*="email" i]',
+  'input[aria-label*="email" i]',
 ];
 const PASSWORD_INPUT_SELECTORS = [
   'input[type="password"]',
   'input[name="password"]',
   'input[autocomplete="new-password"]',
   'input[autocomplete="current-password"]',
+  'input[placeholder*="password" i]',
+  'input[id*="password" i]',
 ];
 const OTP_INPUT_SELECTORS = [
   'input[name*="code" i]',
@@ -87,9 +90,27 @@ const COMPLETE_SIGNUP_SELECTORS = [
 async function fillFirst(page, selectors, value) {
   for (const selector of selectors) {
     const locator = page.locator(selector).first();
-    if (!await locator.isVisible().catch(() => false)) continue;
-    await locator.fill(value, { timeout: 10_000 });
-    return true;
+    const count = await locator.count().catch(() => 0);
+    if (!count) continue;
+    const visible = await locator.isVisible().catch(() => false);
+    if (visible) {
+      await locator.click({ timeout: 3_000 }).catch(() => null);
+      await locator.fill(value, { timeout: 10_000 }).catch(() => null);
+      const current = await locator.inputValue().catch(() => "");
+      if (current === value) return true;
+    }
+    // xAI sometimes renders a non-standard field that fails isVisible/fill.
+    const filled = await locator.evaluate((el, next) => {
+      if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false;
+      el.focus();
+      el.value = "";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.value = next;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return el.value === next;
+    }, value).catch(() => false);
+    if (filled) return true;
   }
   return false;
 }
@@ -100,6 +121,8 @@ async function waitForAny(page, selectors, timeoutMs = 20_000) {
     for (const selector of selectors) {
       const locator = page.locator(selector).first();
       if (await locator.isVisible().catch(() => false)) return locator;
+      // Attached but not yet "visible" to Playwright (opacity/animation).
+      if (await locator.count().catch(() => 0)) return locator;
     }
     await page.waitForTimeout(500);
   }
@@ -127,63 +150,160 @@ async function readOtpValue(page) {
       if (value.length >= 3) return value;
     }
     const slots = [...document.querySelectorAll('input[maxlength="1"]')];
-    return normalize(slots.map((input) => input.value || "").join(""));
+    if (slots.length) return normalize(slots.map((input) => input.value || "").join(""));
+    if (roots[0]) return normalize(roots[0].value);
+    return "";
   }).catch(() => "");
 }
 
+async function otpInputsReady(page) {
+  return page.evaluate(() => {
+    const pick = document.querySelector(
+      'input[name="code"], input[autocomplete="one-time-code"], input[maxlength="1"]'
+    );
+    return Boolean(pick && !pick.disabled);
+  }).catch(() => false);
+}
+
 async function softClearOtp(page) {
-  await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A").catch(() => null);
+  for (const key of ["Control+A", "Meta+A"]) {
+    await page.keyboard.press(key).catch(() => null);
+  }
   for (let index = 0; index < 8; index++) {
     await page.keyboard.press("Backspace").catch(() => null);
   }
+}
+
+async function typeOtpChars(page, code, delayMs = 40) {
+  const focused = page.locator("input:focus").first();
+  if (await focused.count().catch(() => 0)) {
+    if (typeof focused.pressSequentially === "function") {
+      await focused.pressSequentially(code, { delay: delayMs }).catch(() => null);
+      return;
+    }
+  }
+  await page.keyboard.type(code, { delay: delayMs }).catch(async () => {
+    for (const char of code) {
+      await page.keyboard.press(char).catch(async () => {
+        await page.keyboard.insertText(char).catch(() => null);
+      });
+    }
+  });
 }
 
 async function focusOtp(page) {
   for (const selector of ['input[maxlength="1"]', 'input[name="code"]', 'input[autocomplete="one-time-code"]']) {
     const locator = page.locator(selector).first();
     if (!await locator.count().catch(() => 0)) continue;
-    if (await locator.isDisabled().catch(() => true)) continue;
+    if (await locator.isDisabled().catch(() => false)) continue;
     if (await locator.click({ timeout: 2_000 }).then(() => true).catch(() => false)) return true;
+    if (await locator.click({ timeout: 1_200, force: true }).then(() => true).catch(() => false)) return true;
     if (await locator.focus().then(() => true).catch(() => false)) return true;
   }
-  return false;
+  return page.evaluate(() => {
+    const el = document.querySelector(
+      'input[maxlength="1"], input[name="code"], input[autocomplete="one-time-code"]'
+    );
+    if (!el) return false;
+    el.focus();
+    return true;
+  }).catch(() => false);
 }
 
-async function fillXaiOtp(page, rawCode) {
+async function pasteOtp(page, code) {
+  return page.evaluate((value) => {
+    const el = document.querySelector(
+      'input[name="code"], input[autocomplete="one-time-code"]'
+    ) || document.querySelector('input[maxlength="1"]');
+    if (!el) return false;
+    el.focus();
+    try {
+      const data = new DataTransfer();
+      data.setData("text/plain", value);
+      el.dispatchEvent(new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      }));
+      return true;
+    } catch {
+      return false;
+    }
+  }, code).catch(() => false);
+}
+
+async function pageLeftOtpVerify(page) {
+  const text = await readPageText(page);
+  if (/expected string, received undefined|invalid input|incorrect|expired|try again/i.test(text)) {
+    return false;
+  }
+  if (await waitForAny(page, [...FIRST_NAME_SELECTORS, ...LAST_NAME_SELECTORS, ...PASSWORD_INPUT_SELECTORS], 250)) {
+    return true;
+  }
+  return !/verify your email|confirmation code|validation code|enter the code/i.test(text);
+}
+
+async function fillXaiOtp(page, rawCode, reportStep = () => {}) {
   const code = normalizeOtp(rawCode);
   if (code.length !== 6) throw new Error(`Unexpected xAI OTP length: ${code.length}`);
 
-  for (let round = 0; round < 3; round++) {
+  const readyDeadline = Date.now() + 5_000;
+  while (Date.now() < readyDeadline) {
+    if (await otpInputsReady(page)) break;
+    await page.waitForTimeout(300);
+  }
+
+  const fillDeadline = Date.now() + 28_000;
+  for (let round = 1; round <= 3 && Date.now() < fillDeadline; round++) {
+    reportStep("entering_domain_otp", `Entering xAI OTP (round ${round}/3)`);
+    await dismissGrokCookieBanner(page, reportStep);
+
     if (await focusOtp(page)) {
+      await page.waitForTimeout(80);
       await softClearOtp(page);
-      await page.keyboard.type(code, { delay: 40 });
+      await typeOtpChars(page, code, 35);
       await page.waitForTimeout(250);
-      if (await readOtpValue(page) === code) return true;
+      if (await readOtpValue(page) === code || await pageLeftOtpVerify(page)) return true;
     }
 
     const slots = page.locator('input[maxlength="1"]');
     const slotCount = await slots.count().catch(() => 0);
     if (slotCount > 0) {
+      await slots.first().click({ timeout: 2_000 }).catch(async () => {
+        await slots.first().click({ timeout: 1_000, force: true }).catch(() => null);
+      });
+      await softClearOtp(page);
+      await typeOtpChars(page, code, 40);
+      await page.waitForTimeout(250);
+      if (await readOtpValue(page) === code || await pageLeftOtpVerify(page)) return true;
+
       for (let index = 0; index < Math.min(6, slotCount); index++) {
         const slot = slots.nth(index);
-        await slot.click({ timeout: 2_000 }).catch(() => null);
+        await slot.click({ timeout: 1_200 }).catch(() => null);
         await page.keyboard.press("Backspace").catch(() => null);
         await page.keyboard.type(code[index], { delay: 30 }).catch(() => null);
       }
       await page.waitForTimeout(250);
-      if (await readOtpValue(page) === code) return true;
+      if (await readOtpValue(page) === code || await pageLeftOtpVerify(page)) return true;
     }
-    await page.waitForTimeout(350 * (round + 1));
+
+    if (await pasteOtp(page, code)) {
+      await page.waitForTimeout(300);
+      if (await readOtpValue(page) === code || await pageLeftOtpVerify(page)) return true;
+    }
+
+    await page.waitForTimeout(350 * round);
   }
-  return false;
+  return await pageLeftOtpVerify(page);
 }
 
 async function finishOtpVerification(page, reportStep, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const text = await readPageText(page);
-    if (/expected string, received undefined|invalid input|incorrect|expired|try again/i.test(text)) {
-      throw new Error("xAI rejected the OTP");
+    if (/expected string, received undefined|invalid input|incorrect|expired|try again|wrong code|invalid code/i.test(text)) {
+      reportStep("otp_rejected", "xAI rejected the OTP; will wait for a fresh code");
+      return { ok: false, rejected: true };
     }
 
     const profileVisible = Boolean(await waitForAny(
@@ -193,17 +313,17 @@ async function finishOtpVerification(page, reportStep, timeoutMs = 30_000) {
     ));
     if (profileVisible || /complete your sign up/i.test(text)) {
       reportStep("otp_auto_confirmed", "xAI accepted OTP and opened the signup profile");
-      return true;
+      return { ok: true, rejected: false };
     }
     if (!/verify your email|confirmation code|validation code/i.test(text)) {
       reportStep("otp_auto_confirmed", "xAI accepted OTP automatically");
-      return true;
+      return { ok: true, rejected: false };
     }
     // xAI auto-submits after the sixth character. Never click/resubmit here;
     // doing so races the navigation to the First name / Last name form.
     await page.waitForTimeout(500);
   }
-  return false;
+  return { ok: false, rejected: false };
 }
 
 function profileNames(email) {
@@ -223,11 +343,192 @@ function classifyTurnstileSnapshot(snapshot = {}, pageText = "") {
   if (Number(snapshot.tokenLength) > 20) return "solved";
   if (
     snapshot.interactiveVisible ||
-    /verify you are human|verification failed|troubleshoot/i.test(pageText)
+    snapshot.broken ||
+    /verify you are human|verification failed|troubleshoot|unable to find onload callback|turnstile already has been loaded/i.test(pageText)
   ) {
     return "interactive";
   }
   return snapshot.mounted ? "checking" : "loading";
+}
+
+async function mouseClickAt(page, x, y) {
+  await page.mouse.move(x - 40, y - 18, { steps: 6 }).catch(() => null);
+  await page.waitForTimeout(80 + Math.floor(Math.random() * 120));
+  await page.mouse.move(x, y, { steps: 8 }).catch(() => null);
+  await page.waitForTimeout(100 + Math.floor(Math.random() * 180));
+  await page.mouse.click(x, y);
+}
+
+async function tryClickTurnstile(page) {
+  // Same-session managed checkbox click only (farm.py parity). No external solver.
+  for (const selector of [
+    'text=Verify you are human',
+    'label:has-text("Verify you are human")',
+    '[aria-label*="Verify you are human" i]',
+  ]) {
+    const loc = page.locator(selector).first();
+    if (!await loc.count().catch(() => 0)) continue;
+    if (!await loc.isVisible().catch(() => false)) continue;
+    const box = await loc.boundingBox().catch(() => null);
+    if (!box) continue;
+    await mouseClickAt(page, box.x + Math.min(18, box.width * 0.15), box.y + box.height / 2);
+    return "host_text";
+  }
+
+  for (const selector of [
+    'iframe[src*="challenges.cloudflare.com"]',
+    'iframe[src*="turnstile"]',
+    "[data-sitekey]",
+    ".cf-turnstile",
+  ]) {
+    const loc = page.locator(selector).first();
+    if (!await loc.count().catch(() => 0)) continue;
+    const box = await loc.boundingBox().catch(() => null);
+    if (!box || box.width < 20 || box.height < 20) continue;
+    await mouseClickAt(
+      page,
+      box.x + Math.min(28, Math.max(12, box.width * 0.12)),
+      box.y + box.height / 2
+    );
+    return "widget";
+  }
+
+  for (const frame of page.frames?.() || []) {
+    const url = frame.url?.() || "";
+    if (!/challenges\.cloudflare\.com|turnstile/i.test(url)) continue;
+    for (const selector of [
+      'input[type="checkbox"]',
+      "label.cb-lb input",
+      'label input[type="checkbox"]',
+      '[role="checkbox"]',
+      "body",
+    ]) {
+      const loc = frame.locator(selector).first();
+      if (!await loc.count().catch(() => 0)) continue;
+      const box = await loc.boundingBox().catch(() => null);
+      if (!box) continue;
+      await mouseClickAt(page, box.x + Math.min(20, box.width * 0.2), box.y + box.height / 2);
+      return "frame";
+    }
+  }
+
+  const complete = page.locator('button:text-is("Complete sign up"), button:text-is("Complete Sign Up")').first();
+  if (await complete.count().catch(() => 0)) {
+    const box = await complete.boundingBox().catch(() => null);
+    if (box && box.y > 40) {
+      await mouseClickAt(page, box.x + Math.min(28, box.width * 0.12), box.y - 36);
+      return "slot_above_complete";
+    }
+  }
+  return null;
+}
+
+function isXaiSignInPage(page) {
+  try {
+    const url = String(page.url?.() || "");
+    if (/accounts\.x\.ai\/sign-in(?:\?|$|\/)/i.test(url)) return true;
+    if (/\/sign-in(?:\?|$|\/)/i.test(url) && /x\.ai/i.test(url)) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+const SIGN_IN_NEXT_SELECTORS = [
+  'button:text-is("Next")',
+  'button:has-text("Next")',
+  'button[type="submit"]',
+  'button:has-text("Continue")',
+];
+
+/**
+ * One incremental step of domain email login (email-only → Next → password → submit).
+ * Safe to call repeatedly from PKCE poll loop; no-ops when nothing to do.
+ */
+async function progressDomainEmailLogin(page, email, password, reportStep) {
+  await dismissGrokCookieBanner(page, reportStep);
+  const pageText = await readPageText(page);
+  const onEmailLoginForm = isXaiSignInPage(page)
+    || /log in with your email|login with your email|sign in with your email/i.test(pageText);
+
+  const passwordInput = await waitForAny(page, PASSWORD_INPUT_SELECTORS, 800);
+  if (passwordInput) {
+    const current = await passwordInput.inputValue().catch(() => "");
+    if (!current) {
+      await fillFirst(page, PASSWORD_INPUT_SELECTORS, password);
+      reportStep("entering_sign_in_password", "Entering domain password for login");
+    }
+    const nextClicked = await clickFirstVisible(page, [...SIGN_IN_NEXT_SELECTORS, ...SUBMIT_SELECTORS]);
+    if (!nextClicked) {
+      await page.getByRole("button", { name: /^next$/i }).click({ timeout: 3_000 }).catch(() => null);
+    }
+    await page.waitForTimeout(800);
+    return true;
+  }
+
+  // Prefer email field when already on "Log in with your email" (do NOT re-click Login).
+  const emailInput = await waitForAny(page, EMAIL_INPUT_SELECTORS, onEmailLoginForm ? 3_000 : 800);
+  if (emailInput || onEmailLoginForm) {
+    const filled = await fillFirst(page, EMAIL_INPUT_SELECTORS, email);
+    if (!filled && onEmailLoginForm) {
+      // Last resort: first visible text-like input on sign-in form.
+      const anyInput = page.locator('form input:not([type="hidden"]), input:not([type="hidden"])').first();
+      if (await anyInput.count().catch(() => 0)) {
+        await anyInput.click({ timeout: 2_000 }).catch(() => null);
+        await anyInput.fill(email, { timeout: 5_000 }).catch(async () => {
+          await anyInput.evaluate((el, next) => {
+            el.focus();
+            el.value = next;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }, email).catch(() => null);
+        });
+      }
+    }
+    reportStep("entering_sign_in_email", "Entering domain email for login");
+    // xAI sign-in shows email alone first ("Log in with your email" + Next).
+    let nextClicked = await clickFirstVisible(page, [...SIGN_IN_NEXT_SELECTORS, ...SUBMIT_SELECTORS]);
+    if (!nextClicked) {
+      nextClicked = await page.getByRole("button", { name: /^next$/i }).click({ timeout: 3_000 })
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!nextClicked) {
+      await page.keyboard.press("Enter").catch(() => null);
+    }
+    await page.waitForTimeout(800);
+    return true;
+  }
+
+  // Only on the method chooser — never when email form is already open.
+  if (!onEmailLoginForm) {
+    const loginClicked = await waitAndClick(page, EMAIL_LOGIN_SELECTORS, 1_500);
+    if (loginClicked) {
+      reportStep("existing_account_login", "Selecting Login with email");
+      await page.waitForTimeout(500);
+      return true;
+    }
+  }
+  return false;
+}
+
+async function loginDomainEmail(page, email, password, reportStep) {
+  reportStep("post_signup_sign_in", "Signup finished on sign-in; logging in with domain email");
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline && !page.isClosed?.()) {
+    if (!isXaiSignInPage(page)) {
+      const text = await readPageText(page);
+      // Left sign-in for consent / authorize / profile — done.
+      if (/oauth2\/consent|authorize|complete your sign up|Account Management/i.test(text)
+        || /\/oauth2\//i.test(String(page.url?.() || ""))) {
+        break;
+      }
+    }
+    const advanced = await progressDomainEmailLogin(page, email, password, reportStep);
+    if (!advanced) await page.waitForTimeout(500);
+  }
+  await dismissGrokCookieBanner(page, reportStep);
+  return true;
 }
 
 async function completeSignupProfile(page, email, password, reportStep) {
@@ -237,6 +538,7 @@ async function completeSignupProfile(page, email, password, reportStep) {
     if (/verify your email|confirmation code|validation code/i.test(text)) {
       throw new Error("xAI did not advance from OTP to the signup profile");
     }
+    if (isXaiSignInPage(page)) return "sign_in";
     return true;
   }
 
@@ -258,14 +560,24 @@ async function completeSignupProfile(page, email, password, reportStep) {
   let extendedWaitReported = false;
   let lastManualElapsedBucket = 0;
   let lastAutomaticElapsedBucket = 0;
+  let lastClickAt = 0;
+  let clickAttempts = 0;
   while (!page.isClosed?.()) {
     const text = await readPageText(page);
+    if (isXaiSignInPage(page)) {
+      reportStep("signup_redirected_sign_in", "Left complete-signup form for xAI sign-in page");
+      return "sign_in";
+    }
+
     const profileStillVisible = Boolean(await waitForAny(
       page,
       [...FIRST_NAME_SELECTORS, ...LAST_NAME_SELECTORS, ...PASSWORD_INPUT_SELECTORS],
       250
     ));
-    if (!profileStillVisible && !/complete your sign up/i.test(text)) return true;
+    if (!profileStillVisible && !/complete your sign up/i.test(text)) {
+      if (isXaiSignInPage(page)) return "sign_in";
+      return true;
+    }
     await dismissGrokCookieBanner(page, reportStep);
 
     const turnstile = await page.evaluate(() => {
@@ -277,25 +589,32 @@ async function completeSignupProfile(page, email, password, reportStep) {
       );
       const box = widget?.getBoundingClientRect?.();
       let apiToken = "";
+      let broken = false;
       try {
         if (window.turnstile && typeof window.turnstile.getResponse === "function") {
           apiToken = String(window.turnstile.getResponse() || "");
+        } else if (window.turnstile && typeof window.turnstile.getResponse !== "function") {
+          broken = true;
         }
       } catch {
         apiToken = "";
+        broken = true;
       }
       const tokenLength = Math.max(
         apiToken.length,
-        ...responses.map((response) => String(response?.value || "").length)
+        ...responses.map((response) => String(response?.value || "").length),
+        0
       );
       return {
         tokenLength,
         mounted: Boolean(widget || responses.length),
         interactiveVisible: Boolean(
-          widget?.tagName === "IFRAME" && box && box.width > 20 && box.height > 20
+          (widget && box && box.width > 20 && box.height > 20)
+          || /verify you are human/i.test(document.body?.innerText || "")
         ),
+        broken,
       };
-    }).catch(() => ({ tokenLength: 0, mounted: false, interactiveVisible: false }));
+    }).catch(() => ({ tokenLength: 0, mounted: false, interactiveVisible: false, broken: false }));
     const turnstileState = classifyTurnstileSnapshot(turnstile, text);
 
     if (turnstileState === "solved" && !profileSubmitted) {
@@ -308,6 +627,10 @@ async function completeSignupProfile(page, email, password, reportStep) {
       profileSubmitted = true;
       await clickFirstVisible(page, COMPLETE_SIGNUP_SELECTORS);
       await page.waitForTimeout(2_000);
+      if (isXaiSignInPage(page)) {
+        reportStep("signup_redirected_sign_in", "Complete sign up redirected to sign-in");
+        return "sign_in";
+      }
       continue;
     }
 
@@ -321,14 +644,35 @@ async function completeSignupProfile(page, email, password, reportStep) {
       loadingReported = true;
     }
 
-    if (
-      Date.now() >= automaticGraceDeadline &&
-      turnstileState === "interactive" &&
-      !manualReported
-    ) {
+    // Attempt same-session checkbox clicks while waiting (managed challenge).
+    // Cap attempts; never refill profile or spam Complete without a token.
+    const canClick = turnstileState !== "solved"
+      && turnstileState !== "loading"
+      && clickAttempts < 8
+      && Date.now() - lastClickAt >= 4_000
+      && (turnstile.mounted || turnstile.interactiveVisible || Date.now() >= turnstileStartedAt + 8_000);
+    if (canClick) {
+      const method = await tryClickTurnstile(page).catch(() => null);
+      lastClickAt = Date.now();
+      if (method) {
+        clickAttempts += 1;
+        reportStep(
+          "turnstile_click_attempt",
+          `Clicked Cloudflare checkbox via ${method} (attempt ${clickAttempts}/8)`
+        );
+        await page.waitForTimeout(1_500);
+        continue;
+      }
+    }
+
+    // After grace, never stay on turnstile_checking forever — CF may hang without
+    // a visible interactive widget (broken onload, silent managed challenge).
+    if (Date.now() >= automaticGraceDeadline && turnstileState !== "solved" && !manualReported) {
       reportStep(
         "manual_turnstile_required",
-        "An interactive Cloudflare challenge is visible; complete it in the open browser"
+        turnstileState === "interactive" || turnstile.broken
+          ? "Cloudflare challenge needs manual completion in the open browser"
+          : "Cloudflare automatic verification timed out; complete any visible challenge in the open browser"
       );
       manualReported = true;
     }
@@ -365,112 +709,6 @@ async function completeSignupProfile(page, email, password, reportStep) {
   }
   if (page.isClosed?.()) throw new Error("Browser closed while waiting for signup verification");
   return false;
-}
-
-function base64Url(buffer) {
-  return Buffer.from(buffer).toString("base64url");
-}
-
-function createPkce() {
-  const verifier = base64Url(crypto.randomBytes(96));
-  const challenge = base64Url(crypto.createHash("sha256").update(verifier).digest());
-  return { verifier, challenge };
-}
-
-function callbackCode(url) {
-  try {
-    const parsed = new URL(url);
-    if (!["127.0.0.1", "localhost"].includes(parsed.hostname)) return null;
-    if (!parsed.pathname.includes("/callback")) return null;
-    return parsed.searchParams.get("code");
-  } catch {
-    return null;
-  }
-}
-
-async function obtainPkceTokens({ page, email, password, proxyDispatcher, reportStep }) {
-  const { verifier, challenge } = createPkce();
-  const state = base64Url(crypto.randomBytes(24));
-  const nonce = crypto.randomBytes(16).toString("hex");
-  const authorizeUrl = new URL(XAI_AUTHORIZE_URL);
-  for (const [key, value] of Object.entries({
-    response_type: "code",
-    client_id: XAI_CLIENT_ID,
-    redirect_uri: XAI_REDIRECT_URI,
-    scope: XAI_SCOPE,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state,
-    nonce,
-    plan: "generic",
-    referrer: "cli-proxy-api",
-  })) authorizeUrl.searchParams.set(key, value);
-
-  let authorizationCode = null;
-  const captureCallback = async (route) => {
-    const code = callbackCode(route.request().url());
-    if (!code) return route.continue();
-    authorizationCode = code;
-    await route.abort().catch(() => null);
-  };
-  await page.route("**/*", captureCallback);
-  try {
-    reportStep("starting_pkce_authorization", "Starting Grok CLI PKCE authorization");
-    await page.goto(authorizeUrl.toString(), { waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => null);
-    const deadline = Date.now() + 120_000;
-    while (!authorizationCode && Date.now() < deadline) {
-      authorizationCode = callbackCode(page.url()) || authorizationCode;
-      if (authorizationCode) break;
-
-      await dismissGrokCookieBanner(page, reportStep);
-      const url = page.url();
-      if (url.includes("/oauth2/consent")) {
-        const approved = await clickFirstVisible(page, GROK_ALLOW_BUTTON_SELECTORS);
-        if (approved) reportStep("approving_pkce_consent", "Approving Grok CLI PKCE consent");
-      } else {
-        const emailInput = await waitForAny(page, EMAIL_INPUT_SELECTORS, 250);
-        const passwordInput = await waitForAny(page, PASSWORD_INPUT_SELECTORS, 250);
-        if (!emailInput && !passwordInput) await clickFirstVisible(page, EMAIL_LOGIN_SELECTORS);
-        if (emailInput) await emailInput.fill(email);
-        if (passwordInput) await passwordInput.fill(password);
-        if (emailInput || passwordInput) await clickFirstVisible(page, SUBMIT_SELECTORS);
-      }
-      await page.waitForTimeout(750);
-    }
-  } finally {
-    await page.unroute("**/*", captureCallback).catch(() => null);
-  }
-  if (!authorizationCode) throw new Error("Grok CLI PKCE callback code was not captured");
-
-  reportStep("exchanging_pkce_token", "Exchanging Grok CLI PKCE code for tokens");
-  const requestInit = {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: XAI_CLIENT_ID,
-      code: authorizationCode,
-      redirect_uri: XAI_REDIRECT_URI,
-      code_verifier: verifier,
-    }),
-  };
-  if (proxyDispatcher) requestInit.dispatcher = proxyDispatcher;
-  const response = await fetch(XAI_TOKEN_URL, requestInit);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.access_token) {
-    throw new Error(`Grok CLI PKCE token exchange failed (${response.status}): ${payload.error_description || payload.error || "missing access token"}`);
-  }
-  return {
-    accessToken: payload.access_token,
-    refreshToken: payload.refresh_token || null,
-    idToken: payload.id_token || null,
-    expiresIn: payload.expires_in,
-    scope: payload.scope,
-    access_token: payload.access_token,
-    refresh_token: payload.refresh_token,
-    id_token: payload.id_token,
-    expires_in: payload.expires_in,
-  };
 }
 
 export async function runGrokCliDomainAutomation({
@@ -557,41 +795,131 @@ export async function runGrokCliDomainAutomation({
     const otpPageText = (await readPageText(page)).toLowerCase();
     const waitingForOtp = Boolean(otpInput) || /validation codes sent|confirmation code|check your (?:email|inbox)|spam\/junk/.test(otpPageText);
     if (waitingForOtp) {
-      reportStep("waiting_domain_otp", "Waiting continuously for a fresh domain email OTP");
-      let pollCount = 0;
-      const code = await otpClient.waitForCode(email, {
-        baselineCode,
-        signal: abortController.signal,
-        onPoll: () => {
-          pollCount += 1;
-          // Avoid filling the job log every three seconds during long xAI cooldowns.
-          if (pollCount === 1 || pollCount % 20 === 0) {
-            reportStep("polling_domain_otp", "Still waiting for a fresh domain email OTP; no resend attempted");
+      // /code → fill → /confirm → xAI accept. Wrong OTP: wait for a newer /code and retry.
+      const maxOtpAttempts = 3;
+      let lastUsedCode = baselineCode;
+      let otpAccepted = false;
+      let lastOtpError = "OTP verification failed";
+
+      for (let attempt = 1; attempt <= maxOtpAttempts; attempt++) {
+        reportStep(
+          "waiting_domain_otp",
+          attempt === 1
+            ? "Waiting up to 60s for a fresh domain email OTP"
+            : `OTP attempt ${attempt}/${maxOtpAttempts}: waiting up to 60s for a newer domain email OTP`
+        );
+        let pollCount = 0;
+        let code;
+        try {
+          code = await otpClient.waitForCode(email, {
+            baselineCode: lastUsedCode,
+            timeoutMs: 60_000,
+            signal: abortController.signal,
+            onPoll: () => {
+              pollCount += 1;
+              if (pollCount === 1 || pollCount % 5 === 0) {
+                reportStep(
+                  "polling_domain_otp",
+                  `Still waiting for a fresh domain email OTP (max 60s, attempt ${attempt}/${maxOtpAttempts}); no resend attempted`
+                );
+              }
+            },
+          });
+        } catch (error) {
+          lastOtpError = error.message || "OTP timeout waiting for a fresh domain email code";
+          reportStep("otp_wait_failed", lastOtpError);
+          break;
+        }
+
+        lastUsedCode = code;
+        otpInput ||= await waitForAny(page, OTP_INPUT_SELECTORS, 15_000);
+        if (!otpInput && !await otpInputsReady(page)) {
+          lastOtpError = "Fresh OTP received, but xAI OTP input was not found";
+          reportStep("otp_input_missing", lastOtpError);
+          break;
+        }
+
+        const otpFilled = await fillXaiOtp(page, code, reportStep);
+        if (!otpFilled) {
+          const finalValue = await readOtpValue(page);
+          lastOtpError = `Failed to enter all 6 xAI OTP characters (got ${finalValue.length}/6)`;
+          reportStep("otp_fill_failed", lastOtpError);
+          await softClearOtp(page);
+          if (attempt < maxOtpAttempts) {
+            reportStep("otp_retry", `OTP fill failed; waiting for a newer code (attempt ${attempt + 1}/${maxOtpAttempts})`);
+            continue;
           }
-        },
-      });
-      reportStep("confirming_domain_otp", "Confirming domain email OTP with OTP service");
-      await otpClient.confirm(email, code, abortController.signal);
-      otpInput ||= await waitForAny(page, OTP_INPUT_SELECTORS, 30_000);
-      if (!otpInput) {
-        return { status: "failed", error: "Fresh OTP received, but xAI OTP input was not found" };
+          break;
+        }
+
+        reportStep("confirming_domain_otp", "Confirming domain email OTP with OTP service");
+        try {
+          await otpClient.confirm(email, code, abortController.signal);
+        } catch (error) {
+          // Service-side confirm failure is not always fatal for xAI; still verify page advance.
+          reportStep("otp_confirm_soft_fail", `OTP service confirm failed; verifying xAI page (${error.message || "unknown"})`);
+        }
+
+        reportStep("submitting_domain_otp", "Submitting domain email OTP to xAI");
+        await dismissGrokCookieBanner(page, reportStep);
+        const verified = await finishOtpVerification(page, reportStep, 30_000);
+        if (verified.ok) {
+          otpAccepted = true;
+          break;
+        }
+
+        lastOtpError = verified.rejected
+          ? "xAI rejected the OTP"
+          : "xAI remained on Verify your email after OTP submission";
+        await softClearOtp(page);
+        if (attempt < maxOtpAttempts) {
+          reportStep(
+            "otp_retry",
+            verified.rejected
+              ? `xAI rejected OTP; waiting for a newer code (attempt ${attempt + 1}/${maxOtpAttempts})`
+              : `OTP not accepted yet; waiting for a newer code (attempt ${attempt + 1}/${maxOtpAttempts})`
+          );
+          continue;
+        }
       }
-      const otpFilled = await fillXaiOtp(page, code);
-      if (!otpFilled) {
-        return { status: "failed", error: "Failed to enter all 6 xAI OTP characters" };
-      }
-      reportStep("submitting_domain_otp", "Submitting domain email OTP to xAI");
-      await dismissGrokCookieBanner(page, reportStep);
-      if (!await finishOtpVerification(page, reportStep, 30_000)) {
-        return { status: "failed", error: "xAI remained on Verify your email after OTP submission" };
+
+      if (!otpAccepted) {
+        return { status: "failed", error: lastOtpError };
       }
     }
 
-    await completeSignupProfile(page, email, password, reportStep);
+    const profileResult = await completeSignupProfile(page, email, password, reportStep);
+    // Only when signup lands on /sign-in (account already created / no consent redirect).
+    // Other outcomes keep the previous path: OTP→profile→PKCE unchanged.
+    if (profileResult === "sign_in" || isXaiSignInPage(page)) {
+      await loginDomainEmail(page, email, password, reportStep);
+    }
 
     // farm.py succeeds reliably by switching to PKCE after signup. The original
     // device grant is only used to enter the account flow; it is not redeemed.
-    const tokens = await obtainPkceTokens({ page, email, password, proxyDispatcher, reportStep });
+    const tokens = await obtainGrokCliPkceTokens({
+      page,
+      proxyDispatcher,
+      reportStep,
+      handleAuthorizationPage: async () => {
+        await dismissGrokCookieBanner(page, reportStep);
+        const url = page.url();
+        if (url.includes("/oauth2/consent")) {
+          const approved = await clickFirstVisible(page, GROK_ALLOW_BUTTON_SELECTORS);
+          if (approved) reportStep("approving_pkce_consent", "Approving Grok CLI PKCE consent");
+          return;
+        }
+        // After successful signup, PKCE often lands on /sign-in "Log in with your email"
+        // (email → Next → password). Drive multi-step login; leave other pages alone.
+        const text = await readPageText(page);
+        const needsLogin = isXaiSignInPage(page)
+          || /log in with your email|login with email|sign in with email/i.test(text)
+          || Boolean(await waitForAny(page, [...EMAIL_INPUT_SELECTORS, ...PASSWORD_INPUT_SELECTORS, ...EMAIL_LOGIN_SELECTORS], 250));
+        if (needsLogin) {
+          await progressDomainEmailLogin(page, email, password, reportStep);
+        }
+      },
+    });
     return { status: "success", tokens };
   } catch (error) {
     return {
@@ -611,6 +939,12 @@ export const __test__ = {
   profileNames,
   classifyTurnstileSnapshot,
   finishOtpVerification,
-  callbackCode,
-  createPkce,
+  fillXaiOtp,
+  readOtpValue,
+  otpInputsReady,
+  tryClickTurnstile,
+  isXaiSignInPage,
+  progressDomainEmailLogin,
+  callbackCode: pkceTest.callbackCode,
+  createPkce: pkceTest.createPkce,
 };

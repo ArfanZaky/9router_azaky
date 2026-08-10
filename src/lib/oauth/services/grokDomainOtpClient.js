@@ -1,5 +1,6 @@
 const DEFAULT_BASE_URL = "https://otp.cloudverra.com";
 const DEFAULT_INTERVAL_MS = 3_000;
+const DEFAULT_OTP_TIMEOUT_MS = 60_000;
 
 function assertOtpBaseUrl(value) {
   const url = new URL(value || DEFAULT_BASE_URL);
@@ -78,12 +79,12 @@ export class GrokDomainOtpClient {
   async waitForCode(email, {
     baselineCode = null,
     intervalMs = DEFAULT_INTERVAL_MS,
+    timeoutMs = DEFAULT_OTP_TIMEOUT_MS,
     signal,
     onPoll,
   } = {}) {
-    // Intentionally no deadline: xAI may rate-limit code delivery for several minutes.
-    // The user cancelling the job/browser is the only stop condition.
-    while (true) {
+    const deadline = Date.now() + Math.max(1_000, Number(timeoutMs) || DEFAULT_OTP_TIMEOUT_MS);
+    while (Date.now() < deadline) {
       if (signal?.aborted) throw signal.reason || new Error("OTP polling cancelled");
       let result = null;
       try {
@@ -99,8 +100,12 @@ export class GrokDomainOtpClient {
         if (freshByCode) return result.code;
       }
       onPoll?.();
-      await this.wait(result?.retryAfterMs || intervalMs, signal);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await this.wait(Math.min(result?.retryAfterMs || intervalMs, remaining), signal);
     }
+    if (signal?.aborted) throw signal.reason || new Error("OTP polling cancelled");
+    throw new Error(`OTP timeout after ${Math.round((Number(timeoutMs) || DEFAULT_OTP_TIMEOUT_MS) / 1000)}s waiting for a fresh domain email code`);
   }
 
   async confirm(email, code, signal) {

@@ -60,8 +60,10 @@ const APPROVE_BUTTON_SELECTORS = [
   'button:has-text("Next")',
   'button:has-text("Yes")',
   'button:has-text("Accept")',
+  'button:has-text("Confirm")',
   'button:has-text("Lanjutkan")',
   'button:has-text("Berikutnya")',
+  'button:has-text("Konfirmasi")',
   'button:has-text("Setuju")',
   'button:has-text("Saya mengerti")',
   'button:has-text("Oke")',
@@ -71,8 +73,10 @@ const APPROVE_BUTTON_SELECTORS = [
   'div[role="button"]:has-text("Continue")',
   'div[role="button"]:has-text("Next")',
   'div[role="button"]:has-text("Allow")',
+  'div[role="button"]:has-text("Confirm")',
   'div[role="button"]:has-text("Lanjutkan")',
   'div[role="button"]:has-text("Berikutnya")',
+  'div[role="button"]:has-text("Konfirmasi")',
   'div[role="button"]:has-text("Izinkan")',
   'div[role="button"]:has-text("Setuju")',
   'div[role="button"]:has-text("Saya mengerti")',
@@ -100,6 +104,8 @@ const APPROVE_BUTTON_SELECTORS = [
   '[role="button"]:has-text("好的")',
   'input[type="submit"][value="同意"]',
   'input[type="submit"][value="我了解"]',
+  'input[type="button"][value="Confirm"]',
+  'input[type="submit"][value="Confirm"]',
 ];
 
 const SKIP_BUTTON_SELECTORS = [
@@ -1886,4 +1892,5 @@ export const __test__ = {
   parseSelectorList,
   getFirstVisibleLocator,
   GOOGLE_LOGIN_BUTTON_SELECTORS,
+  APPROVE_BUTTON_SELECTORS,
 };

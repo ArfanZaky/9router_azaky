@@ -153,6 +153,169 @@ function truncate(s, n) {
   return s && s.length > n ? `${s.slice(0, n)}...` : s || "";
 }
 
+function recoverFlattenedToolCalls(content, allowedNames) {
+  if (typeof content !== "string") return null;
+  const marker = /\[?assistant requested tools\]?/i.exec(content);
+  if (!marker) return null;
+
+  const source = content.slice(marker.index + marker[0].length);
+  const toolCalls = [];
+  const callStart = /(?:^|\n)\s*([A-Za-z_][\w.-]*)\s*\(/g;
+  let match;
+  while ((match = callStart.exec(source)) !== null) {
+    const name = match[1];
+    if (!allowedNames.has(name)) continue;
+    const argsStart = callStart.lastIndex;
+    let depth = 1;
+    let inString = false;
+    let escaped = false;
+    let end = argsStart;
+    for (; end < source.length; end++) {
+      const char = source[end];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === "(") depth++;
+      else if (char === ")" && --depth === 0) break;
+    }
+    if (depth !== 0) continue;
+    const rawArguments = source.slice(argsStart, end).trim();
+    try { JSON.parse(rawArguments); } catch { continue; }
+    toolCalls.push({
+      index: toolCalls.length,
+      id: `call_qoder_recovered_${toolCalls.length}`,
+      type: "function",
+      function: { name, arguments: rawArguments },
+    });
+    callStart.lastIndex = end + 1;
+  }
+  if (!toolCalls.length) return null;
+  return { content: content.slice(0, marker.index).trimEnd(), toolCalls };
+}
+
+function recoverQoderToolCallStream(response, model, tools) {
+  const allowedNames = new Set((Array.isArray(tools) ? tools : [])
+    .map((tool) => tool?.function?.name)
+    .filter(Boolean));
+  if (!response.body || allowedNames.size === 0) return response;
+
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const markerPattern = /\[?assistant requested tools\]?/i;
+  const markerTailLength = 40;
+  const stream = new ReadableStream({
+    async start(controller) {
+      const reader = response.body.getReader();
+      let buffer = "";
+      let probe = "";
+      let toolSource = "";
+      let recovering = false;
+      let doneFrame = "data: [DONE]\n\n";
+      const emitContent = (content) => {
+        if (!content) return;
+        const chunk = {
+          id: `chatcmpl-qoder-recovered-${Date.now()}`,
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{ index: 0, delta: { content }, finish_reason: null }],
+        };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      };
+      const finishRecovery = () => {
+        const markerText = "assistant requested tools";
+        const recovered = recoverFlattenedToolCalls(`${markerText}${toolSource}`, allowedNames);
+        if (!recovered) {
+          emitContent(`${markerText}${toolSource}`);
+          controller.enqueue(encoder.encode(doneFrame));
+          return;
+        }
+        const id = `chatcmpl-qoder-recovered-${Date.now()}`;
+        const base = { id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model };
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { tool_calls: recovered.toolCalls }, finish_reason: null }] })}\n\n`));
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\n`));
+        controller.enqueue(encoder.encode(doneFrame));
+      };
+      const processFrame = (frame) => {
+        const wire = `${frame}\n\n`;
+        const line = frame.split(/\r?\n/).find((item) => item.startsWith("data:"));
+        const data = line?.slice(5).trimStart();
+        if (!data) {
+          if (!recovering) controller.enqueue(encoder.encode(wire));
+          return;
+        }
+        if (data === "[DONE]") {
+          doneFrame = wire;
+          if (recovering) finishRecovery();
+          else {
+            emitContent(probe);
+            probe = "";
+            controller.enqueue(encoder.encode(wire));
+          }
+          return;
+        }
+        let chunk;
+        try { chunk = JSON.parse(data); } catch {
+          if (!recovering) controller.enqueue(encoder.encode(wire));
+          return;
+        }
+        const delta = chunk.choices?.[0]?.delta || chunk.choices?.[0]?.message || {};
+        if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) {
+          if (probe) { emitContent(probe); probe = ""; }
+          controller.enqueue(encoder.encode(wire));
+          return;
+        }
+        if (typeof delta.content !== "string") {
+          if (!recovering) controller.enqueue(encoder.encode(wire));
+          return;
+        }
+        if (recovering) {
+          toolSource += delta.content;
+          return;
+        }
+        probe += delta.content;
+        const marker = markerPattern.exec(probe);
+        if (marker) {
+          emitContent(probe.slice(0, marker.index));
+          toolSource = probe.slice(marker.index + marker[0].length);
+          probe = "";
+          recovering = true;
+          return;
+        }
+        if (probe.length > markerTailLength) {
+          emitContent(probe.slice(0, -markerTailLength));
+          probe = probe.slice(-markerTailLength);
+        }
+      };
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let boundary;
+          while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+            const separator = buffer.slice(boundary).match(/^\r?\n\r?\n/)?.[0] || "\n\n";
+            processFrame(buffer.slice(0, boundary));
+            buffer = buffer.slice(boundary + separator.length);
+          }
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) processFrame(buffer.trimEnd());
+        if (recovering && !doneFrame) finishRecovery();
+        else if (!recovering && probe) emitContent(probe);
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+  return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 /**
  * Map the OpenAI-style request body into the exact shape Qoder expects.
  */
@@ -525,7 +688,8 @@ export class QoderExecutor extends BaseExecutor {
     }
 
     const wrapped = wrapQoderSSE(response, `qoder/${qoderKey}`);
-    return { response: wrapped, url, headers, transformedBody: payload };
+    const recovered = recoverQoderToolCallStream(wrapped, `qoder/${qoderKey}`, body.tools);
+    return { response: recovered, url, headers, transformedBody: payload };
   }
 
   // Qoder device tokens don't refresh through OAuth — the upstream returns
@@ -548,6 +712,8 @@ export const __test__ = {
   normalizeMessages,
   compactMessages,
   inspectFirstQoderEvent,
+  recoverFlattenedToolCalls,
+  recoverQoderToolCallStream,
   wrapQoderSSE,
   buildQoderRequestBody,
 };

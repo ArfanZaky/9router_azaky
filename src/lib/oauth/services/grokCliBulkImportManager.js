@@ -38,6 +38,7 @@ import { createHash } from "node:crypto";
 
 const GROK_PROXY_QUARANTINE_MS = 30 * 60_000;
 const GROK_PROXY_INVALID_GRANT_LIMIT = 2;
+const GROK_GOOGLE_AUTOMATION_VERSION = "2026-07-28-google-pkce-v9";
 
 function getProxyHealthStore() {
   if (!globalThis.__grokCliProxyHealth) globalThis.__grokCliProxyHealth = new Map();
@@ -950,6 +951,10 @@ export function getGrokCliBulkImportManager() {
     store.manager = new GrokCliBulkImportManager();
   }
   store.manager.refreshRuntimeDefaults?.({ googleAutomation: runGrokCliGoogleAutomation });
+  if (store.manager.googleAutomationVersion !== GROK_GOOGLE_AUTOMATION_VERSION) {
+    store.manager.googleAutomationVersion = GROK_GOOGLE_AUTOMATION_VERSION;
+    console.log(`[GrokCLI] Automation version ${GROK_GOOGLE_AUTOMATION_VERSION}`);
+  }
   return store.manager;
 }
 

@@ -1,7 +1,7 @@
 import { GrokCliBulkImportManager } from "./grokCliBulkImportManager.js";
 import { runGrokCliDomainAutomation } from "./grokCliDomainAutomation.js";
 
-const DOMAIN_AUTOMATION_VERSION = "2026-07-28-turnstile-state-detection-v8";
+const DOMAIN_AUTOMATION_VERSION = "2026-07-28-signin-email-next-v16";
 
 export class GrokCliDomainBulkImportManager extends GrokCliBulkImportManager {
   constructor(options = {}) {
