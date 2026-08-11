@@ -618,12 +618,24 @@ export async function runQoderSignup({
     }
 
     onStep?.("creating_pat", "Creating Qoder personal access token");
-    let patMeta;
+    let patMeta = null;
     try {
       patMeta = await client.createPat("farm");
-    } catch (error) {
-      lastError = `pat:${error.message}`;
-      continue;
+    } catch (patErr) {
+      // Refresh baxia tokens (the PAT endpoint can reject stale fingerprints)
+      // and retry once before giving up.
+      onStep?.("creating_pat_retry", "PAT create failed — refreshing baxia and retrying");
+      try {
+        const fresh = await harvestQoderBxTokens({ proxyUrl }).catch(() => null);
+        if (fresh && bxReady(fresh)) {
+          tokens = fresh;
+          client.refreshTokens(fresh);
+        }
+        patMeta = await client.createPat("farm");
+      } catch {
+        // Account exists even without PAT — surface the warning and continue.
+        onStep?.("pat_create_failed", `PAT create failed: ${patErr.message}`);
+      }
     }
 
     onStep?.("signup_done", "Qoder signup complete");
@@ -634,10 +646,11 @@ export async function runQoderSignup({
       name,
       otp,
       user,
-      pat: patMeta.token,
-      patMeta,
+      pat: patMeta?.token || "",
+      patMeta: patMeta || null,
       cookies: { ...client.cookies },
       attempts: attempt,
+      patWarning: patMeta ? "" : `PAT create failed: ${lastError}`,
     };
   }
 

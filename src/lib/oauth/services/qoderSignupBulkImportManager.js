@@ -37,7 +37,7 @@ function clampCount(value) {
   return Math.min(MAX_COUNT, Math.max(1, parsed));
 }
 
-async function defaultSaveQoderSignupConnection({ tokens, email, password }) {
+async function defaultSaveQoderSignupConnection({ tokens, email, password, pat = "" }) {
   const { createProviderConnection } = await import("../../../models/index.js");
   const providerSpecificData = {
     authMethod: "pat",
@@ -46,6 +46,7 @@ async function defaultSaveQoderSignupConnection({ tokens, email, password }) {
     planTier: tokens.planTier || "",
     loginEmail: email,
     automation: "signup-bulk",
+    ...(pat ? { personalToken: pat } : {}),
   };
 
   const connectionData = {
@@ -254,12 +255,45 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
         },
         email,
         password: account.password,
+        pat: result.pat || "",
       });
+
+      // Auto-grant Pro Trial + claim qwen38 800 for the new account
+      // (best-effort — never fails the signup if the grant is unavailable).
+      let autoGrant = null;
+      try {
+        if (result.pat) {
+          this.setAccountStep(account, "auto_grant", "Granting Pro Trial + claiming Qwen38 800");
+          await this.persistJobSnapshot(job, { forcePreview: false });
+          const { grantProTrial } = await import("./qoderGrantService.js");
+          autoGrant = await grantProTrial(result.pat, {
+            harnessRoot: process.env.QODER_HARNESS_ROOT || undefined,
+            timeoutMs: 240_000,
+          });
+          if (autoGrant?.ok) {
+            // Persist plan tier onto the saved connection.
+            try {
+              const { updateProviderConnection } = await import("../../../db/repos/connectionsRepo.js");
+              await updateProviderConnection(connection.id, {
+                providerSpecificData: {
+                  ...(connection.providerSpecificData || {}),
+                  planTier: autoGrant.plan || "",
+                  creditsTotal: autoGrant.creditsTotal || 0,
+                  creditsRemaining: autoGrant.creditsRemaining || 0,
+                  qwen38: autoGrant.qwen38 || null,
+                },
+              });
+            } catch {}
+          }
+        }
+      } catch (error) {
+        autoGrant = { ok: false, error: error.message };
+      }
 
       this.finalizeAccount(account, "success", {
         connectionId: connection.id,
         step: "connection_saved",
-        message: `Qoder account registered and connection saved${quotaActive ? "" : " (quota inactive)"}`,
+        message: `Qoder account registered and connection saved${quotaActive ? "" : " (quota inactive)"}${autoGrant?.ok ? " + Pro Trial granted" : ""}`,
       });
     } catch (error) {
       this.finalizeAccount(account, "failed", {
