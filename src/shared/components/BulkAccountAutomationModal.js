@@ -126,7 +126,8 @@ export default function BulkAccountAutomationModal({
   const engineOptions = isGrokProvider ? ENGINE_OPTIONS_GROK : ENGINE_OPTIONS;
   const autoRetryEnabled = AUTO_RETRY_FAILED_PROVIDERS.has(provider) || provider === "grok-cli-domain";
   const [concurrency, setConcurrency] = useState(String(providerDefaultConcurrency));
-  const [autoConcurrency, setAutoConcurrency] = useState(true);
+  // grok-cli-domain is hard-limited to a single worker (server forces 1)
+  const [autoConcurrency, setAutoConcurrency] = useState(!isGrokDomainProvider);
   const [systemSpecInfo, setSystemSpecInfo] = useState(null);
   const [systemSpecLoading, setSystemSpecLoading] = useState(false);
   const [engine, setEngine] = useState(providerDefaultEngine);
@@ -171,7 +172,7 @@ export default function BulkAccountAutomationModal({
     setTotalAccounts("1");
     setConcurrency(String(providerDefaultConcurrency));
     setEngine(providerDefaultEngine);
-    setAutoConcurrency(true);
+    setAutoConcurrency(!isGrokDomainProvider);
     setProxyMode("none");
     setProxyPoolId("");
     setProxyUrl("");
@@ -187,7 +188,7 @@ export default function BulkAccountAutomationModal({
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(storageKey);
     }
-  }, [storageKey, providerDefaultConcurrency, providerDefaultEngine]);
+  }, [storageKey, providerDefaultConcurrency, providerDefaultEngine, isGrokDomainProvider]);
 
   const buildRetryLinesFromJob = useCallback((job, sourceText) => {
     const failedEmails = new Set(
@@ -700,10 +701,11 @@ export default function BulkAccountAutomationModal({
               <div>
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <label className="block text-sm font-medium">Concurrent Workers</label>
-                  <label className="flex cursor-pointer items-center gap-2 text-xs text-text-muted">
+                  <label className={`flex cursor-pointer items-center gap-2 text-xs text-text-muted ${isGrokDomainProvider ? "pointer-events-none opacity-50" : ""}`}>
                     <input
                       type="checkbox"
                       checked={autoConcurrency}
+                      disabled={isGrokDomainProvider}
                       onChange={(event) => {
                         const next = event.target.checked;
                         setAutoConcurrency(next);
@@ -720,22 +722,26 @@ export default function BulkAccountAutomationModal({
                   min="1"
                   max="8"
                   value={
-                    autoConcurrency
-                      ? String(systemSpecInfo?.recommended ?? concurrency)
-                      : concurrency
+                    isGrokDomainProvider
+                      ? "1"
+                      : autoConcurrency
+                        ? String(systemSpecInfo?.recommended ?? concurrency)
+                        : concurrency
                   }
                   onChange={(event) => setConcurrency(event.target.value)}
-                  disabled={autoConcurrency}
+                  disabled={isGrokDomainProvider || autoConcurrency}
                   placeholder="4"
                 />
                 <p className="mt-1 text-xs text-text-muted">
-                  {autoConcurrency
-                    ? systemSpecLoading
-                      ? "Detecting system specs..."
-                      : systemSpecInfo
-                        ? `Recommended ${systemSpecInfo.recommended} workers for this machine (${systemSpecInfo.specs.cpuCount}-core CPU, ${systemSpecInfo.specs.totalMemGb} GB RAM, limited by ${describeWorkerLimit(systemSpecInfo.limitedBy)}).`
-                        : `Falling back to default ${DEFAULT_CONCURRENCY} workers.`
-                    : "Manual mode. Allowed range: 1 to 8 workers."}
+                  {isGrokDomainProvider
+                    ? "Grok domain email signup runs a single worker — concurrent signups from one IP trigger xAI anti-abuse blocks."
+                    : autoConcurrency
+                      ? systemSpecLoading
+                        ? "Detecting system specs..."
+                        : systemSpecInfo
+                          ? `Recommended ${systemSpecInfo.recommended} workers for this machine (${systemSpecInfo.specs.cpuCount}-core CPU, ${systemSpecInfo.specs.totalMemGb} GB RAM, limited by ${describeWorkerLimit(systemSpecInfo.limitedBy)}).`
+                          : `Falling back to default ${DEFAULT_CONCURRENCY} workers.`
+                      : "Manual mode. Allowed range: 1 to 8 workers."}
                 </p>
               </div>
 
