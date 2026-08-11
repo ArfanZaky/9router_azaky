@@ -211,6 +211,13 @@ describe("Grok domain signup helpers", () => {
     expect(automationTest.isXaiSignInPage({ url: () => "https://auth.x.ai/oauth2/consent" })).toBe(false);
   });
 
+  it("detects the PKCE login method chooser before the email form", () => {
+    expect(automationTest.isEmailLoginChooser(
+      "Log into your account\nLogin with Google\nLogin with X\nLogin with Apple\nLogin with email"
+    )).toBe(true);
+    expect(automationTest.isEmailLoginChooser("Log in with your email\nEmail\nNext")).toBe(false);
+  });
+
   it("exposes incremental domain email login helper for PKCE sign-in", () => {
     expect(typeof automationTest.progressDomainEmailLogin).toBe("function");
   });

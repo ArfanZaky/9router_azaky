@@ -1143,3 +1143,5 @@ export const __test__ = {
   isRecentTerminalJob,
   buildLookupResponse,
 };
+
+export { resolveFinishedJobStatus };
