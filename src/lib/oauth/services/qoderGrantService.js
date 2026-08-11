@@ -139,17 +139,30 @@ function buildStatusHeaders(jt) {
   };
 }
 
-// Qwen38 activity claim uses the CLI client fingerprint (type 5 / v2.0.0).
-// The legacy (0 / 1.18.2) headers hang or return USER_OR_CLIENT_NOT_ELIGIBLE.
-function buildActivityHeaders(jt) {
-  return {
+// Qwen38 activity claim requires the CLI client fingerprint (type 5) AND the
+// machine identity (UMID) — bare-JT requests come back USER_NOT_ELIGIBLE.
+// Version 1.1.13 / ClientType 5 is the combination the server accepts.
+function buildActivityHeaders(jt, umid = null) {
+  const base = {
     Authorization: `Bearer ${jt}`,
     Accept: "application/json",
     "Content-Type": "application/json",
     "Cosy-ClientType": "5",
-    "Cosy-Version": "2.0.0",
+    "Cosy-Version": "1.1.13",
     "Cosy-MachineOS": "x86_64_windows",
+    "User-Agent": "qoder/1.1.13",
   };
+  if (umid?.machineToken) {
+    const serial = umid.serial || umid.factors?.serial || "";
+    return {
+      ...base,
+      "Cosy-MachineToken": umid.machineToken,
+      "Cosy-MachineType": umid.machineType || "",
+      "Cosy-MachineCode": umid.machineCode || "",
+      "Cosy-MachineId": serial ? Buffer.from(String(serial), "utf8").toString("hex") : "",
+    };
+  }
+  return base;
 }
 
 export const QWEN38_800_ACTIVITY = "qwen38_800_invoke";
@@ -157,10 +170,11 @@ export const QWEN38_2000_ACTIVITY = "qwen38_2000_invoke";
 
 /**
  * List claimable Qoder activities (qwen38 free-call grants etc).
- * Uses the CLI client headers so the server reports real eligibility.
+ * Pass a fresh `umid` so the server sees a real machine identity.
  */
-export async function fetchEligibility(jt, { proxyUrl = null, timeoutMs = 15_000 } = {}) {
-  const headers = buildActivityHeaders(jt);
+export async function fetchEligibility(jt, { proxyUrl = null, timeoutMs = 15_000, umid = null, harnessRoot } = {}) {
+  const resolvedUmid = umid || (harnessRoot ? await genUmid({ harnessRoot }).catch(() => null) : null);
+  const headers = buildActivityHeaders(jt, resolvedUmid);
   let body;
   try {
     body = await fetchJson(ELIGIBILITY_URL, { headers, timeoutMs, proxyUrl });
@@ -177,15 +191,17 @@ export async function fetchEligibility(jt, { proxyUrl = null, timeoutMs = 15_000
         text: act?.claimText?.en || act?.cliText?.en || act?.claimText?.zh || "",
       }))
     : [];
-  return { ok: true, activities };
+  return { ok: true, activities, umid: resolvedUmid };
 }
 
 /**
  * Claim an activity (e.g. qwen38_800_invoke) for the given PAT/JT.
+ * Requires a fresh `umid` machine identity for eligibility.
  * Returns { ok, code, msg, alreadyClaimed }.
  */
-export async function claimActivity(jt, activityId, { proxyUrl = null, timeoutMs = 20_000 } = {}) {
-  const headers = buildActivityHeaders(jt);
+export async function claimActivity(jt, activityId, { proxyUrl = null, timeoutMs = 20_000, umid = null, harnessRoot } = {}) {
+  const resolvedUmid = umid || (harnessRoot ? await genUmid({ harnessRoot }).catch(() => null) : null);
+  const headers = buildActivityHeaders(jt, resolvedUmid);
   const url = `${CLAIM_URL}?activityId=${encodeURIComponent(activityId)}`;
   let body;
   try {
@@ -215,14 +231,20 @@ export async function claimActivity(jt, activityId, { proxyUrl = null, timeoutMs
  * Claim the 800 Qwen3.8-Max free-call grant for a PAT. Best-effort — the
  * activity may already be claimed or ineligible; never throws.
  */
-export async function claimQwen38(pat, { proxyUrl = null, timeoutMs = 30_000 } = {}) {
+export async function claimQwen38(pat, { proxyUrl = null, timeoutMs = 30_000, harnessRoot = DEFAULT_HARNESS_ROOT } = {}) {
   let jt;
   try {
     jt = await exchangePat(pat, { proxyUrl, timeoutMs });
   } catch (error) {
     return { ok: false, step: "exchange", error: error.message };
   }
-  const elig = await fetchEligibility(jt, { proxyUrl, timeoutMs });
+  // A fresh UMID machine identity is required — the server returns
+  // USER_NOT_ELIGIBLE for bare-JT eligibility/claim.
+  const umid = await genUmid({ harnessRoot }).catch(() => null);
+  if (!umid) {
+    return { ok: false, step: "umid", error: "could not generate UMID machine token", reason: "no_umid" };
+  }
+  const elig = await fetchEligibility(jt, { proxyUrl, timeoutMs, umid });
   const target = elig.activities.find((a) => a.activityId === QWEN38_800_ACTIVITY);
 
   if (!target) {
@@ -235,7 +257,7 @@ export async function claimQwen38(pat, { proxyUrl = null, timeoutMs = 30_000 } =
     return { ok: false, step: "eligibility", error: target.reason || "not eligible", reason: target.reason, activities: elig.activities };
   }
 
-  const claim = await claimActivity(jt, QWEN38_800_ACTIVITY, { proxyUrl, timeoutMs });
+  const claim = await claimActivity(jt, QWEN38_800_ACTIVITY, { proxyUrl, timeoutMs, umid });
   return {
     ok: claim.ok || claim.alreadyClaimed,
     alreadyClaimed: claim.alreadyClaimed,
@@ -283,12 +305,13 @@ export async function fetchStatus(jt, { proxyUrl = null, timeoutMs } = {}) {
   };
 }
 
-export async function checkPat(pat, { proxyUrl = null, timeoutMs } = {}) {
+export async function checkPat(pat, { proxyUrl = null, timeoutMs, harnessRoot = DEFAULT_HARNESS_ROOT } = {}) {
   const jt = await exchangePat(pat, { proxyUrl, timeoutMs });
   const status = await fetchStatus(jt, { proxyUrl, timeoutMs });
   let qwen38 = null;
   try {
-    const elig = await fetchEligibility(jt, { proxyUrl, timeoutMs: 15_000 });
+    const umid = await genUmid({ harnessRoot }).catch(() => null);
+    const elig = await fetchEligibility(jt, { proxyUrl, timeoutMs: 15_000, umid });
     const target = elig.activities.find((a) => a.activityId === QWEN38_800_ACTIVITY);
     qwen38 = target ? { claimed: target.claimed, canClaim: target.canClaim, reason: target.reason, text: target.text } : { available: false };
   } catch {
@@ -404,7 +427,7 @@ export async function grantProTrial(pat, {
   // Best-effort: claim the 800 Qwen3.8-Max free-call grant after a
   // successful Pro Trial. Never fails the grant when the claim is ineligible.
   try {
-    const qwen38 = await claimQwen38(pat, { proxyUrl: proxyUrl || undefined, timeoutMs: 30_000 });
+    const qwen38 = await claimQwen38(pat, { proxyUrl: proxyUrl || undefined, timeoutMs: 30_000, harnessRoot });
     result.qwen38 = qwen38;
   } catch (error) {
     result.qwen38 = { ok: false, step: "claim", error: error.message };

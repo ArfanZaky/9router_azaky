@@ -1,4 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/oauth/services/qoderGrantService", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    genUmid: vi.fn(async () => ({
+      machineToken: "P1gTESTMACHINETOKEN123456",
+      machineType: "test-type",
+      machineCode: "test-code",
+      serial: "TESTSERIAL1234",
+      factors: { serial: "TESTSERIAL1234" },
+    })),
+  };
+});
+
 import {
   exchangePat,
   fetchStatus,
