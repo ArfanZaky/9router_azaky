@@ -102,7 +102,14 @@ export async function solveAliyunCaptcha({
         solved,
         securityToken: securityToken || "",
         verifyCode: verifyCode || "T001",
-        certifyId: body?.certify_id || body?.certifyId || "",
+        certifyId: body?.certify_id
+          || body?.certifyId
+          || body?.token?.certifyId
+          || body?.verify_result?.certifyId
+          || "",
+        sceneId: body?.scene_id || body?.sceneId || body?.token?.sceneId || DEFAULT_ALIYUN_SCENE_ID,
+        deviceToken: body?.token?.deviceToken || body?.device_token || "",
+        data: body?.token?.data || body?.data || "",
         method: body?.method || "",
         attempts: body?.attempts || 0,
         elapsed: body?.elapsed || 0,

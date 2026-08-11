@@ -266,6 +266,7 @@ export async function harvestQoderBxTokens({
   page,
   proxyUrl = null,
   timeoutMs = 20_000,
+  engine = "chromium",
 } = {}) {
   let ownedBrowser = null;
   let ownedPage = null;
@@ -274,7 +275,7 @@ export async function harvestQoderBxTokens({
     if (!target) {
       const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
       ownedBrowser = await launchBulkImportBrowser({
-        engine: "chromium",
+        engine,
         proxyUrl: proxyUrl || undefined,
         headless: true,
       });
@@ -293,6 +294,22 @@ export async function harvestQoderBxTokens({
       }
       if (bxReady(last)) break;
       await sleep(400);
+    }
+    if (!bxReady(last)) {
+      // One retry: force reload — baxia sometimes needs a second load to boot.
+      try {
+        await target.goto(SIGNUP_URL, { waitUntil: "load", timeout: Math.min(timeoutMs, 30_000) });
+      } catch {}
+      const retryDeadline = Date.now() + Math.min(timeoutMs, 15_000);
+      while (Date.now() < retryDeadline) {
+        try {
+          last = await target.evaluate(BX_HARVEST_JS);
+        } catch {
+          last = { err: [], "bx-ua": "", "bx-umidtoken": "" };
+        }
+        if (bxReady(last)) break;
+        await sleep(500);
+      }
     }
     if (!bxReady(last)) {
       throw new Error(`Qoder baxia tokens incomplete: ua=${last?.ua_len} umid=${last?.umid_len} url=${last?.url}`);
@@ -378,17 +395,21 @@ export async function runQoderSignup({
     );
   }
 
+  // Harvest baxia tokens ONCE — the SDK is slow to boot and re-opening the
+  // browser per attempt is wasteful and unreliable. Reuse the same tokens
+  // across register attempts.
+  onStep?.("harvesting_bx", "Harvesting baxia tokens");
+  let tokens = await harvestQoderBxTokens({ proxyUrl }).catch((error) => {
+    onStep?.("harvest_bx_failed", `Baxia harvest failed: ${error.message}`);
+    return null;
+  });
+  if (!tokens) {
+    throw new Error("bx_harvest_failed: could not harvest baxia tokens from qoder.com");
+  }
+
   let lastError = "";
   for (let attempt = 1; attempt <= registerAttempts; attempt += 1) {
-    onStep?.("harvesting_bx", `Harvesting baxia tokens (try ${attempt})`);
-    const tokens = await harvestQoderBxTokens({ proxyUrl }).catch((error) => {
-      onStep?.("harvest_bx_failed", `Baxia harvest failed: ${error.message}`);
-      return null;
-    });
-    if (!tokens) {
-      lastError = "bx_harvest_failed";
-      continue;
-    }
+    onStep?.("signup_attempt", `Signup attempt ${attempt}/${registerAttempts}`);
 
     const client = new QoderSignupHttpClient({ tokens, cookie: tokens.cookie || "", proxyUrl });
 
@@ -425,30 +446,58 @@ export async function runQoderSignup({
       continue;
     }
 
+    // Refresh baxia tokens before /users — the server re-validates the bx
+    // fingerprint against the account creation request. A fresh bx token
+    // reduces the chance of FAIL_SYS_USER_VALIDATE (TMD) here.
+    onStep?.("refreshing_bx", "Refreshing baxia tokens before account creation");
+    try {
+      const fresh = await harvestQoderBxTokens({ proxyUrl }).catch(() => null);
+      if (fresh && bxReady(fresh)) {
+        tokens = fresh;
+        client.refreshTokens(fresh);
+      }
+    } catch {
+      // Non-fatal — fall back to the pre-harvested tokens.
+    }
+
     onStep?.("creating_user", "Creating Qoder account");
     const users = await client.createUser({ email, password, name, otp });
+    onStep?.("users_response", `users st=${users.status} cookies=${Object.keys(client.cookies).length} x5sec_len=${(client.x5sec || "").length}`);
     let blocked = isTmdBlock(users.json);
     if (blocked.blocked) {
-      onStep?.("tmd_blocked", "TMD slide required — harvesting x5sec");
+      onStep?.("tmd_blocked", `TMD slide required — ${(blocked.url || "").slice(0, 120)}`);
       const { solveX5sec } = await import("./qoderSolverClient.js");
       let x5sec = client.x5sec;
+      let x5Detail = null;
       if (!x5sec && blocked.url) {
         const x5 = await solveX5sec({ punishUrl: blocked.url, proxy: proxyUrl });
+        x5Detail = x5;
         if (x5.ok && x5.x5sec) x5sec = x5.x5sec;
       }
       if (!x5sec) {
-        lastError = "tmd_no_x5sec";
-        continue;
-      }
-      client.setX5sec(x5sec);
-      const retry = await client.createUser({ email, password, name, otp });
-      if (isTmdBlock(retry.json).blocked) {
-        lastError = `tmd_still_blocked:${retry.text.slice(0, 200)}`;
-        continue;
-      }
-      if (retry.status !== 200 && retry.status !== 201) {
-        lastError = `users_retry:${retry.status}:${retry.text.slice(0, 200)}`;
-        continue;
+        // Fallback: sometimes a plain retry with the (fresh) session cookie
+        // passes TMD on the second attempt — the punish page sets a cookie
+        // on GET that satisfies the check. Try once before giving up.
+        onStep?.("tmd_retry_direct", "TMD without x5sec — trying direct retry");
+        const direct = await client.createUser({ email, password, name, otp }).catch(() => null);
+        if (direct && !isTmdBlock(direct.json).blocked && (direct.status === 200 || direct.status === 201)) {
+          users = direct;
+        } else {
+          lastError = `tmd_no_x5sec:${JSON.stringify(x5Detail || {}).slice(0, 200)}`;
+          continue;
+        }
+      } else {
+        client.setX5sec(x5sec);
+        const retry = await client.createUser({ email, password, name, otp });
+        if (isTmdBlock(retry.json).blocked) {
+          lastError = `tmd_still_blocked:${retry.text.slice(0, 200)}`;
+          continue;
+        }
+        if (retry.status !== 200 && retry.status !== 201) {
+          lastError = `users_retry:${retry.status}:${retry.text.slice(0, 200)}`;
+          continue;
+        }
+        users = retry;
       }
     } else if (users.status !== 200 && users.status !== 201) {
       lastError = `users:${users.status}:${users.text.slice(0, 200)}`;
