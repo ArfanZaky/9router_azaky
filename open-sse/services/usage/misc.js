@@ -206,6 +206,16 @@ export async function getVercelAiGatewayUsage(apiKey, proxyOptions = null) {
   }
 }
 
+const QODER_ELIGIBILITY_URL = "https://openapi.qoder.sh/api/v2/activity/claim/eligibility";
+const QODER_ACTIVITY_IDS = {
+  qwen38_800_invoke: "Qwen38 800 calls",
+  qwen38_2000_invoke: "Qwen38 2000 calls",
+};
+const QODER_ACTIVITY_DEFAULT_CALLS = {
+  qwen38_800_invoke: 800,
+  qwen38_2000_invoke: 2000,
+};
+
 export async function getQoderUsage(accessToken, proxyOptions = null) {
   if (!accessToken) {
     return { message: "Qoder usage unavailable: no access token" };
@@ -257,13 +267,70 @@ export async function getQoderUsage(accessToken, proxyOptions = null) {
         resetAt,
       },
     };
+
+    // Qwen38-Max event free-call grants (qwen38_800_invoke / qwen38_2000_invoke)
+    // are NOT part of the main quota payload — they live behind the activity
+    // claim eligibility endpoint. Surface their claim state as quota rows so
+    // the dashboard shows whether the free-call grant is available/claimed.
+    const activities = await fetchQoderActivityEligibility(accessToken, proxyOptions);
+
     return {
       quotas,
+      activityQuotas: activities,
       totalUsagePercentage: Number(body.totalUsagePercentage) || 0,
       isQuotaExceeded: !!body.isQuotaExceeded,
       expiresAt: expiresAtMs,
     };
   } catch (error) {
     return { message: `Qoder connected. Unable to fetch usage: ${error.message}` };
+  }
+}
+
+async function fetchQoderActivityEligibility(accessToken, proxyOptions = null) {
+  try {
+    const response = await proxyAwareFetch(
+      QODER_ELIGIBILITY_URL,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "Cosy-ClientType": "5",
+          "Cosy-Version": "2.0.0",
+          "Cosy-MachineOS": "x86_64_windows",
+        },
+      },
+      proxyOptions,
+    );
+    if (!response.ok) return [];
+    const body = await response.json().catch(() => null);
+    const activities = Array.isArray(body?.data) ? body.data : [];
+    return activities
+      .filter((act) => act?.activityId && QODER_ACTIVITY_IDS[act.activityId])
+      .map((act) => {
+        const activityId = act.activityId;
+        const calls = QODER_ACTIVITY_DEFAULT_CALLS[activityId] || 0;
+        const claimed = act.claimed === true;
+        const canClaim = act.canClaim === true;
+        const reason = act.reason || "";
+        // One-shot event grant: recurring:false so the table renders the
+        // resetAt as a hard expiry instead of a refresh time.
+        return {
+          name: QODER_ACTIVITY_IDS[activityId],
+          unit: "calls",
+          total: claimed ? calls : 0,
+          used: 0,
+          remaining: claimed ? calls : 0,
+          resetAt: null,
+          recurring: false,
+          activityId,
+          claimed,
+          canClaim,
+          reason,
+        };
+      });
+  } catch {
+    return [];
   }
 }

@@ -391,6 +391,38 @@ export function parseQuotaData(provider, data) {
             });
           });
         }
+        // Qwen38-Max event free-call grants (qwen38_800_invoke etc). When
+        // claimed, show as a one-shot grant (recurring:false) so the row is
+        // green with the full call count; otherwise surface "available" or
+        // "not eligible" via used=total and a message so it renders red.
+        if (Array.isArray(data.activityQuotas)) {
+          data.activityQuotas.forEach((activity) => {
+            if (!activity || !activity.name) return;
+            if (!/Qwen38.*calls/i.test(activity.name)) return;
+            if (activity.claimed) {
+              normalizedQuotas.push({
+                name: activity.name,
+                used: 0,
+                total: Number(activity.total) || 0,
+                unit: activity.unit || "calls",
+                resetAt: activity.resetAt || null,
+                recurring: activity.recurring !== false,
+              });
+            } else {
+              normalizedQuotas.push({
+                name: activity.name,
+                used: Number(activity.total) || 0,
+                total: Number(activity.total) || 0,
+                unit: activity.unit || "calls",
+                resetAt: activity.resetAt || null,
+                recurring: false,
+                message: activity.canClaim
+                  ? "available — claim in the Qoder app"
+                  : activity.reason || "not eligible",
+              });
+            }
+          });
+        }
         break;
 
       case "claude":

@@ -192,6 +192,11 @@ export default function QuotaTable({
                           {quota.remaining}%
                         </span>
                       </div>
+                      {quota.message && (
+                        <div className={`${compact ? "text-[9px]" : "text-[11px]"} text-text-muted italic truncate`} title={quota.message}>
+                          {quota.message}
+                        </div>
+                      )}
                     </div>
                   </td>
 
