@@ -29,6 +29,7 @@ export async function POST(request) {
       otpTimeoutMs: body?.otpTimeoutMs,
       visionProvider: body?.visionProvider,
       visionModel: body?.visionModel,
+      showTmdBrowser: body?.showTmdBrowser,
     });
 
     return NextResponse.json({

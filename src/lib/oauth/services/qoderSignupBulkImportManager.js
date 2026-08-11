@@ -97,6 +97,7 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
     otpTimeoutMs,
     visionProvider,
     visionModel,
+    showTmdBrowser,
   }) {
     const total = clampCount(count);
     const generated = Array.from({ length: total }, () => {
@@ -121,6 +122,7 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
           otpIntervalMs: DEFAULT_OTP_POLL_INTERVAL_MS,
           visionProvider: visionProvider || "",
           visionModel: visionModel || "",
+          showTmdBrowser: Boolean(showTmdBrowser),
         },
       },
     });
@@ -146,6 +148,7 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
       const solverBase = this.solverBase;
       const visionProvider = config.visionProvider || "";
       const visionModel = config.visionModel || "";
+      const showTmdBrowser = config.showTmdBrowser === true;
 
       this.setAccountStep(account, "preparing_signup", `Worker ${workerId} preparing Qoder signup for ${email}`);
       await this.persistJobSnapshot(job, { forcePreview: true });
@@ -153,31 +156,36 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
       this.setAccountStep(account, "generating_temp_email", `Using temporary mailbox ${email}`);
       await this.persistJobSnapshot(job, { forcePreview: false });
 
-      // Launch a browser only when a vision provider is configured (needed to
-      // solve the TMD image-click captcha live).
+      // Launch a headed browser when a vision provider is configured OR the
+      // user opted to show the browser for manual TMD solve. The TMD image
+      // captcha needs a live (visible) window.
       let tmdBrowser = null;
       let visionSolver = null;
-      if (visionProvider && visionModel) {
+      const hasVision = Boolean(visionProvider && visionModel);
+      if (hasVision || showTmdBrowser) {
         try {
           const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
           tmdBrowser = await launchBulkImportBrowser({
             engine: job.engine || "chromium",
             proxyUrl: proxyUrl || undefined,
-            headless: true,
+            headless: false,
+            args: ["--start-maximized"],
           });
-          visionSolver = (captured, { page }) => {
-            const { visionSolveCaptchaGrid } = requireVisionSolver();
-            return visionSolveCaptchaGrid({
-              grids: captured.grids,
-              questionDataUrl: captured.questionDataUrl || "",
-              promptText: "select all images that match the description",
-              provider: visionProvider,
-              model: visionModel,
-              log: this._visionLog,
-            });
-          };
+          if (hasVision) {
+            visionSolver = (captured, { page }) => {
+              const { visionSolveCaptchaGrid } = requireVisionSolver();
+              return visionSolveCaptchaGrid({
+                grids: captured.grids,
+                questionDataUrl: captured.questionDataUrl || "",
+                promptText: "select all images that match the description",
+                provider: visionProvider,
+                model: visionModel,
+                log: this._visionLog,
+              });
+            };
+          }
         } catch (error) {
-          this.setAccountStep(account, "vision_browser_failed", `Vision browser launch failed: ${error.message}`);
+          this.setAccountStep(account, "vision_browser_failed", `TMD browser launch failed: ${error.message}`);
           await this.persistJobSnapshot(job, { forcePreview: false });
         }
       }

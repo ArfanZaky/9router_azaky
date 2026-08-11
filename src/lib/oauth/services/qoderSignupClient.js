@@ -349,7 +349,7 @@ function isTmdBlock(body) {
  * caller-supplied visionSolver, click the matching cells, submit, then harvest
  * the x5sec cookie. Returns the x5sec value (or "").
  */
-async function solveTmdWithBrowser({ browser, punishUrl, visionSolver, onStep }) {
+async function solveTmdWithBrowser({ browser, punishUrl, visionSolver, onStep, manualWaitMs = 180_000 }) {
   const { detectTmdCaptchaType, captureClickCaptcha, submitClickCaptcha, harvestX5secFromContext } = await import("./qoderCaptchaSolver.js");
 
   let context = null;
@@ -376,28 +376,40 @@ async function solveTmdWithBrowser({ browser, punishUrl, visionSolver, onStep })
     if (type.type === "click") {
       const captured = await captureClickCaptcha(page);
       let indexes = [];
-      try {
-        indexes = await visionSolver(captured, { page });
-      } catch {
-        indexes = [];
+      if (visionSolver) {
+        try {
+          indexes = await visionSolver(captured, { page });
+        } catch {
+          indexes = [];
+        }
       }
       if (!Array.isArray(indexes) || !indexes.length) {
-        onStep?.("tmd_vision_no_click", "Vision returned no grid indexes");
+        onStep?.("tmd_vision_no_click", "Vision returned no grid indexes — manual solve in browser");
       } else {
         const submit = await submitClickCaptcha(page, indexes);
         if (submit.ok && submit.x5sec) return submit.x5sec;
       }
     }
 
-    // Slider or fallback: give the sidecar-style drag a chance, then harvest.
-    const x5 = await harvestX5secFromContext(context);
-    if (x5) return x5;
-
-    // After any submit/slide, re-check cookies for x5sec (server sets it async).
-    for (let i = 0; i < 4; i += 1) {
-      await sleep(800);
-      const got = await harvestX5secFromContext(context);
-      if (got) return got;
+    // After auto attempts, keep the (headed) browser open and poll for the
+    // x5sec cookie — the user can solve the captcha manually in the visible
+    // window. Also monitor navigation away from the punish page as success.
+    onStep?.("tmd_manual_wait", "Waiting for manual solve in browser window");
+    const start = Date.now();
+    let lastUrl = "";
+    while (Date.now() - start < manualWaitMs) {
+      const x5 = await harvestX5secFromContext(context);
+      if (x5) return x5;
+      // Punish page usually redirects after a successful solve.
+      try {
+        const u = page.url() || "";
+        if (u && lastUrl && u !== lastUrl && !u.includes("_____tmd_____")) {
+          const got = await harvestX5secFromContext(context);
+          if (got) return got;
+        }
+        lastUrl = u;
+      } catch {}
+      await sleep(1000);
     }
     return "";
   } catch {
@@ -407,10 +419,7 @@ async function solveTmdWithBrowser({ browser, punishUrl, visionSolver, onStep })
     } catch {}
     return "";
   } finally {
-    // Do NOT close the browser — the caller owns it. Close only a fresh page we made.
-    if (page && context && context.pages?.().length === 1) {
-      // keep the context alive; the caller reuses it.
-    }
+    // Do NOT close the browser — the caller owns it.
   }
 }
 
@@ -544,13 +553,19 @@ export async function runQoderSignup({
       let x5sec = client.x5sec;
       let x5Detail = null;
 
-      // Preferred: solve the live punish page in a browser with the vision LLM
-      // (image-matching captcha). The punish URL is one-time, so it must be
-      // opened immediately in a live browser.
-      if (!x5sec && blocked.url && browser && visionSolver) {
-        onStep?.("tmd_vision_solve", "Solving TMD captcha with vision LLM");
-        x5sec = await solveTmdWithBrowser({ browser, punishUrl: blocked.url, visionSolver, onStep }).catch(() => "");
-        if (!x5sec) x5Detail = { error: "vision_solve_failed" };
+      // Preferred: solve the live punish page in a browser — auto via the
+      // vision LLM, or manual in the visible window if no/failed vision. The
+      // punish URL is one-time, so it must be opened immediately in a live
+      // browser.
+      if (!x5sec && blocked.url && browser) {
+        onStep?.("tmd_vision_solve", "Opening TMD captcha in browser");
+        x5sec = await solveTmdWithBrowser({
+          browser,
+          punishUrl: blocked.url,
+          visionSolver: visionSolver || null,
+          onStep,
+        }).catch(() => "");
+        if (!x5sec) x5Detail = { error: "browser_solve_failed" };
       }
 
       // Fallback: solver sidecar (slider only) or direct retry.

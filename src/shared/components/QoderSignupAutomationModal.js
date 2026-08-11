@@ -63,6 +63,7 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
   const [visionConnections, setVisionConnections] = useState([]);
   const [visionProvider, setVisionProvider] = useState("");
   const [visionModel, setVisionModel] = useState("");
+  const [showTmdBrowser, setShowTmdBrowser] = useState(false);
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
@@ -183,6 +184,7 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
         body.visionProvider = visionProvider;
         body.visionModel = visionModel.trim() || undefined;
       }
+      if (showTmdBrowser) body.showTmdBrowser = true;
 
       const res = await fetch(`/api/oauth/${PROVIDER}/signup`, {
         method: "POST",
@@ -339,6 +341,19 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
               </div>
               <p className="mt-2">
                 Leave empty to skip auto-solve (fall back to slider solver + manual retry).
+              </p>
+              <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-text-main">
+                <input
+                  type="checkbox"
+                  checked={showTmdBrowser}
+                  onChange={(event) => setShowTmdBrowser(event.target.checked)}
+                  className="h-4 w-4 rounded border-border accent-primary"
+                />
+                Show browser for manual TMD solve
+              </label>
+              <p className="mt-1 text-xs">
+                When the captcha can&apos;t be auto-solved, opens a visible browser window so you can
+                solve it manually (like Grok/Antigravity manual assist). Recommended if vision fails.
               </p>
             </div>
           </>
