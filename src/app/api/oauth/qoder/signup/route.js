@@ -27,6 +27,8 @@ export async function POST(request) {
       proxySource,
       domain: body?.domain,
       otpTimeoutMs: body?.otpTimeoutMs,
+      visionProvider: body?.visionProvider,
+      visionModel: body?.visionModel,
     });
 
     return NextResponse.json({

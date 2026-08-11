@@ -341,6 +341,79 @@ function isTmdBlock(body) {
   return { blocked: false, url: null };
 }
 
+/**
+ * Solve the TMD punish page in a live browser using a vision LLM.
+ *
+ * The punish URL is one-time — it must be opened immediately. We detect the
+ * challenge type, capture the image grid + question, send them to the
+ * caller-supplied visionSolver, click the matching cells, submit, then harvest
+ * the x5sec cookie. Returns the x5sec value (or "").
+ */
+async function solveTmdWithBrowser({ browser, punishUrl, visionSolver, onStep }) {
+  const { detectTmdCaptchaType, captureClickCaptcha, submitClickCaptcha, harvestX5secFromContext } = await import("./qoderCaptchaSolver.js");
+
+  let context = null;
+  let page = null;
+  try {
+    const existing = typeof browser.contexts === "function" ? browser.contexts() : [];
+    context = existing[0] || await browser.newContext({ viewport: null });
+    page = (context.pages?.() || []).find((p) => {
+      try {
+        const u = p.url() || "";
+        return !u || u === "about:blank" || u.startsWith("about:");
+      } catch { return true; }
+    }) || await context.newPage();
+
+    await page.goto(punishUrl.replace("https://qoder.com//", "https://qoder.com/"), {
+      waitUntil: "domcontentloaded",
+      timeout: 45_000,
+    });
+    await sleep(3500);
+
+    const type = await detectTmdCaptchaType(page);
+    onStep?.("tmd_type", `TMD captcha type: ${type.type}`);
+
+    if (type.type === "click") {
+      const captured = await captureClickCaptcha(page);
+      let indexes = [];
+      try {
+        indexes = await visionSolver(captured, { page });
+      } catch {
+        indexes = [];
+      }
+      if (!Array.isArray(indexes) || !indexes.length) {
+        onStep?.("tmd_vision_no_click", "Vision returned no grid indexes");
+      } else {
+        const submit = await submitClickCaptcha(page, indexes);
+        if (submit.ok && submit.x5sec) return submit.x5sec;
+      }
+    }
+
+    // Slider or fallback: give the sidecar-style drag a chance, then harvest.
+    const x5 = await harvestX5secFromContext(context);
+    if (x5) return x5;
+
+    // After any submit/slide, re-check cookies for x5sec (server sets it async).
+    for (let i = 0; i < 4; i += 1) {
+      await sleep(800);
+      const got = await harvestX5secFromContext(context);
+      if (got) return got;
+    }
+    return "";
+  } catch {
+    try {
+      const x5 = await harvestX5secFromContext(context || browser);
+      if (x5) return x5;
+    } catch {}
+    return "";
+  } finally {
+    // Do NOT close the browser — the caller owns it. Close only a fresh page we made.
+    if (page && context && context.pages?.().length === 1) {
+      // keep the context alive; the caller reuses it.
+    }
+  }
+}
+
 function buildCaptchaHeader({ certifyId, sceneId, securityToken }) {
   const payload = {
     certifyId,
@@ -385,6 +458,8 @@ export async function runQoderSignup({
   registerAttempts = DEFAULT_REGISTER_ATTEMPTS,
   otpTimeoutMs = DEFAULT_OTP_TIMEOUT_MS,
   otpIntervalMs = DEFAULT_OTP_POLL_INTERVAL_MS,
+  browser = null,
+  visionSolver = null,
 } = {}) {
   const { solverHealth } = await import("./qoderSolverClient.js");
   onStep?.("checking_solver", "Checking captcha solver");
@@ -465,11 +540,22 @@ export async function runQoderSignup({
     onStep?.("users_response", `users st=${users.status} cookies=${Object.keys(client.cookies).length} x5sec_len=${(client.x5sec || "").length}`);
     let blocked = isTmdBlock(users.json);
     if (blocked.blocked) {
-      onStep?.("tmd_blocked", `TMD slide required — ${(blocked.url || "").slice(0, 120)}`);
-      const { solveX5sec } = await import("./qoderSolverClient.js");
+      onStep?.("tmd_blocked", `TMD required — ${(blocked.url || "").slice(0, 120)}`);
       let x5sec = client.x5sec;
       let x5Detail = null;
+
+      // Preferred: solve the live punish page in a browser with the vision LLM
+      // (image-matching captcha). The punish URL is one-time, so it must be
+      // opened immediately in a live browser.
+      if (!x5sec && blocked.url && browser && visionSolver) {
+        onStep?.("tmd_vision_solve", "Solving TMD captcha with vision LLM");
+        x5sec = await solveTmdWithBrowser({ browser, punishUrl: blocked.url, visionSolver, onStep }).catch(() => "");
+        if (!x5sec) x5Detail = { error: "vision_solve_failed" };
+      }
+
+      // Fallback: solver sidecar (slider only) or direct retry.
       if (!x5sec && blocked.url) {
+        const { solveX5sec } = await import("./qoderSolverClient.js");
         const x5 = await solveX5sec({ punishUrl: blocked.url, proxy: proxyUrl });
         x5Detail = x5;
         if (x5.ok && x5.x5sec) x5sec = x5.x5sec;

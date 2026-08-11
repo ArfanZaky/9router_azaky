@@ -95,6 +95,8 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
     proxySource,
     domain,
     otpTimeoutMs,
+    visionProvider,
+    visionModel,
   }) {
     const total = clampCount(count);
     const generated = Array.from({ length: total }, () => {
@@ -117,6 +119,8 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
           domain: domain || "random",
           otpTimeoutMs: Number(otpTimeoutMs) || DEFAULT_OTP_TIMEOUT_MS,
           otpIntervalMs: DEFAULT_OTP_POLL_INTERVAL_MS,
+          visionProvider: visionProvider || "",
+          visionModel: visionModel || "",
         },
       },
     });
@@ -140,12 +144,43 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
       const email = account.email;
       const proxyUrl = account.runtimeSession.proxyUrl;
       const solverBase = this.solverBase;
+      const visionProvider = config.visionProvider || "";
+      const visionModel = config.visionModel || "";
 
       this.setAccountStep(account, "preparing_signup", `Worker ${workerId} preparing Qoder signup for ${email}`);
       await this.persistJobSnapshot(job, { forcePreview: true });
 
       this.setAccountStep(account, "generating_temp_email", `Using temporary mailbox ${email}`);
       await this.persistJobSnapshot(job, { forcePreview: false });
+
+      // Launch a browser only when a vision provider is configured (needed to
+      // solve the TMD image-click captcha live).
+      let tmdBrowser = null;
+      let visionSolver = null;
+      if (visionProvider && visionModel) {
+        try {
+          const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
+          tmdBrowser = await launchBulkImportBrowser({
+            engine: job.engine || "chromium",
+            proxyUrl: proxyUrl || undefined,
+            headless: true,
+          });
+          visionSolver = (captured, { page }) => {
+            const { visionSolveCaptchaGrid } = requireVisionSolver();
+            return visionSolveCaptchaGrid({
+              grids: captured.grids,
+              questionDataUrl: captured.questionDataUrl || "",
+              promptText: "select all images that match the description",
+              provider: visionProvider,
+              model: visionModel,
+              log: this._visionLog,
+            });
+          };
+        } catch (error) {
+          this.setAccountStep(account, "vision_browser_failed", `Vision browser launch failed: ${error.message}`);
+          await this.persistJobSnapshot(job, { forcePreview: false });
+        }
+      }
 
       const result = await runQoderSignup({
         email,
@@ -157,10 +192,17 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
         }),
         solverBase,
         proxyUrl: proxyUrl || undefined,
+        browser: tmdBrowser || undefined,
+        visionSolver: visionSolver || undefined,
         onStep: (step, message) => {
           this.setAccountStep(account, step, message);
           void this.persistJobSnapshot(job, { forcePreview: false });
         },
+      }).finally(() => {
+        if (tmdBrowser) {
+          void tmdBrowser.close().catch(() => null);
+          tmdBrowser = null;
+        }
       });
 
       this.setAccountStep(account, "fetching_profile", "Fetching Qoder profile");
@@ -306,6 +348,10 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
       await this.persistJobSnapshot(job, { forcePreview: true });
     }
   }
+}
+
+function requireVisionSolver() {
+  return import("./qoderVisionSolver.js");
 }
 
 function getSingletonStore() {

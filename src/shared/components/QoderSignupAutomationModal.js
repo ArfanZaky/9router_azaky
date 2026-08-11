@@ -60,6 +60,9 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
   const [proxyPoolId, setProxyPoolId] = useState("");
   const [proxyUrl, setProxyUrl] = useState("");
   const [proxyPools, setProxyPools] = useState([]);
+  const [visionConnections, setVisionConnections] = useState([]);
+  const [visionProvider, setVisionProvider] = useState("");
+  const [visionModel, setVisionModel] = useState("");
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
@@ -93,6 +96,30 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
       cancelled = true;
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    const loadConnections = async () => {
+      try {
+        const res = await fetch("/api/providers", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await readJsonResponse(res, "Failed to fetch providers");
+        if (cancelled) return;
+        const conns = (data.connections || [])
+          .filter((c) => c.isActive)
+          .map((c) => ({ provider: c.provider, name: c.name || c.email || c.provider, connectionId: c.id }))
+          .sort((a, b) => a.provider.localeCompare(b.provider));
+        setVisionConnections(conns);
+        if (conns.length && !visionProvider) setVisionProvider(conns[0].provider);
+      } catch {
+      }
+    };
+    void loadConnections();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, visionProvider]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -151,6 +178,10 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
         body.proxyPoolId = proxyPoolId;
       } else if (proxyUrl.trim()) {
         body.proxyUrl = proxyUrl.trim();
+      }
+      if (visionProvider) {
+        body.visionProvider = visionProvider;
+        body.visionModel = visionModel.trim() || undefined;
       }
 
       const res = await fetch(`/api/oauth/${PROVIDER}/signup`, {
@@ -270,6 +301,44 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
               </div>
               <p className="mt-1 text-xs text-text-muted">
                 Used for the baxia harvest browser and captcha solver requests.
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-border bg-background/70 p-3 text-xs text-text-muted">
+              <p className="font-medium text-text-main">Vision LLM for TMD captcha (optional)</p>
+              <p className="mt-1">
+                Qoder sometimes shows an image-matching captcha (&quot;select all images that match the description&quot;)
+                that the solver can&apos;t auto-solve. Pick a vision-capable provider + model to auto-solve it.
+              </p>
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs text-text-muted">Provider</label>
+                  <select
+                    value={visionProvider}
+                    onChange={(event) => setVisionProvider(event.target.value)}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="">None</option>
+                    {visionConnections.map((conn) => (
+                      <option key={`${conn.provider}-${conn.name}`} value={conn.provider}>
+                        {conn.provider} — {conn.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-text-muted">Model</label>
+                  <Input
+                    type="text"
+                    value={visionModel}
+                    onChange={(event) => setVisionModel(event.target.value)}
+                    disabled={!visionProvider}
+                    placeholder="e.g. gpt-4o / claude-3-5-sonnet"
+                  />
+                </div>
+              </div>
+              <p className="mt-2">
+                Leave empty to skip auto-solve (fall back to slider solver + manual retry).
               </p>
             </div>
           </>
