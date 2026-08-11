@@ -29,7 +29,59 @@ const QUOTA_URL = "https://openapi.qoder.sh/api/v2/quota/usage";
 const DEFAULT_HARNESS_ROOT = process.env.QODER_HARNESS_ROOT || "C:\\Users\\arfan\\Downloads\\Data-Code\\qoder\\harness-win\\harness-win";
 
 function findPython() {
-  return process.env.QODER_PYTHON || (process.platform === "win32" ? "python" : "python3");
+  if (process.env.QODER_PYTHON) return process.env.QODER_PYTHON;
+  const name = process.platform === "win32" ? "python.exe" : "python3";
+  const dirs = (process.env.PATH || "").split(";").filter(Boolean);
+  for (const dir of dirs) {
+    const candidate = path.join(dir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  // PATH didn't resolve — fall back to the bare command (execFile will try via shell-less lookup).
+  return process.platform === "win32" ? "python" : "python3";
+}
+
+function harnessEnv() {
+  return {
+    ...process.env,
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUTF8: "1",
+  };
+}
+
+/**
+ * Parse the gen_p1g.py JSON output. The child process may interleave the JSON
+ * with helper stderr lines or wrap it with newlines, so we extract the first
+ * balanced JSON object instead of relying on line boundaries.
+ */
+function parseUmidJson(stdout) {
+  const text = String(stdout || "");
+  // Fast path: whole stdout is valid JSON.
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {
+    // fall through
+  }
+  // Fallback: find the first '{' and attempt JSON.parse at each candidate end.
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  const depthScan = text.slice(start);
+  let depth = 0;
+  for (let i = 0; i < depthScan.length; i += 1) {
+    const ch = depthScan[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(depthScan.slice(0, i + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function defaultFetchTimeoutMs() {
@@ -141,12 +193,11 @@ export async function genUmid({
   try {
     const { stdout } = await execFileAsync(findPython(), [genPy, "-n", "1", "--json"], {
       cwd: harnessRoot,
+      env: harnessEnv(),
       timeout: timeoutMs,
       maxBuffer: 4 * 1024 * 1024,
     });
-    const line = stdout.split(/\r?\n/).find((l) => l.trim().startsWith("{"));
-    if (!line) return null;
-    const data = JSON.parse(line);
+    const data = parseUmidJson(stdout);
     if (!data?.machineToken || !String(data.machineToken).startsWith("P1g")) return null;
     const factors = data.factors || {};
     return {
@@ -186,21 +237,26 @@ export async function grantProTrial(pat, {
 
   const { stdout, stderr } = await execFileAsync(findPython(), args, {
     cwd: harnessRoot,
+    env: harnessEnv(),
     timeout: timeoutMs,
     maxBuffer: 8 * 1024 * 1024,
   });
   const output = stdout + "\n" + stderr;
-  const lastJson = output
-    .split(/\r?\n/)
-    .filter((line) => line.trim().startsWith("{"))
-    .pop();
 
-  let parsed = null;
-  if (lastJson) {
-    try {
-      parsed = JSON.parse(lastJson);
-    } catch {
-      parsed = null;
+  // The harness writes a full JSON result to captures/grant_last.json — prefer
+  // that over parsing the human-readable stdout summary.
+  let parsed = readHarnessGrantResult(harnessRoot);
+  if (!parsed) {
+    const lastJson = output
+      .split(/\r?\n/)
+      .filter((line) => line.trim().startsWith("{"))
+      .pop();
+    if (lastJson) {
+      try {
+        parsed = JSON.parse(lastJson);
+      } catch {
+        parsed = null;
+      }
     }
   }
 
@@ -227,6 +283,21 @@ export async function grantProTrial(pat, {
     status: parsed?.status || (proTrialOk ? "pro_ok" : "not_pro"),
     raw: parsed || { stdout: output.slice(-1500) },
   };
+}
+
+/**
+ * Read the latest harness grant result from captures/grant_last.json.
+ * Returns null when missing/unreadable.
+ */
+function readHarnessGrantResult(harnessRoot) {
+  try {
+    const captureFile = path.join(harnessRoot, "captures", "grant_last.json");
+    if (!fs.existsSync(captureFile)) return null;
+    const parsed = JSON.parse(fs.readFileSync(captureFile, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 export const __test__ = {
