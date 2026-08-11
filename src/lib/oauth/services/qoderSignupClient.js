@@ -545,7 +545,7 @@ export async function runQoderSignup({
     }
 
     onStep?.("creating_user", "Creating Qoder account");
-    const users = await client.createUser({ email, password, name, otp });
+    let users = await client.createUser({ email, password, name, otp });
     onStep?.("users_response", `users st=${users.status} cookies=${Object.keys(client.cookies).length} x5sec_len=${(client.x5sec || "").length}`);
     let blocked = isTmdBlock(users.json);
     if (blocked.blocked) {
