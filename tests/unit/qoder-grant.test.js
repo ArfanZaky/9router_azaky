@@ -3,6 +3,9 @@ import {
   exchangePat,
   fetchStatus,
   checkPat,
+  claimActivity,
+  fetchEligibility,
+  claimQwen38,
   __test__ as grantTest,
 } from "@/lib/oauth/services/qoderGrantService";
 
@@ -121,5 +124,95 @@ describe("qoder grant service checkPat", () => {
     const result = await checkPat("pt-test");
     expect(result.jt).toBe("jt-1");
     expect(result.proTrialOk).toBe(true);
+  });
+});
+
+describe("qoder grant service qwen38 claim", () => {
+  it("fetchEligibility lists activities", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        data: [
+          { activityId: "qwen38_800_invoke", claimed: false, canClaim: true, reason: "", ifShowClaimDisable: false, claimText: { en: "800 Qwen3.8-Max free calls" } },
+        ],
+      }),
+    });
+    const elig = await fetchEligibility("jt");
+    expect(elig.ok).toBe(true);
+    expect(elig.activities).toHaveLength(1);
+    expect(elig.activities[0].activityId).toBe("qwen38_800_invoke");
+    expect(elig.activities[0].canClaim).toBe(true);
+  });
+
+  it("claimActivity posts to the claim endpoint", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ code: 0, msg: "ok" }),
+    });
+    const res = await claimActivity("jt", "qwen38_800_invoke");
+    expect(res.ok).toBe(true);
+    expect(res.code).toBe(0);
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toContain("activityId=qwen38_800_invoke");
+    expect(init.method).toBe("POST");
+  });
+
+  it("claimActivity detects already-claimed codes", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ code: -1, msg: "ALREADY_CLAIMED" }),
+    });
+    const res = await claimActivity("jt", "qwen38_800_invoke");
+    expect(res.ok).toBe(false);
+    expect(res.alreadyClaimed).toBe(true);
+  });
+
+  it("claimQwen38 short-circuits when already claimed", async () => {
+    globalThis.fetch = vi.fn().mockImplementation(async (url) => {
+      if (url === grantTest.EXCHANGE_URL) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ token: "jt-1" }) };
+      }
+      if (url === grantTest.ELIGIBILITY_URL) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            data: [{ activityId: "qwen38_800_invoke", claimed: true, canClaim: false, reason: "ALREADY_CLAIMED", ifShowClaimDisable: false, claimText: { en: "800 Qwen3.8-Max free calls" } }],
+          }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    });
+    const res = await claimQwen38("pt-test");
+    expect(res.ok).toBe(true);
+    expect(res.alreadyClaimed).toBe(true);
+  });
+
+  it("claimQwen38 claims when eligible", async () => {
+    globalThis.fetch = vi.fn().mockImplementation(async (url) => {
+      if (url === grantTest.EXCHANGE_URL) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ token: "jt-1" }) };
+      }
+      if (url === grantTest.ELIGIBILITY_URL) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            data: [{ activityId: "qwen38_800_invoke", claimed: false, canClaim: true, reason: "", ifShowClaimDisable: false, claimText: { en: "800 Qwen3.8-Max free calls" } }],
+          }),
+        };
+      }
+      if (url.includes("activityId=qwen38_800_invoke")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ code: 0, msg: "ok" }) };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    });
+    const res = await claimQwen38("pt-test");
+    expect(res.ok).toBe(true);
+    expect(res.step).toBe("claim");
+    expect(res.alreadyClaimed).toBe(false);
   });
 });

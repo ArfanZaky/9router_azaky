@@ -35,6 +35,26 @@ ResultRow.propTypes = {
   mono: PropTypes.bool,
 };
 
+function qwen38Label(qwen38) {
+  if (!qwen38) return null;
+  if (qwen38.claimed === true) return "claimed (800 calls)";
+  if (qwen38.alreadyClaimed) return "claimed (800 calls)";
+  if (qwen38.canClaim) return "available — click to claim";
+  if (qwen38.error) return `no (${qwen38.error})`;
+  return qwen38.reason || "not eligible";
+}
+
+function renderQwen38Row(qwen38) {
+  if (!qwen38) return null;
+  const ok = qwen38.claimed === true || qwen38.alreadyClaimed || qwen38.ok;
+  return (
+    <ResultRow
+      label="Qwen38 800 calls"
+      value={`${ok ? "yes" : "no"} — ${qwen38Label(qwen38)}`}
+    />
+  );
+}
+
 export default function QoderGrantModal({ isOpen, onClose, onSuccess }) {
   const [mode, setMode] = useState("grant");
   const [pat, setPat] = useState("");
@@ -70,6 +90,30 @@ export default function QoderGrantModal({ isOpen, onClose, onSuccess }) {
       if (data.proTrialOk) onSuccess?.();
     } catch (err) {
       setError(err.message || `Qoder ${mode} failed`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const claimQwen38 = async () => {
+    if (!pat.trim()) {
+      setError("Enter a Qoder PAT (pt-...).");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/oauth/qoder/grant/claim-qwen38", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pat: pat.trim(), proxyUrl: proxyUrl.trim() || null }),
+      });
+      const data = await readJsonResponse(res, "Qwen38 claim failed");
+      if (!res.ok || data.error) throw new Error(data.error || "Qwen38 claim failed");
+      setResult((prev) => ({ ...(prev || {}), qwen38: data }));
+      onSuccess?.();
+    } catch (err) {
+      setError(err.message || "Qwen38 claim failed");
     } finally {
       setLoading(false);
     }
@@ -136,7 +180,13 @@ export default function QoderGrantModal({ isOpen, onClose, onSuccess }) {
                 value={result.ultimate.canClaim ? "claimable" : `no (${result.ultimate.reason || "?"})`}
               />
             )}
+            {renderQwen38Row(result.qwen38)}
             <ResultRow label="PAT" value={result.patPrefix} mono />
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" icon="local_fire_department" onClick={claimQwen38} disabled={loading}>
+                Claim Qwen38 800 Calls
+              </Button>
+            </div>
           </div>
         )}
 

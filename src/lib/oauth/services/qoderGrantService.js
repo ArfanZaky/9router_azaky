@@ -25,6 +25,8 @@ const EXCHANGE_URL = "https://openapi.qoder.sh/api/v1/jobToken/exchange";
 const STATUS_URL = "https://openapi.qoder.sh/api/v3/user/status";
 const PLAN_URL = "https://openapi.qoder.sh/api/v2/user/plan";
 const QUOTA_URL = "https://openapi.qoder.sh/api/v2/quota/usage";
+const ELIGIBILITY_URL = "https://openapi.qoder.sh/api/v2/activity/claim/eligibility";
+const CLAIM_URL = "https://openapi.qoder.sh/api/v2/activity/claim";
 
 const DEFAULT_HARNESS_ROOT = process.env.QODER_HARNESS_ROOT || "C:\\Users\\arfan\\Downloads\\Data-Code\\qoder\\harness-win\\harness-win";
 
@@ -137,6 +139,113 @@ function buildStatusHeaders(jt) {
   };
 }
 
+// Qwen38 activity claim uses the CLI client fingerprint (type 5 / v2.0.0).
+// The legacy (0 / 1.18.2) headers hang or return USER_OR_CLIENT_NOT_ELIGIBLE.
+function buildActivityHeaders(jt) {
+  return {
+    Authorization: `Bearer ${jt}`,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "Cosy-ClientType": "5",
+    "Cosy-Version": "2.0.0",
+    "Cosy-MachineOS": "x86_64_windows",
+  };
+}
+
+export const QWEN38_800_ACTIVITY = "qwen38_800_invoke";
+export const QWEN38_2000_ACTIVITY = "qwen38_2000_invoke";
+
+/**
+ * List claimable Qoder activities (qwen38 free-call grants etc).
+ * Uses the CLI client headers so the server reports real eligibility.
+ */
+export async function fetchEligibility(jt, { proxyUrl = null, timeoutMs = 15_000 } = {}) {
+  const headers = buildActivityHeaders(jt);
+  let body;
+  try {
+    body = await fetchJson(ELIGIBILITY_URL, { headers, timeoutMs, proxyUrl });
+  } catch (error) {
+    return { ok: false, error: error.message, activities: [] };
+  }
+  const activities = Array.isArray(body?.data)
+    ? body.data.map((act) => ({
+        activityId: act?.activityId || "",
+        claimed: act?.claimed === true,
+        canClaim: act?.canClaim === true,
+        reason: act?.reason || "",
+        disabled: act?.ifShowClaimDisable === true,
+        text: act?.claimText?.en || act?.cliText?.en || act?.claimText?.zh || "",
+      }))
+    : [];
+  return { ok: true, activities };
+}
+
+/**
+ * Claim an activity (e.g. qwen38_800_invoke) for the given PAT/JT.
+ * Returns { ok, code, msg, alreadyClaimed }.
+ */
+export async function claimActivity(jt, activityId, { proxyUrl = null, timeoutMs = 20_000 } = {}) {
+  const headers = buildActivityHeaders(jt);
+  const url = `${CLAIM_URL}?activityId=${encodeURIComponent(activityId)}`;
+  let body;
+  try {
+    body = await fetchJson(url, {
+      method: "POST",
+      headers,
+      body: {},
+      timeoutMs,
+      proxyUrl,
+    });
+  } catch (error) {
+    return { ok: false, error: error.message, code: error?.body?.code, msg: error?.body?.msg };
+  }
+  const code = body?.code;
+  const msg = body?.msg || "";
+  const alreadyClaimed = /ALREADY_CLAIMED/i.test(String(msg || "")) || /already/i.test(String(msg || ""));
+  return {
+    ok: code === 0,
+    alreadyClaimed,
+    code,
+    msg,
+    body,
+  };
+}
+
+/**
+ * Claim the 800 Qwen3.8-Max free-call grant for a PAT. Best-effort — the
+ * activity may already be claimed or ineligible; never throws.
+ */
+export async function claimQwen38(pat, { proxyUrl = null, timeoutMs = 30_000 } = {}) {
+  let jt;
+  try {
+    jt = await exchangePat(pat, { proxyUrl, timeoutMs });
+  } catch (error) {
+    return { ok: false, step: "exchange", error: error.message };
+  }
+  const elig = await fetchEligibility(jt, { proxyUrl, timeoutMs });
+  const target = elig.activities.find((a) => a.activityId === QWEN38_800_ACTIVITY);
+
+  if (!target) {
+    return { ok: false, step: "eligibility", error: "qwen38_800 not in eligibility list", activities: elig.activities };
+  }
+  if (target.claimed) {
+    return { ok: true, alreadyClaimed: true, step: "eligibility", msg: "qwen38_800 already claimed", activities: elig.activities };
+  }
+  if (!target.canClaim) {
+    return { ok: false, step: "eligibility", error: target.reason || "not eligible", reason: target.reason, activities: elig.activities };
+  }
+
+  const claim = await claimActivity(jt, QWEN38_800_ACTIVITY, { proxyUrl, timeoutMs });
+  return {
+    ok: claim.ok || claim.alreadyClaimed,
+    alreadyClaimed: claim.alreadyClaimed,
+    step: "claim",
+    code: claim.code,
+    msg: claim.msg,
+    activities: elig.activities,
+  };
+}
+
 export async function fetchStatus(jt, { proxyUrl = null, timeoutMs } = {}) {
   const headers = buildStatusHeaders(jt);
   const [status, plan, quota] = await Promise.all([
@@ -177,7 +286,15 @@ export async function fetchStatus(jt, { proxyUrl = null, timeoutMs } = {}) {
 export async function checkPat(pat, { proxyUrl = null, timeoutMs } = {}) {
   const jt = await exchangePat(pat, { proxyUrl, timeoutMs });
   const status = await fetchStatus(jt, { proxyUrl, timeoutMs });
-  return { ...status, jt };
+  let qwen38 = null;
+  try {
+    const elig = await fetchEligibility(jt, { proxyUrl, timeoutMs: 15_000 });
+    const target = elig.activities.find((a) => a.activityId === QWEN38_800_ACTIVITY);
+    qwen38 = target ? { claimed: target.claimed, canClaim: target.canClaim, reason: target.reason, text: target.text } : { available: false };
+  } catch {
+    qwen38 = { available: false };
+  }
+  return { ...status, jt, qwen38 };
 }
 
 /**
@@ -269,7 +386,7 @@ export async function grantProTrial(pat, {
     || afterBind.credits_total >= 100
   );
 
-  return {
+  const result = {
     ok: proTrialOk,
     proTrialOk,
     patPrefix: String(pat).slice(0, 22),
@@ -283,6 +400,17 @@ export async function grantProTrial(pat, {
     status: parsed?.status || (proTrialOk ? "pro_ok" : "not_pro"),
     raw: parsed || { stdout: output.slice(-1500) },
   };
+
+  // Best-effort: claim the 800 Qwen3.8-Max free-call grant after a
+  // successful Pro Trial. Never fails the grant when the claim is ineligible.
+  try {
+    const qwen38 = await claimQwen38(pat, { proxyUrl: proxyUrl || undefined, timeoutMs: 30_000 });
+    result.qwen38 = qwen38;
+  } catch (error) {
+    result.qwen38 = { ok: false, step: "claim", error: error.message };
+  }
+
+  return result;
 }
 
 /**
@@ -305,5 +433,7 @@ export const __test__ = {
   STATUS_URL,
   PLAN_URL,
   QUOTA_URL,
+  ELIGIBILITY_URL,
+  CLAIM_URL,
   DEFAULT_HARNESS_ROOT,
 };
