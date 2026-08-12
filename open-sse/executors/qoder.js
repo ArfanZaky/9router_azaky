@@ -594,28 +594,12 @@ function wrapQoderSSE(response, model) {
       doneEmitted = true;
       return;
     }
-    // Inner is an OpenAI-shaped chunk. Reasoning models (qmodel_38max etc)
-    // stream `delta.reasoning_content` first; OpenAI-compatible clients (e.g.
-    // opencode) don't always render it and may stall waiting for content.
-    // Promote reasoning_content → content so text keeps flowing, and drop the
-    // reasoning key to avoid confusing downstream parsers.
-    let forwarded = inner;
-    try {
-      const chunkObj = JSON.parse(inner);
-      const delta = chunkObj?.choices?.[0]?.delta;
-      if (delta && typeof delta === "object" && typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
-        delta.content = (delta.content || "") + delta.reasoning_content;
-        delete delta.reasoning_content;
-        forwarded = JSON.stringify(chunkObj);
-      }
-    } catch {
-      // not JSON-parseable inner — forward as-is
-    }
-    // Strip any embedded newlines so the SSE frame stays a single event (a
-    // literal "\n" inside `inner` would otherwise split the frame across
-    // multiple data: lines and downstream parsers would reassemble them as
-    // separate events).
-    const sanitized = forwarded.replace(/\r?\n/g, "");
+    // Inner is an OpenAI-shaped chunk. Forward as-is — reasoning models
+    // (qmodel_38max etc) stream `delta.reasoning_content` which
+    // @ai-sdk/openai-compatible clients (opencode) render as a separate
+    // "reasoning" section; promoting it into `content` earlier made opencode
+    // treat mid-stream thinking as the final answer and "stop" early.
+    const sanitized = inner.replace(/\r?\n/g, "");
     controller.enqueue(encoder.encode(`data: ${sanitized}\n\n`));
   };
 
