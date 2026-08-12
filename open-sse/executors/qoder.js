@@ -42,13 +42,16 @@ import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels
  */
 function normalizeMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { messages: [], systemText: "" };
+    return { messages: [], systemText: "", images: [] };
   }
   const systemParts = [];
   const out = [];
+  const images = [];
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") continue;
     const text = extractText(msg.content);
+    const msgImages = extractImages(msg.content);
+    for (const url of msgImages) images.push(url);
     if (msg.role === "system" || msg.role === "developer") {
       if (text) systemParts.push(text);
       continue;
@@ -76,7 +79,7 @@ function normalizeMessages(messages) {
       contents: [{ type: "text", text: normalizedText }],
     });
   }
-  return { messages: out, systemText: systemParts.join("\n\n") };
+  return { messages: out, systemText: systemParts.join("\n\n"), images };
 }
 
 function compactMessages(messages, maxInputTokens) {
@@ -108,6 +111,35 @@ function extractText(content) {
     return parts.join("\n");
   }
   return String(content);
+}
+
+/**
+ * Extract image URLs from a message content array. Supports both
+ * `{type:"image_url", image_url:{url}}` (OpenAI) and
+ * `{type:"image", source:{data|url}}` (Anthropic) shapes.
+ * Returns array of url strings (http/https/data:).
+ */
+function extractImages(content) {
+  if (!Array.isArray(content)) return [];
+  const urls = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    let url = "";
+    if (item.type === "image_url") {
+      if (typeof item.image_url === "string") url = item.image_url;
+      else if (item.image_url && typeof item.image_url.url === "string") url = item.image_url.url;
+    } else if (item.type === "image" && item.source && typeof item.source === "object") {
+      if (typeof item.source.url === "string") url = item.source.url;
+      else if (item.source.data) {
+        const mediaType = item.source.media_type || "image/png";
+        url = `data:${mediaType};base64,${item.source.data}`;
+      }
+    }
+    if (url && url.startsWith("data:") || url && /^https?:\/\//.test(url)) {
+      urls.push(url);
+    }
+  }
+  return urls;
 }
 
 function lastUserText(messages) {
@@ -358,6 +390,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
   const normalized = normalizeMessages(body.messages || []);
   const messages = compactMessages(normalized.messages, modelConfig.max_input_tokens);
   const systemText = normalized.systemText;
+  const images = normalized.images || [];
   const tools = body.tools;
   const isReasoning = !!modelConfig.is_reasoning;
   const maxOutputTokens = Number(modelConfig.max_output_tokens) || 0;
@@ -394,7 +427,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
       task_id: "common",
       code_language: "",
       chat_prompt: "",
-      image_urls: null,
+      image_urls: images.length ? images : null,
       aliyun_user_type: "",
       system: systemText,
       messages,
@@ -402,7 +435,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
       parameters: { max_tokens: maxTokens },
       chat_context: {
         chatPrompt: "",
-        imageUrls: null,
+        imageUrls: images.length ? images : null,
         extra: {
           context: [],
           modelConfig: { key: qoderKey, is_reasoning: isReasoning },
@@ -733,4 +766,6 @@ export const __test__ = {
   recoverQoderToolCallStream,
   wrapQoderSSE,
   buildQoderRequestBody,
+  extractText,
+  extractImages,
 };

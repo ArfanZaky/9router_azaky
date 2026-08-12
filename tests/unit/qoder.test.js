@@ -701,3 +701,53 @@ describe("buildQoderRequestBody plan gate", () => {
     expect(result.payload.messages[0].content).toBe("hello world");
   });
 });
+
+describe("qoder image extraction", () => {
+  const { extractImages, extractText } = qoderExecutorInternals;
+
+  it("extracts OpenAI image_url blocks", () => {
+    const urls = extractImages([
+      { type: "text", text: "describe this" },
+      { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+      { type: "image_url", image_url: "data:image/png;base64,AAAA" },
+    ]);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe("https://example.com/a.png");
+    expect(urls[1]).toBe("data:image/png;base64,AAAA");
+  });
+
+  it("extracts Anthropic image source blocks", () => {
+    const urls = extractImages([
+      { type: "image", source: { type: "url", url: "https://example.com/b.png" } },
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "Zm9v" } },
+    ]);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe("https://example.com/b.png");
+    expect(urls[1]).toBe("data:image/jpeg;base64,Zm9v");
+  });
+
+  it("ignores non-image blocks and returns empty", () => {
+    expect(extractImages([{ type: "text", text: "hello" }])).toEqual([]);
+    expect(extractImages("plain string")).toEqual([]);
+    expect(extractImages(null)).toEqual([]);
+  });
+
+  it("normalizeMessages collects images into the images field", () => {
+    const { normalizeMessages } = qoderExecutorInternals;
+    const res = normalizeMessages([
+      { role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: "https://example.com/x.png" } }] },
+    ]);
+    expect(res.images).toEqual(["https://example.com/x.png"]);
+    expect(res.messages[0].content).toBe("what is this?");
+    // images should not leak into text content
+    expect(res.messages[0].content).not.toContain("https://example.com/x.png");
+  });
+
+  it("extractText drops image blocks but keeps text", () => {
+    const text = extractText([
+      { type: "text", text: "keep me" },
+      { type: "image_url", image_url: { url: "https://example.com/x.png" } },
+    ]);
+    expect(text).toBe("keep me");
+  });
+});
