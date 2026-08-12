@@ -243,10 +243,17 @@ function recoverQoderToolCallStream(response, model, tools) {
     async start(controller) {
       const reader = response.body.getReader();
       let buffer = "";
+      // Transparent forwarding: content chunks flow straight through. We only
+      // hold back a small trailing window (markerTailLength) so we can detect
+      // the "[assistant requested tools]" marker that qoder emits when it wants
+      // to call tools — if it appears we convert the flattened text into real
+      // tool_calls. finish_reason / [DONE] are always forwarded unchanged.
       let probe = "";
-      let toolSource = "";
       let recovering = false;
-      let doneFrame = "data: [DONE]\n\n";
+      let toolSource = "";
+      let doneFrame = "";
+      const forward = (wire) => controller.enqueue(encoder.encode(wire));
+
       const emitContent = (content) => {
         if (!content) return;
         const chunk = {
@@ -256,73 +263,99 @@ function recoverQoderToolCallStream(response, model, tools) {
           model,
           choices: [{ index: 0, delta: { content }, finish_reason: null }],
         };
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        forward(`data: ${JSON.stringify(chunk)}\n\n`);
       };
+
       const finishRecovery = () => {
         const markerText = "assistant requested tools";
         const recovered = recoverFlattenedToolCalls(`${markerText}${toolSource}`, allowedNames);
         if (!recovered) {
           emitContent(`${markerText}${toolSource}`);
-          controller.enqueue(encoder.encode(doneFrame));
-          return;
+          return false;
         }
         const id = `chatcmpl-qoder-recovered-${Date.now()}`;
         const base = { id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model };
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { tool_calls: recovered.toolCalls }, finish_reason: null }] })}\n\n`));
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\n`));
-        controller.enqueue(encoder.encode(doneFrame));
+        forward(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { tool_calls: recovered.toolCalls }, finish_reason: null }] })}\n\n`);
+        forward(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+        return true;
       };
+
       const processFrame = (frame) => {
         const wire = `${frame}\n\n`;
         const line = frame.split(/\r?\n/).find((item) => item.startsWith("data:"));
         const data = line?.slice(5).trimStart();
         if (!data) {
-          if (!recovering) controller.enqueue(encoder.encode(wire));
+          if (!recovering) forward(wire);
           return;
         }
         if (data === "[DONE]") {
           doneFrame = wire;
-          if (recovering) finishRecovery();
-          else {
-            emitContent(probe);
-            probe = "";
-            controller.enqueue(encoder.encode(wire));
+          if (recovering) {
+            finishRecovery();
+            // Append the original [DONE] after recovery so the client terminates.
+            forward(wire);
+          } else {
+            if (probe) { emitContent(probe); probe = ""; }
+            forward(wire);
           }
           return;
         }
         let chunk;
         try { chunk = JSON.parse(data); } catch {
-          if (!recovering) controller.enqueue(encoder.encode(wire));
+          if (!recovering) forward(wire);
           return;
         }
         const delta = chunk.choices?.[0]?.delta || chunk.choices?.[0]?.message || {};
+        // Native tool_calls — forward untouched.
         if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) {
           if (probe) { emitContent(probe); probe = ""; }
-          controller.enqueue(encoder.encode(wire));
+          forward(wire);
           return;
         }
-        if (typeof delta.content !== "string") {
-          if (!recovering) controller.enqueue(encoder.encode(wire));
+        // Terminal signal — always forward (finish_reason must reach client).
+        const finishReason = chunk.choices?.[0]?.finish_reason;
+        if (finishReason) {
+          if (recovering) {
+            // Capture the final chunk's content into toolSource before finishing.
+            if (typeof delta.content === "string") toolSource += delta.content;
+            const ok = finishRecovery();
+            recovering = false;
+            if (!ok) {
+              // Couldn't parse tool calls — forward the content as-is.
+              forward(wire);
+            }
+          } else {
+            if (probe) { emitContent(probe); probe = ""; }
+            forward(wire);
+          }
           return;
         }
         if (recovering) {
-          toolSource += delta.content;
+          if (typeof delta.content === "string") toolSource += delta.content;
           return;
         }
-        probe += delta.content;
-        const marker = markerPattern.exec(probe);
+        if (typeof delta.content !== "string") {
+          forward(wire);
+          return;
+        }
+        // Normal content: forward immediately for real-time streaming. If the
+        // flattened tool marker shows up inline, recover it into tool_calls.
+        const marker = markerPattern.exec(delta.content);
         if (marker) {
-          emitContent(probe.slice(0, marker.index));
-          toolSource = probe.slice(marker.index + marker[0].length);
+          const before = delta.content.slice(0, marker.index);
+          toolSource = delta.content.slice(marker.index + marker[0].length);
           probe = "";
           recovering = true;
+          if (before) {
+            const chunkCopy = JSON.parse(JSON.stringify(chunk));
+            chunkCopy.choices[0].delta.content = before;
+            forward(`data: ${JSON.stringify(chunkCopy)}\n\n`);
+          }
           return;
         }
-        if (probe.length > markerTailLength) {
-          emitContent(probe.slice(0, -markerTailLength));
-          probe = probe.slice(-markerTailLength);
-        }
+        forward(wire);
       };
+
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -337,8 +370,9 @@ function recoverQoderToolCallStream(response, model, tools) {
         }
         buffer += decoder.decode();
         if (buffer.trim()) processFrame(buffer.trimEnd());
-        if (recovering && !doneFrame) finishRecovery();
-        else if (!recovering && probe) emitContent(probe);
+        if (recovering) finishRecovery();
+        else if (probe) emitContent(probe);
+        if (!doneFrame) forward("data: [DONE]\n\n");
         controller.close();
       } catch (error) {
         controller.error(error);
