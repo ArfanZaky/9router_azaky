@@ -190,6 +190,14 @@ export function createSSEStream(options = {}) {
           }
 
           if (!injectedUsage) {
+            // Dedup terminal [DONE] — executors like qoder already emit it from
+            // their SSE envelope; forwarding a second one makes AI-SDK clients
+            // (opencode) treat the stream as abnormally terminated.
+            const rawData = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : "";
+            if (rawData === "[DONE]") {
+              if (streamDoneSent) continue;
+              streamDoneSent = true;
+            }
             if (line.startsWith("data:") && !line.startsWith("data: ")) {
               output = "data: " + line.slice(5) + "\n";
             } else {
