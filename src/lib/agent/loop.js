@@ -166,6 +166,8 @@ export async function runAgentLoop({
   let finalText = "";
   let endedWithToolCalls = false;
   let continuationUsed = false;
+  let lastFinish = "";
+  let lastIncomplete = false;
 
   await emit("status", { phase: "start", maxSteps, toolCount: tools.length, workspace, accessMode: mode });
 
@@ -204,6 +206,7 @@ export async function runAgentLoop({
     const choice = data?.choices?.[0];
     const message = choice?.message || {};
     const finish = choice?.finish_reason || "";
+    lastFinish = finish;
     const content = extractMessageText(message);
     const toolCalls = extractToolCalls(message);
 
@@ -255,8 +258,12 @@ export async function runAgentLoop({
         });
         continue;
       }
+      // Track truncated responses so we can synthesize a summary after the loop
+      // (a "length" cut or trailing ":" means the model was still writing).
+      lastIncomplete = Boolean(incomplete);
       break;
     }
+    lastIncomplete = false;
 
     // Execute tools sequentially
     for (const call of toolCalls) {
@@ -305,13 +312,19 @@ export async function runAgentLoop({
     }
   }
 
-  if (endedWithToolCalls && !signal?.aborted) {
+  // Synthesize a final summary when the model was truncated (max_tokens cut or
+  // trailing ":") — otherwise the chat would just stop mid-sentence. Also runs
+  // for tool-step exhaustion. Never call tools in this final pass.
+  const needsSummary = (endedWithToolCalls || lastIncomplete) && !signal?.aborted;
+  if (needsSummary) {
     try {
       const data = await callChatCompletions({
         model,
         messages: [...working, {
           role: "user",
-          content: "The tool-step limit was reached. Summarize completed work, verification, and anything still unfinished. Do not call tools.",
+          content: endedWithToolCalls
+            ? "The tool-step limit was reached. Summarize completed work, verification, and anything still unfinished. Do not call tools."
+            : "Your previous response was cut off. Continue from where it stopped and provide a complete final answer with a short summary. Do not call tools.",
         }],
         tools: [],
         apiKey,
@@ -330,7 +343,7 @@ export async function runAgentLoop({
         await emit("message", { role: "assistant", content: summary, tool_calls: null, step: maxSteps + 1 });
       }
     } catch (error) {
-      finalText = `${finalText ? `${finalText}\n\n` : ""}(Agent reached the tool-step limit; final summary failed: ${error.message || String(error)})`;
+      finalText = `${finalText ? `${finalText}\n\n` : ""}(Agent response was cut off; final summary failed: ${error.message || String(error)})`;
       await emit("text", { step: maxSteps + 1, content: finalText });
     }
   }
