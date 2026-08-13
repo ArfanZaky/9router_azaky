@@ -308,52 +308,76 @@ function recoverQoderToolCallStream(response, model, tools) {
         const delta = chunk.choices?.[0]?.delta || chunk.choices?.[0]?.message || {};
         // Native tool_calls — forward untouched.
         if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) {
+          if (recovering) recovering = false;
           if (probe) { emitContent(probe); probe = ""; }
           forward(wire);
           return;
         }
         // Terminal signal — always forward (finish_reason must reach client).
         const finishReason = chunk.choices?.[0]?.finish_reason;
+        const content = typeof delta.content === "string" ? delta.content : null;
+
+        // Content/marker recovery runs BEFORE the finish_reason check. Qoder
+        // often bundles the whole flattened "[assistant requested tools]"
+        // block together with finish_reason into one final chunk; the old
+        // ordering short-circuited on finish_reason first and forwarded the
+        // raw marker text as content, making opencode treat the tool request
+        // as the final answer and stop.
+        let forwarded = false;
+        if (content) {
+          if (recovering) {
+            toolSource += content;
+          } else {
+            const marker = markerPattern.exec(content);
+            if (marker) {
+              const before = content.slice(0, marker.index);
+              toolSource = content.slice(marker.index + marker[0].length);
+              recovering = true;
+              if (before) emitContent(before);
+            } else {
+              forward(wire);
+              forwarded = true;
+            }
+          }
+        } else if (!recovering) {
+          forward(wire);
+          forwarded = true;
+        }
+
         if (finishReason) {
           if (recovering) {
-            // Capture the final chunk's content into toolSource before finishing.
-            if (typeof delta.content === "string") toolSource += delta.content;
             const ok = finishRecovery();
             recovering = false;
-            if (!ok) {
-              // Couldn't parse tool calls — forward the content as-is.
-              forward(wire);
+            toolSource = "";
+            if (ok) {
+              // finishRecovery already emitted tool_calls + finish_reason
+              // "tool_calls". Forwarding the original "stop" chunk here would
+              // give the client a second terminal signal — treat it as
+              // consumed so the client sees exactly one finish_reason.
+              return;
             }
-          } else {
-            if (probe) { emitContent(probe); probe = ""; }
+            // Couldn't parse tool calls — finishRecovery re-emitted the
+            // flattened text as content; forward only the terminal signal so
+            // finish_reason reaches the client without duplicating content.
+            const terminal = {
+              id: chunk.id,
+              object: chunk.object,
+              created: chunk.created,
+              model: chunk.model,
+              choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+            };
+            if (chunk.usage) terminal.usage = chunk.usage;
+            forward(`data: ${JSON.stringify(terminal)}\n\n`);
+          } else if (!forwarded) {
             forward(wire);
           }
           return;
         }
-        if (recovering) {
-          if (typeof delta.content === "string") toolSource += delta.content;
-          return;
-        }
-        if (typeof delta.content !== "string") {
-          forward(wire);
-          return;
-        }
-        // Normal content: forward immediately for real-time streaming. If the
-        // flattened tool marker shows up inline, recover it into tool_calls.
-        const marker = markerPattern.exec(delta.content);
-        if (marker) {
-          const before = delta.content.slice(0, marker.index);
-          toolSource = delta.content.slice(marker.index + marker[0].length);
-          probe = "";
-          recovering = true;
-          if (before) {
-            const chunkCopy = JSON.parse(JSON.stringify(chunk));
-            chunkCopy.choices[0].delta.content = before;
-            forward(`data: ${JSON.stringify(chunkCopy)}\n\n`);
-          }
-          return;
-        }
-        forward(wire);
+
+        // Non-terminal frames: content withheld for recovery waits for the
+        // rest of the tool block. Everything else has already been forwarded.
+        if (recovering) return;
+        if (!forwarded) forward(wire);
       };
 
       try {

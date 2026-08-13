@@ -13,8 +13,12 @@ const FREEBUFF_CONFIG = {
     name: "Freebuff",
     icon: "bolt",
     color: "#22C55E",
+    textIcon: "FB",
     website: "https://freebuff.com",
-    notice: { signupUrl: "https://freebuff.com" },
+    notice: {
+      text: "Free, ad-supported coding agent. Limited-region accounts can use DeepSeek V4 Flash and MiMo V2.5.",
+      signupUrl: "https://freebuff.com",
+    },
   },
 
   authModes: ["oauth"],
@@ -28,10 +32,8 @@ const FREEBUFF_CONFIG = {
   },
 
   models: [
-    { id: "glm-5.2", name: "GLM 5.2" },
-    { id: "gpt-5.6-luna", name: "GPT 5.6 Luna" },
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", default: true },
-    { id: "mimo-v2.5", name: "Mimo V2.5" },
+    { id: "mimo-v2.5", name: "MiMo V2.5" },
   ],
 
   features: {

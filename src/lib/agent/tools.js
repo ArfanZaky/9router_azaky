@@ -72,6 +72,8 @@ const TOOL_ACCESS = {
   web_search: "sandbox",
   web_fetch: "sandbox",
   generate_image: "sandbox",
+  todo_update: "sandbox",
+  delegate_task: "sandbox",
 };
 
 export function getOpenAiTools(accessMode = "sandbox") {
@@ -171,6 +173,45 @@ function walkDir(dir, { max = MAX_LIST, depth = 3, prefix = "" } = {}) {
 }
 
 export const TOOL_DEFS = [
+  {
+    type: "function",
+    function: {
+      name: "todo_update",
+      description: "Publish or replace the current task checklist for long multi-step work.",
+      parameters: {
+        type: "object",
+        properties: {
+          items: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                content: { type: "string" },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              },
+              required: ["content", "status"],
+            },
+          },
+        },
+        required: ["items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delegate_task",
+      description: "Delegate a focused read-only task to a sub-agent and return its result.",
+      parameters: {
+        type: "object",
+        properties: {
+          role: { type: "string", description: "Short specialist role, such as researcher or reviewer" },
+          task: { type: "string", description: "Focused task with the expected result" },
+        },
+        required: ["task"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -493,6 +534,25 @@ export async function executeTool(name, args = {}, ctx = {}) {
           assetUrl: assetId ? `/api/image-gen/assets/${assetId}` : null,
           created: data.created,
         });
+      }
+      case "todo_update": {
+        const items = Array.isArray(args.items) ? args.items : [];
+        const normalized = items.slice(0, 30).map((item) => ({
+          content: String(item?.content || "").trim().slice(0, 300),
+          status: ["pending", "in_progress", "completed"].includes(item?.status) ? item.status : "pending",
+        })).filter((item) => item.content);
+        if (normalized.filter((item) => item.status === "in_progress").length > 1) {
+          return JSON.stringify({ ok: false, error: "Only one task may be in_progress" });
+        }
+        await ctx.onTaskUpdate?.(normalized);
+        return JSON.stringify({ ok: true, items: normalized });
+      }
+      case "delegate_task": {
+        if (!ctx.onDelegate) return JSON.stringify({ ok: false, error: "Sub-agent runtime unavailable" });
+        return JSON.stringify(await ctx.onDelegate({
+          role: String(args.role || "researcher").trim().slice(0, 60),
+          task: String(args.task || "").trim().slice(0, 4000),
+        }));
       }
       default:
         return JSON.stringify({ ok: false, error: `Unknown tool: ${name}` });

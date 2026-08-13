@@ -534,6 +534,38 @@ function BlackboxAutomationPanel({ onRefresh }) {
   );
 }
 
+function FreebuffAutomationPanel({ onRefresh }) {
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setIsBulkOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">bolt</span>
+            Auto Login Bulk (Google SSO)
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Run bulk Gmail:password automation via Google SSO with Freebuff device flow. Free ad-supported coding models (DeepSeek V4 Flash, GLM 5.2, GPT 5.6 Luna, Mimo V2.5).
+          </span>
+        </button>
+      </div>
+      <BulkAccountAutomationModal
+        isOpen={isBulkOpen}
+        provider="freebuff"
+        title="Freebuff Bulk GSuite Login"
+        serviceName="Freebuff"
+        onSuccess={onRefresh}
+        onClose={() => setIsBulkOpen(false)}
+      />
+    </>
+  );
+}
+
 const AUTOMATION_PROVIDERS = [
   {
     id: "grok-cli",
@@ -590,6 +622,14 @@ const AUTOMATION_PROVIDERS = [
     description: "Bulk signup with disposable temp mail, OTP verify, and API key harvest.",
     supportedModes: ["bulk-account"],
     component: BlackboxAutomationPanel,
+  },
+  {
+    id: "freebuff",
+    label: "Freebuff",
+    icon: "bolt",
+    description: "Bulk GSuite auto login via Google SSO and device flow. Free ad-supported coding models.",
+    supportedModes: ["bulk-account", "device-oauth"],
+    component: FreebuffAutomationPanel,
   },
 ];
 

@@ -46,20 +46,16 @@ function extractMessageText(message) {
     return content
       .map((part) => {
         if (typeof part === "string") return part;
-        if (part?.type === "text" && typeof part.text === "string") return part.text;
-        if (typeof part?.text === "string") return part.text;
+        if ((!part?.type || part.type === "text" || part.type === "output_text") && typeof part?.text === "string") return part.text;
         return "";
       })
       .join("");
-  }
-  if (typeof message.reasoning_content === "string" && message.reasoning_content.trim()) {
-    return message.reasoning_content;
   }
   if (typeof message.text === "string") return message.text;
   return "";
 }
 
-async function callChatCompletions({ model, messages, tools, apiKey, temperature, max_tokens, top_p }) {
+async function callChatCompletions({ model, messages, tools, apiKey, temperature, max_tokens, top_p, signal }) {
   await ensureTranslators();
   const body = {
     model,
@@ -83,6 +79,7 @@ async function callChatCompletions({ model, messages, tools, apiKey, temperature
     method: "POST",
     headers,
     body: JSON.stringify(body),
+    signal,
   });
 
   const response = await handleChat(request, {
@@ -103,6 +100,19 @@ async function callChatCompletions({ model, messages, tools, apiKey, temperature
   return data;
 }
 
+function extractReasoning(message) {
+  if (!message || typeof message !== "object") return "";
+  if (typeof message.reasoning_content === "string") return message.reasoning_content;
+  if (typeof message.reasoning === "string") return message.reasoning;
+  if (Array.isArray(message.content)) {
+    return message.content
+      .filter((part) => part?.type === "reasoning" || part?.type === "thinking")
+      .map((part) => part.text || part.thinking || "")
+      .join("");
+  }
+  return "";
+}
+
 /**
  * Run multi-step tool agent and stream SSE events via onEvent.
  * Events: status | text | tool_start | tool_result | message | error | done
@@ -121,6 +131,10 @@ export async function runAgentLoop({
   top_p,
   signal,
   onEvent,
+  takeSteering,
+  onTaskUpdate,
+  onDelegate,
+  depth = 0,
 }) {
   const emit = async (event, data) => {
     if (signal?.aborted) return;
@@ -189,6 +203,7 @@ export async function runAgentLoop({
         temperature,
         max_tokens,
         top_p,
+        signal,
       });
     } catch (e) {
       lastError = e.message || String(e);
@@ -208,7 +223,10 @@ export async function runAgentLoop({
     const finish = choice?.finish_reason || "";
     lastFinish = finish;
     const content = extractMessageText(message);
+    const reasoning = extractReasoning(message);
     const toolCalls = extractToolCalls(message);
+
+    if (reasoning) await emit("reasoning", { step: step + 1, content: reasoning });
 
     if (content) {
       finalText = content;
@@ -280,6 +298,8 @@ export async function runAgentLoop({
         apiKey,
         origin,
         accessMode: mode,
+        onTaskUpdate,
+        onDelegate: depth < 1 ? onDelegate : null,
       });
 
       await emit("tool_result", {
@@ -310,6 +330,12 @@ export async function runAgentLoop({
         step: step + 1,
       });
     }
+
+    const steering = await takeSteering?.();
+    if (steering) {
+      working.push({ role: "user", content: `[Steering instruction received while working]\n${steering}` });
+      await emit("notice", { message: `Steering applied: ${steering}` });
+    }
   }
 
   // Synthesize a final summary when the model was truncated (max_tokens cut or
@@ -331,6 +357,7 @@ export async function runAgentLoop({
         temperature,
         max_tokens,
         top_p,
+        signal,
       });
       if (data?.error) {
         throw new Error(typeof data.error === "string" ? data.error : data.error?.message || JSON.stringify(data.error));

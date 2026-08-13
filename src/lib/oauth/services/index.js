@@ -17,3 +17,7 @@ export { OpenAIService } from "./openai.js";
 export { GitHubService } from "./github.js";
 export { KiroService } from "./kiro.js";
 export { CursorService } from "./cursor.js";
+export {
+  FreebuffBulkImportManager,
+  getFreebuffBulkImportManager,
+} from "./freebuffBulkImportManager.js";

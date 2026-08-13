@@ -12,6 +12,7 @@ import {
   updateChatRunRecord,
   updateChatSession,
 } from "@/lib/localDb";
+import { resolveProjectWorkspace } from "./projectWorkspace.js";
 
 const liveRuns = globalThis.__chatServerRuns || new Map();
 globalThis.__chatServerRuns = liveRuns;
@@ -121,6 +122,19 @@ function patchAssistant(run, patch) {
   run.messages = run.messages.map((message) => message.id === run.assistantId ? { ...message, ...patch } : message);
 }
 
+function appendAssistantSegment(run, segment) {
+  const message = run.messages.find((item) => item.id === run.assistantId);
+  if (!message) return;
+  const segments = Array.isArray(message.segments) ? [...message.segments] : [];
+  const last = segments.at(-1);
+  if ((segment.type === "text" || segment.type === "reasoning") && last?.type === segment.type) {
+    last.content = segment.content;
+  } else {
+    segments.push(segment);
+  }
+  patchAssistant(run, { segments });
+}
+
 function finishRunningTools(run, stopped) {
   run.messages = run.messages.map((message) => (
     message.role === "tool" && message.status === "running"
@@ -196,14 +210,15 @@ async function runPlainChat(run) {
     }
     const choice = chunk.choices?.[0];
     const delta = choice?.delta || {};
-    const piece = text(
-      delta.content ||
-        choice?.message?.content ||
-        delta.reasoning_content ||
-        chunk.output_text ||
-        chunk.text
-    );
+    const reasoningPiece = text(delta.reasoning_content || delta.reasoning || "");
+    const piece = text(delta.content || choice?.message?.content || chunk.output_text || chunk.text);
     if (chunk.usage) run.tokenUsage = chunk.usage;
+    if (reasoningPiece) {
+      run.reasoning += reasoningPiece;
+      patchAssistant(run, { reasoning: run.reasoning, status: "streaming" });
+      appendAssistantSegment(run, { type: "reasoning", content: run.reasoning });
+      await emit(run, "reasoning", { content: run.reasoning });
+    }
     if (!piece) return;
     run.assistantText += piece;
     patchAssistant(run, { content: run.assistantText, status: "streaming" });
@@ -233,6 +248,7 @@ async function runAgent(run) {
     messages: run.request.messages,
     systemPrompt: run.request.systemPrompt,
     apiKey: run.request.apiKey,
+    workspace: run.workspace,
     accessMode: run.request.accessMode,
     maxSteps: run.request.maxSteps,
     temperature: run.request.params.temperature,
@@ -245,20 +261,74 @@ async function runAgent(run) {
       if (type === "text") {
         run.assistantText = data.content || run.assistantText;
         patchAssistant(run, { content: run.assistantText, status: "streaming" });
+        appendAssistantSegment(run, { type: "text", content: run.assistantText });
+      } else if (type === "reasoning") {
+        run.reasoning = data.content || run.reasoning;
+        patchAssistant(run, { reasoning: run.reasoning, status: "streaming" });
+        appendAssistantSegment(run, { type: "reasoning", content: run.reasoning });
       } else if (type === "message" && data.role === "assistant") {
         run.assistantText = data.content || run.assistantText;
         patchAssistant(run, { content: run.assistantText, tool_calls: data.tool_calls || null, status: data.tool_calls?.length ? "tool_calls" : "streaming" });
       } else if (type === "tool_start") {
         run.messages.push({ id: data.id, role: "tool", tool_call_id: data.id, name: data.name, content: JSON.stringify({ status: "running", arguments: data.arguments }), status: "running", createdAt: new Date().toISOString() });
+        appendAssistantSegment(run, { type: "tool", callId: data.id, name: data.name, arguments: data.arguments, status: "running" });
       } else if (type === "tool_result") {
         const next = { id: data.id, role: "tool", tool_call_id: data.id, name: data.name, content: data.content, status: "done", createdAt: new Date().toISOString() };
         const index = run.messages.findIndex((item) => item.role === "tool" && item.tool_call_id === data.id && item.status === "running");
         if (index >= 0) run.messages[index] = next; else run.messages.push(next);
+        const assistant = run.messages.find((item) => item.id === run.assistantId);
+        if (assistant?.segments) {
+          assistant.segments = assistant.segments.map((segment) => segment.type === "tool" && segment.callId === data.id
+            ? { ...segment, content: data.content, status: "done" }
+            : segment);
+        }
       }
       await emit(run, type, data);
       await checkpoint(run, type === "tool_start" || type === "tool_result");
     },
+    takeSteering: async () => run.steering.shift() || "",
+    onTaskUpdate: async (items) => {
+      run.tasks = items;
+      await emit(run, "task_update", { items });
+    },
+    onDelegate: async ({ role, task }) => runSubAgent(run, { role, task }),
   });
+}
+
+async function runSubAgent(parent, { role, task }) {
+  if (!task) return { ok: false, error: "Sub-agent task is required" };
+  const id = randomUUID();
+  const sub = { id, role, task, status: "running", events: [], seq: 0 };
+  parent.subAgents.set(id, sub);
+  await emit(parent, "subagent_start", { id, role, task });
+  let finalText = "";
+  try {
+    const result = await runAgentLoop({
+      model: parent.request.model,
+      messages: [{ role: "user", content: task }],
+      systemPrompt: `You are a ${role}. Complete only the delegated task. Do not modify files. Return concise evidence.`,
+      apiKey: parent.request.apiKey,
+      workspace: parent.workspace,
+      accessMode: "sandbox",
+      maxSteps: Math.min(parent.request.maxSteps, 6),
+      signal: parent.abortController.signal,
+      depth: 1,
+      onEvent: async (type, data) => {
+        const event = { seq: ++sub.seq, type, data, createdAt: new Date().toISOString() };
+        sub.events.push(event);
+        await emit(parent, "subagent_event", { id, event });
+        if (type === "text") finalText = data.content || finalText;
+      },
+    });
+    finalText = result.finalText || finalText;
+    sub.status = "completed";
+    await emit(parent, "subagent_done", { id, role, task, finalText });
+    return { ok: true, id, role, result: finalText };
+  } catch (error) {
+    sub.status = "failed";
+    await emit(parent, "subagent_done", { id, role, task, error: error?.message || String(error) });
+    return { ok: false, id, role, error: error?.message || String(error) };
+  }
 }
 
 async function execute(run) {
@@ -301,11 +371,14 @@ export async function startServerChatRun(input) {
   const request = sanitizeRequest(input);
   if (!input.sessionId || !request.model || request.messages.length === 0) throw new Error("sessionId, model, and messages are required");
   const id = randomUUID();
+  const session = await getChatSession(input.sessionId, { includeMessages: false });
+  if (!session) throw new Error("Session not found");
+  const workspace = session.workspacePath ? resolveProjectWorkspace(session.workspacePath) : process.cwd();
   const assistantId = input.assistantId || randomUUID();
   const messages = Array.isArray(input.persistedMessages)
     ? input.persistedMessages
     : [...request.messages, { id: assistantId, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }];
-  const run = { id, sessionId: input.sessionId, mode: input.mode === "agent" ? "agent" : "plain", providerId: input.providerId || "", request, assistantId, messages, assistantText: "", tokenUsage: null, titleSeed: input.titleSeed || "", abortController: new AbortController(), listeners: new Set(), events: [], seq: 0, lastCheckpointAt: 0 };
+  const run = { id, sessionId: input.sessionId, mode: input.mode === "agent" ? "agent" : "plain", providerId: input.providerId || "", request, assistantId, messages, assistantText: "", reasoning: "", tokenUsage: null, titleSeed: input.titleSeed || "", workspace, steering: [], tasks: [], subAgents: new Map(), abortController: new AbortController(), listeners: new Set(), events: [], seq: 0, lastCheckpointAt: 0 };
   await createChatRun({ id, sessionId: run.sessionId, mode: run.mode, request: { ...request, apiKey: "" } });
   liveRuns.set(id, run);
   void execute(run);
@@ -328,6 +401,16 @@ export async function stopServerChatRun(id) {
   }
   const record = await getChatRunRecord(id);
   return record ? { id, stopping: false, status: record.status } : null;
+}
+
+export async function steerServerChatRun(id, instruction) {
+  const run = liveRuns.get(id);
+  const value = String(instruction || "").trim();
+  if (!run || run.abortController.signal.aborted) return null;
+  if (!value) throw new Error("Steering instruction is required");
+  run.steering.push(value.slice(0, 4000));
+  await emit(run, "notice", { message: `Steering queued: ${value.slice(0, 180)}` });
+  return { id, queued: true };
 }
 
 export function subscribeServerChatRun(id, listener, after = 0) {

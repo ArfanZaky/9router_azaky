@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -173,6 +173,8 @@ export const TABLES = {
       systemPrompt: "TEXT",
       params: "TEXT",
       pinned: "INTEGER DEFAULT 0",
+      workspacePath: "TEXT",
+      projectMeta: "TEXT",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
@@ -194,6 +196,8 @@ export const TABLES = {
       toolCallId: "TEXT",
       toolName: "TEXT",
       toolCalls: "TEXT",
+      reasoning: "TEXT",
+      segments: "TEXT",
       createdAt: "TEXT NOT NULL",
     },
     indexes: [
@@ -231,6 +235,37 @@ export const TABLES = {
     },
     primaryKey: "PRIMARY KEY (runId, seq)",
     indexes: ["CREATE INDEX IF NOT EXISTS idx_cre_run_seq ON chatRunEvents(runId, seq)"],
+  },
+  chatSubAgents: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      runId: "TEXT NOT NULL",
+      sessionId: "TEXT NOT NULL",
+      role: "TEXT",
+      task: "TEXT NOT NULL",
+      status: "TEXT NOT NULL",
+      result: "TEXT",
+      error: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      startedAt: "TEXT",
+      finishedAt: "TEXT",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_csa_run ON chatSubAgents(runId, createdAt)",
+      "CREATE INDEX IF NOT EXISTS idx_csa_session ON chatSubAgents(sessionId, createdAt DESC)",
+    ],
+  },
+  chatSubAgentEvents: {
+    columns: {
+      subAgentId: "TEXT NOT NULL",
+      seq: "INTEGER NOT NULL",
+      type: "TEXT NOT NULL",
+      data: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+    },
+    primaryKey: "PRIMARY KEY (subAgentId, seq)",
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_csae_agent_seq ON chatSubAgentEvents(subAgentId, seq)"],
   },
   imageJobs: {
     columns: {

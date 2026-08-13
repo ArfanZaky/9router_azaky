@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button, ModelSelectModal } from "@/shared/components";
+import ChatMarkdown from "./ChatMarkdown";
+import ChatToolCard from "./ChatToolCard";
+import SlashCommandPalette, { CHAT_COMMANDS, commandMatches } from "./SlashCommandPalette";
 import {
   abortChatRun,
   buildStopSummary,
@@ -16,12 +19,42 @@ import {
   subscribeChatRun,
 } from "@/lib/chat/chatRunRuntime";
 
-const SYSTEM_PRESETS = [
-  { id: "none", label: "None", value: "" },
-  { id: "coding", label: "Coding", value: "You are an expert software engineer. Be concise, correct, and prefer working code." },
-  { id: "translate", label: "Translate", value: "You are a professional translator. Preserve meaning and tone. Default to clear natural language." },
-  { id: "summarize", label: "Summarize", value: "Summarize clearly with key points and short bullets when useful." },
-  { id: "custom", label: "Custom", value: null },
+const AGENT_ROLES = [
+  {
+    id: "orchestrator",
+    label: "Orchestrator",
+    icon: "hub",
+    description: "Plan, delegate, coordinate",
+    prompt: "Act as the lead orchestrator. For multi-step work, publish a todo_update checklist, delegate focused read-only research or review with delegate_task, integrate the results, execute the remaining work, verify it, then report one coherent outcome. Do not delegate trivial work.",
+  },
+  {
+    id: "coder",
+    label: "Coder",
+    icon: "code",
+    description: "Implement and verify",
+    prompt: "Act as a senior implementation agent. Inspect the code first, make the smallest correct changes, run relevant verification, then summarize changed files and evidence.",
+  },
+  {
+    id: "researcher",
+    label: "Researcher",
+    icon: "travel_explore",
+    description: "Investigate with evidence",
+    prompt: "Act as an evidence-first researcher. Prefer read-only tools and web research. Cite concrete files, symbols, URLs, and uncertainties. Do not modify files unless explicitly requested.",
+  },
+  {
+    id: "reviewer",
+    label: "Reviewer",
+    icon: "fact_check",
+    description: "Find bugs and risks",
+    prompt: "Act as a strict code reviewer. Prioritize correctness bugs, security risks, regressions, race conditions, and missing tests. Lead with findings and file references. Do not modify files unless explicitly requested.",
+  },
+  {
+    id: "planner",
+    label: "Planner",
+    icon: "account_tree",
+    description: "Design execution steps",
+    prompt: "Act as a technical planner. Inspect current architecture, identify dependencies and risks, then produce an actionable phased plan with acceptance criteria. Do not modify files.",
+  },
 ];
 
 const DEFAULT_PARAMS = {
@@ -143,7 +176,14 @@ export default function ChatPageClient() {
   const [error, setError] = useState("");
   const [renameId, setRenameId] = useState("");
   const [renameValue, setRenameValue] = useState("");
-  const [agentMode, setAgentMode] = useState(true);
+  const [agentRole, setAgentRole] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem("chat.agentRole") || "orchestrator";
+    } catch {
+      return "orchestrator";
+    }
+  });
+  const [roleMenuOpen, setRoleMenuOpen] = useState(false);
   const [agentStatus, setAgentStatus] = useState("");
   /** full = bash+write; sandbox = read-only host + web/image */
   const [accessMode, setAccessMode] = useState(() => {
@@ -162,6 +202,12 @@ export default function ChatPageClient() {
     }
   });
   const [imagePreview, setImagePreview] = useState(null); // { src, name }
+  const [showReasoning, setShowReasoning] = useState(true);
+  const [tasks, setTasks] = useState([]);
+  const [subAgents, setSubAgents] = useState([]);
+  const [projectOpen, setProjectOpen] = useState(true);
+  const [projectInfo, setProjectInfo] = useState(null);
+  const [commandIndex, setCommandIndex] = useState(0);
 
   const abortRef = useRef(null);
   const mountedRef = useRef(true);
@@ -174,7 +220,17 @@ export default function ChatPageClient() {
   const reconnectTimerRef = useRef(null);
   const liveRunRef = useRef(null);
 
+  // Transport callbacks need the latest session without reconnecting on every selection.
+  // eslint-disable-next-line react-hooks/refs
   activeSessionIdRef.current = activeSessionId;
+
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem("chat.agentRole", agentRole);
+    } catch {
+      // ignore
+    }
+  }, [agentRole]);
 
   useEffect(() => {
     try {
@@ -202,8 +258,8 @@ export default function ChatPageClient() {
   }, [imagePreview]);
 
   const visibleMessages = useMemo(() => {
-    if (viewMode === "raw") return messages;
-    return messages.filter((m) => m.role !== "tool");
+    const embeddedTools = new Set(messages.flatMap((m) => (m.segments || []).filter((segment) => segment.type === "tool").map((segment) => segment.callId)));
+    return messages.filter((m) => m.role !== "tool" || (viewMode === "raw" && !embeddedTools.has(m.tool_call_id)));
   }, [messages, viewMode]);
 
   const activeSession = useMemo(
@@ -227,6 +283,7 @@ export default function ChatPageClient() {
     !!activeSession?.model &&
     !!apiKey &&
     (draft.trim().length > 0 || attachments.length > 0);
+  const commandOptions = useMemo(() => commandMatches(draft), [draft]);
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -309,6 +366,19 @@ export default function ChatPageClient() {
                     ? `Thinking (step ${data.step || "?"})…`
                     : data.phase || "Working…",
               });
+            } else if (event.type === "reasoning") {
+              const reasoning = data.content || "";
+              patchChatRun({
+                messages: (getChatRun()?.messages || []).map((m) => m.id === existing.assistantId
+                  ? { ...m, reasoning, segments: [...(m.segments || []).filter((s) => s.type !== "reasoning"), { type: "reasoning", content: reasoning }] }
+                  : m),
+              });
+            } else if (event.type === "task_update") {
+              setTasks(data.items || []);
+            } else if (event.type === "subagent_start") {
+              setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
+            } else if (event.type === "subagent_done") {
+              setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
             } else if (event.type === "tool_start" || event.type === "tool_result") {
               // Reload session messages on tool boundaries after remount.
               loadSessionDetail(existing.sessionId).catch(() => {});
@@ -329,6 +399,7 @@ export default function ChatPageClient() {
               });
               clearChatRun();
               liveRunRef.current = null;
+              // eslint-disable-next-line react-hooks/immutability
               stopRunTransport();
               if (mountedRef.current && activeSessionIdRef.current === existing.sessionId) {
                 setMessages(finalMessages);
@@ -340,6 +411,7 @@ export default function ChatPageClient() {
           },
         };
       }
+      // eslint-disable-next-line react-hooks/immutability
       connectRunSocket(existing.runId, 0);
     }
     return () => {
@@ -407,6 +479,7 @@ export default function ChatPageClient() {
     if (!activeSessionId) return;
     const run = getChatRun();
     if (run?.isSending && run.sessionId === activeSessionId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages(run.messages || []);
       setIsSending(true);
       setAgentStatus(run.agentStatus || "");
@@ -417,6 +490,18 @@ export default function ChatPageClient() {
     setAgentStatus("");
     loadSessionDetail(activeSessionId).catch((e) => setError(textValue(e.message)));
   }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const workspacePath = activeSession?.workspacePath;
+    if (!workspacePath) {
+      return;
+    }
+    fetch("/api/chat/projects/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: workspacePath }),
+    }).then((res) => res.json()).then(setProjectInfo).catch(() => setProjectInfo(null));
+  }, [activeSession?.workspacePath]);
 
   useEffect(() => {
     scrollToBottom();
@@ -465,6 +550,8 @@ export default function ChatPageClient() {
     setActiveSessionId(id);
     setDraft("");
     setAttachments([]);
+    setTasks([]);
+    setSubAgents([]);
     setError("");
   };
 
@@ -526,21 +613,6 @@ export default function ChatPageClient() {
     const next = { ...params, [key]: value };
     try {
       await patchSession(activeSessionId, { params: next });
-    } catch (e) {
-      setError(textValue(e.message));
-    }
-  };
-
-  const handleSystemPreset = async (presetId) => {
-    if (!activeSessionId) return;
-    const preset = SYSTEM_PRESETS.find((p) => p.id === presetId);
-    if (!preset) return;
-    if (preset.value === null) {
-      setParamsOpen(true);
-      return;
-    }
-    try {
-      await patchSession(activeSessionId, { systemPrompt: preset.value });
     } catch (e) {
       setError(textValue(e.message));
     }
@@ -723,7 +795,7 @@ export default function ChatPageClient() {
     return finalMessages;
   };
 
-  const sendMessage = async ({ regenerate = false } = {}) => {
+  const sendMessage = async ({ regenerate = false, sourceMessages = null } = {}) => {
     if (!activeSession?.model) {
       setError("Select a model first.");
       return;
@@ -744,7 +816,7 @@ export default function ChatPageClient() {
       providerId: activeSession.providerId,
     };
 
-    let workingMessages = [...messages];
+    let workingMessages = [...(sourceMessages || messages)];
     if (regenerate) {
       const lastUserIdx = [...workingMessages].map((m) => m.role).lastIndexOf("user");
       if (lastUserIdx < 0) return;
@@ -795,7 +867,7 @@ export default function ChatPageClient() {
       messages: workingMessages,
       assistantId,
       assistantText: "",
-      agentStatus: agentMode ? "Agent starting…" : "",
+      agentStatus: `${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} starting…`,
       titleSeed,
       sessionMeta,
     });
@@ -803,9 +875,6 @@ export default function ChatPageClient() {
     // Build request history. Agent loop sanitizes tool pairing again server-side.
     // Client-side: drop orphan tool rows early so plain chat path is clean too.
     const requestMessages = [];
-    if (!agentMode && activeSession.systemPrompt?.trim()) {
-      requestMessages.push({ role: "system", content: activeSession.systemPrompt.trim() });
-    }
     const pending = [];
     for (const msg of workingMessages) {
       if (msg.id === assistantId) continue;
@@ -907,20 +976,23 @@ export default function ChatPageClient() {
     };
 
     try {
-      applyUiIfActive(sessionId, () => setAgentStatus(agentMode ? "Agent starting…" : "Sending…"));
+      applyUiIfActive(sessionId, () => setAgentStatus(`${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} starting…`));
       const response = await fetch("/api/chat/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId,
-          mode: agentMode ? "agent" : "plain",
+          mode: "agent",
           providerId: sessionMeta.providerId,
           assistantId,
           titleSeed,
           persistedMessages: workingMessages,
           model: activeSession.model,
           messages: requestMessages,
-          systemPrompt: activeSession.systemPrompt || "",
+          systemPrompt: [
+            AGENT_ROLES.find((role) => role.id === agentRole)?.prompt || "",
+            activeSession.systemPrompt || "",
+          ].filter(Boolean).join("\n\n"),
           apiKey,
           accessMode,
           params: {
@@ -939,7 +1011,7 @@ export default function ChatPageClient() {
         await fetch(`/api/chat/runs/${started.id}`, { method: "DELETE" }).catch(() => {});
         return;
       }
-      patchChatRun({ runId: started.id, agentStatus: agentMode ? "Agent running…" : "Streaming…" });
+      patchChatRun({ runId: started.id, agentStatus: `${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} running…` });
       let lastSeq = 0;
       liveRunRef.current = {
         runId: started.id,
@@ -953,9 +1025,25 @@ export default function ChatPageClient() {
             assistantText = data.content || assistantText;
             pushLive(
               liveMessages.map((m) =>
-                m.id === assistantId ? { ...m, content: assistantText, status: "streaming" } : m
+                m.id === assistantId ? (() => {
+                  const segments = [...(m.segments || [])];
+                  const last = segments.at(-1);
+                  if (last?.type === "text") last.content = assistantText;
+                  else segments.push({ type: "text", content: assistantText });
+                  return { ...m, content: assistantText, segments, status: "streaming" };
+                })() : m
               )
             );
+          } else if (event.type === "reasoning") {
+            const reasoning = data.content || "";
+            pushLive(liveMessages.map((m) => {
+              if (m.id !== assistantId) return m;
+              const segments = [...(m.segments || [])];
+              const last = segments.at(-1);
+              if (last?.type === "reasoning") last.content = reasoning;
+              else segments.push({ type: "reasoning", content: reasoning });
+              return { ...m, reasoning, segments };
+            }));
           } else if (event.type === "message" && data.role === "assistant") {
             assistantText = data.content || assistantText;
             pushLive(
@@ -979,6 +1067,9 @@ export default function ChatPageClient() {
                   : data.phase || "Working…";
             pushLive(liveMessages, st);
           } else if (event.type === "tool_start") {
+            pushLive(liveMessages.map((m) => m.id === assistantId
+              ? { ...m, segments: [...(m.segments || []), { type: "tool", callId: data.id, name: data.name, arguments: data.arguments, status: "running" }] }
+              : m));
             pushLive(
               [
                 ...liveMessages,
@@ -1013,6 +1104,17 @@ export default function ChatPageClient() {
                 : [...liveMessages, next],
               `Tool done: ${data.name}`
             );
+            pushLive(liveMessages.map((m) => m.id === assistantId
+              ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, content: data.content, status: "done" } : segment) }
+              : m));
+          } else if (event.type === "task_update") {
+            setTasks(data.items || []);
+          } else if (event.type === "subagent_start") {
+            setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
+          } else if (event.type === "subagent_done") {
+            setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
+          } else if (event.type === "notice") {
+            setAgentStatus(data.message || "Working…");
           } else if (event.type === "done") {
             finalizeServerEvent(data);
           } else if (event.type === "error") {
@@ -1043,9 +1145,28 @@ export default function ChatPageClient() {
   };
 
   const handleKeyDown = (event) => {
+    if (commandOptions.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setCommandIndex((value) => (value + 1) % commandOptions.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setCommandIndex((value) => (value - 1 + commandOptions.length) % commandOptions.length);
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const command = commandOptions[commandIndex];
+        setDraft(`/${command.name}${command.args ? " " : ""}`);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      if (canSend) sendMessage();
+      if (draft.trim().startsWith("/")) runCommand(draft);
+      else if (canSend) sendMessage();
     }
     if (event.key === "Escape" && isSending) handleStop();
   };
@@ -1068,6 +1189,79 @@ export default function ChatPageClient() {
       await navigator.clipboard.writeText(text);
     } catch {
       // ignore
+    }
+  };
+
+  const sessionAction = async (action, extra = {}) => {
+    if (!activeSessionId) return null;
+    const res = await fetch(`/api/chat/sessions/${activeSessionId}/actions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...extra }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Unable to ${action}`);
+    if (action === "fork") {
+      setSessions((prev) => [data, ...prev]);
+      setActiveSessionId(data.id);
+    }
+    setMessages(data.messages || []);
+    return data;
+  };
+
+  const handleEditMessage = async (message) => {
+    const nextText = globalThis.prompt?.("Edit message", textValue(message.content));
+    if (nextText == null || !nextText.trim() || nextText.trim() === textValue(message.content).trim()) return;
+    try {
+      const data = await sessionAction("edit", { messageId: message.id, content: nextText.trim() });
+      await sendMessage({ regenerate: true, sourceMessages: data.messages || [] });
+    } catch (e) {
+      setError(textValue(e.message));
+    }
+  };
+
+  const runCommand = async (line) => {
+    const [rawName, ...parts] = line.trim().slice(1).split(/\s+/);
+    const name = rawName.toLowerCase();
+    const value = parts.join(" ");
+    setDraft("");
+    try {
+      if (name === "help") {
+        setError(CHAT_COMMANDS.map((command) => `/${command.name}${command.args ? ` ${command.args}` : ""} — ${command.summary}`).join("\n"));
+      } else if (name === "new") await handleNewChat();
+      else if (name === "clear") await sessionAction("clear");
+      else if (name === "undo") await sessionAction("undo");
+      else if (name === "fork") await sessionAction("fork", { title: value });
+      else if (name === "rename") {
+        if (!value) throw new Error("Usage: /rename <title>");
+        await patchSession(activeSessionId, { title: value });
+      } else if (name === "model") setModelModalOpen(true);
+      else if (name === "agent") {
+        const role = AGENT_ROLES.find((item) => item.id === value.toLowerCase());
+        if (!role) throw new Error(`Usage: /agent ${AGENT_ROLES.map((item) => item.id).join("|")}`);
+        setAgentRole(role.id);
+      }
+      else if (name === "retry") sendMessage({ regenerate: true });
+      else if (name === "stop") handleStop();
+      else if (name === "export") handleExport(value === "json" ? "json" : "md");
+      else if (name === "steer") {
+        const runId = getChatRun()?.runId;
+        if (!runId || !value) throw new Error("Usage during an active run: /steer <instruction>");
+        const res = await fetch(`/api/chat/runs/${runId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction: value }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Unable to steer run");
+        setAgentStatus("Steering queued");
+      } else if (name === "project") {
+        if (!value) throw new Error("Usage: /project <absolute path>");
+        const inspect = await fetch("/api/chat/projects/inspect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: value }) });
+        const data = await inspect.json().catch(() => ({}));
+        if (!inspect.ok) throw new Error(data.error || "Unable to inspect project");
+        await patchSession(activeSessionId, { workspacePath: data.workspacePath, projectMeta: { name: data.name, packageName: data.packageName } });
+        setProjectInfo(data);
+        setProjectOpen(true);
+      } else throw new Error(`Unknown command: /${name}`);
+    } catch (e) {
+      setError(textValue(e.message));
     }
   };
 
@@ -1191,64 +1385,7 @@ export default function ChatPageClient() {
             </div>
           </button>
 
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {SYSTEM_PRESETS.filter((p) => p.id !== "custom").map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => handleSystemPreset(p.id)}
-                className={`rounded-full border px-2.5 py-1 text-[11px] ${
-                  (activeSession?.systemPrompt || "") === (p.value || "")
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border text-text-muted hover:bg-sidebar"
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-
           <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
-            <button
-              type="button"
-              onClick={() => setAgentMode((v) => !v)}
-              className={`rounded-full border px-3 py-1.5 text-[11px] font-medium ${
-                agentMode
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border text-text-muted hover:bg-sidebar"
-              }`}
-              title="Agent mode: host tools + skills"
-            >
-              {agentMode ? "Agent ON" : "Agent OFF"}
-            </button>
-            {agentMode ? (
-              <div className="flex rounded-full border border-border overflow-hidden text-[11px]">
-                <button
-                  type="button"
-                  onClick={() => setAccessMode("sandbox")}
-                  className={`px-2.5 py-1.5 ${
-                    accessMode === "sandbox"
-                      ? "bg-primary/15 text-primary font-medium"
-                      : "text-text-muted hover:bg-sidebar"
-                  }`}
-                  title="Sandbox: read/list/grep + web + image (no bash/write)"
-                >
-                  Sandbox
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAccessMode("full")}
-                  className={`px-2.5 py-1.5 border-l border-border ${
-                    accessMode === "full"
-                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 font-medium"
-                      : "text-text-muted hover:bg-sidebar"
-                  }`}
-                  title="Full: bash + write_file + all sandbox tools"
-                >
-                  Full
-                </button>
-              </div>
-            ) : null}
             <div className="flex rounded-full border border-border overflow-hidden text-[11px]">
               <button
                 type="button"
@@ -1278,6 +1415,14 @@ export default function ChatPageClient() {
             <Button variant="ghost" size="sm" icon="tune" onClick={() => setParamsOpen((v) => !v)}>
               Params
             </Button>
+            <Button variant="ghost" size="sm" icon="psychology" onClick={() => setShowReasoning((value) => !value)}>
+              {showReasoning ? "Reasoning" : "Hidden"}
+            </Button>
+            {activeSession?.workspacePath ? (
+              <Button variant="ghost" size="sm" icon="folder_open" onClick={() => setProjectOpen((value) => !value)}>
+                Project
+              </Button>
+            ) : null}
             <Button variant="ghost" size="sm" icon="download" onClick={() => handleExport("md")}>
               MD
             </Button>
@@ -1290,19 +1435,9 @@ export default function ChatPageClient() {
           </div>
         </header>
 
-        {agentMode ? (
-          <div className="shrink-0 border-b border-border bg-primary/5 px-4 py-1.5 text-[11px] text-text-muted flex flex-wrap items-center gap-2">
-            <span className="material-symbols-outlined text-[14px] text-primary">
-              {accessMode === "full" ? "admin_panel_settings" : "shield"}
-            </span>
-            <span>
-              {accessMode === "full"
-                ? "Full access: bash · write · read/list/grep · web · image"
-                : "Sandbox: read/list/grep · web · image (no bash/write)"}
-              {" · "}
-              view: {viewMode === "raw" ? "raw tools" : "chat only"}
-            </span>
-            {agentStatus ? <span className="ml-auto text-primary">{agentStatus}</span> : null}
+        {agentStatus ? (
+          <div className="shrink-0 border-b border-border bg-primary/5 px-4 py-1.5 text-[11px] text-primary">
+            {agentStatus}
           </div>
         ) : null}
 
@@ -1402,7 +1537,7 @@ export default function ChatPageClient() {
                 {[
                   "Explain this error and propose a fix",
                   "Write a unit test for this function",
-                  "Summarize the key risks of this design",
+                  "Review this design for hidden risks",
                 ].map((chip) => (
                   <button
                     key={chip}
@@ -1476,6 +1611,17 @@ export default function ChatPageClient() {
                           >
                             content_copy
                           </button>
+                          {isUser ? (
+                            <button
+                              type="button"
+                              className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
+                              onClick={() => handleEditMessage(message)}
+                              title="Edit and resend"
+                              disabled={isSending}
+                            >
+                              edit
+                            </button>
+                          ) : null}
                           {!isUser ? (
                             <button
                               type="button"
@@ -1516,8 +1662,18 @@ export default function ChatPageClient() {
                           ))}
                         </div>
                       ) : null}
-                      <div className="whitespace-pre-wrap break-words text-[14px] leading-6">
-                        {content}
+                      <div>
+                        {!isUser && message.segments?.length ? (
+                          <div className="space-y-3">
+                            {message.segments.map((segment, index) => segment.type === "reasoning" ? (
+                              showReasoning ? <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}><summary className="cursor-pointer text-[11px] font-medium text-text-muted">Reasoning</summary><div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">{segment.content}</div></details> : null
+                            ) : segment.type === "tool" ? (
+                              viewMode === "raw" ? <ChatToolCard key={segment.callId || index} segment={segment} /> : null
+                            ) : (
+                              <ChatMarkdown key={`${segment.type}-${index}`} content={segment.content} />
+                            ))}
+                          </div>
+                        ) : isUser ? <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div> : <ChatMarkdown content={content} />}
                         {(message.status === "streaming" || message.status === "tool_calls") &&
                         !content ? (
                           <span className="inline-block animate-pulse">▋</span>
@@ -1569,14 +1725,24 @@ export default function ChatPageClient() {
               ))}
             </div>
           ) : null}
+          {(tasks.length > 0 || subAgents.length > 0) ? (
+            <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-border bg-sidebar/35 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                {tasks.length > 0 ? <span className="font-medium">Tasks {tasks.filter((item) => item.status === "completed").length}/{tasks.length}</span> : null}
+                {tasks.map((item, index) => <span key={index} className={`rounded-full px-2 py-0.5 ${item.status === "completed" ? "bg-emerald-500/10 text-emerald-600" : item.status === "in_progress" ? "bg-primary/10 text-primary" : "bg-background text-text-muted"}`}>{item.content}</span>)}
+                {subAgents.map((agent) => <span key={agent.id} title={agent.task} className="rounded-full border border-border px-2 py-0.5"><span className={agent.status === "running" ? "text-primary" : agent.status === "failed" ? "text-red-500" : "text-emerald-500"}>●</span> {agent.role}</span>)}
+              </div>
+            </div>
+          ) : null}
           <div
             ref={composerRef}
-            className="mx-auto max-w-3xl rounded-2xl border border-border bg-sidebar/40 p-2"
+            className="relative mx-auto max-w-3xl rounded-2xl border border-border bg-sidebar/40 p-2 shadow-sm"
             onDragOver={(e) => {
               if (Array.from(e.dataTransfer?.types || []).includes("Files")) e.preventDefault();
             }}
             onDrop={handleComposerDrop}
           >
+            <SlashCommandPalette matches={commandOptions} selected={commandIndex} onPick={(command) => setDraft(`/${command.name}${command.args ? " " : ""}`)} />
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -1591,7 +1757,7 @@ export default function ChatPageClient() {
               className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none max-h-[25vh] custom-scrollbar"
             />
             <div className="flex items-center justify-between gap-2 px-1">
-              <div className="flex items-center gap-1">
+              <div className="flex min-w-0 items-center gap-1">
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -1608,9 +1774,61 @@ export default function ChatPageClient() {
                   className="hidden"
                   onChange={handleAttachFiles}
                 />
-                <span className="text-[10px] text-text-muted hidden sm:inline">
-                  paste · drop · attach
-                </span>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setRoleMenuOpen((value) => !value)}
+                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium text-text-muted hover:bg-sidebar hover:text-text-main"
+                    title="Choose agent role"
+                  >
+                    <span className="material-symbols-outlined text-[16px] text-primary">
+                      {AGENT_ROLES.find((role) => role.id === agentRole)?.icon || "hub"}
+                    </span>
+                    <span>{AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Orchestrator"}</span>
+                    <span className="material-symbols-outlined text-[14px]">expand_more</span>
+                  </button>
+                  {roleMenuOpen ? (
+                    <div className="absolute bottom-full left-0 z-30 mb-2 w-64 rounded-xl border border-border bg-background p-1 shadow-2xl">
+                      <p className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Agent role</p>
+                      {AGENT_ROLES.map((role) => (
+                        <button
+                          key={role.id}
+                          type="button"
+                          onClick={() => {
+                            setAgentRole(role.id);
+                            setRoleMenuOpen(false);
+                          }}
+                          className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left ${agentRole === role.id ? "bg-primary/10" : "hover:bg-sidebar"}`}
+                        >
+                          <span className="material-symbols-outlined mt-0.5 text-[17px] text-primary">{role.icon}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-xs font-medium">{role.label}</span>
+                            <span className="block text-[10px] text-text-muted">{role.description}</span>
+                          </span>
+                          {agentRole === role.id ? <span className="material-symbols-outlined text-[16px] text-primary">check</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAccessMode((value) => value === "full" ? "sandbox" : "full")}
+                  className={`hidden items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${accessMode === "full" ? "bg-amber-500/10 text-amber-700 dark:text-amber-300" : "text-text-muted hover:bg-sidebar"}`}
+                  title={accessMode === "full" ? "Full: bash and file writes enabled" : "Sandbox: read-only host tools"}
+                >
+                  <span className="material-symbols-outlined text-[15px]">{accessMode === "full" ? "admin_panel_settings" : "shield"}</span>
+                  {accessMode === "full" ? "Full" : "Sandbox"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowReasoning((value) => !value)}
+                  className={`hidden items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${showReasoning ? "text-primary" : "text-text-muted hover:bg-sidebar"}`}
+                  title="Show or hide reasoning"
+                >
+                  <span className="material-symbols-outlined text-[15px]">psychology</span>
+                  Reasoning
+                </button>
               </div>
               <div className="flex items-center gap-2">
                 {isSending ? (
@@ -1618,18 +1836,31 @@ export default function ChatPageClient() {
                     Stop
                   </Button>
                 ) : null}
-                <Button size="sm" icon="send" onClick={() => sendMessage()} disabled={!canSend}>
+                <Button size="sm" icon="send" onClick={() => draft.trim().startsWith("/") ? runCommand(draft) : sendMessage()} disabled={!draft.trim().startsWith("/") && !canSend}>
                   Send
                 </Button>
               </div>
             </div>
           </div>
           <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-text-muted">
-            Enter send · Shift+Enter newline · Esc stop · paste images ·{" "}
-            {agentMode ? `${accessMode} access · ${viewMode === "raw" ? "raw" : "chat"} view` : "plain chat"}
+            Enter send · Shift+Enter newline · Esc stop · / for commands · {AGENT_ROLES.find((role) => role.id === agentRole)?.label} · {accessMode} access
           </p>
         </div>
       </section>
+
+      {projectOpen && activeSession?.workspacePath ? (
+        <aside className="hidden xl:flex w-80 shrink-0 flex-col border-l border-border bg-sidebar/25">
+          <div className="border-b border-border px-4 py-3">
+            <div className="flex items-center gap-2"><span className="material-symbols-outlined text-[18px] text-primary">folder_open</span><p className="truncate text-sm font-semibold">{projectInfo?.name || activeSession.projectMeta?.name || "Project"}</p></div>
+            <p className="mt-1 truncate font-mono text-[10px] text-text-muted" title={activeSession.workspacePath}>{activeSession.workspacePath}</p>
+          </div>
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-3">
+            {Object.keys(projectInfo?.scripts || {}).length ? <div className="mb-4"><p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Scripts</p>{Object.entries(projectInfo.scripts).map(([name, command]) => <button key={name} type="button" onClick={() => setDraft(`Run npm script ${name}: ${command}`)} className="mb-1 block w-full rounded-lg border border-border bg-background px-2 py-1.5 text-left"><span className="font-mono text-[11px] text-primary">{name}</span><span className="ml-2 truncate font-mono text-[10px] text-text-muted">{command}</span></button>)}</div> : null}
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Files</p>
+            <div className="space-y-0.5">{(projectInfo?.files || []).map((file) => <div key={file.path} className="flex items-center gap-1.5 rounded px-1.5 py-1 text-[11px] hover:bg-sidebar"><span className="material-symbols-outlined text-[14px] text-text-muted">{file.type === "directory" ? "folder" : "description"}</span><span className="truncate font-mono">{file.path}</span></div>)}</div>
+          </div>
+        </aside>
+      ) : null}
 
       <ModelSelectModal
         isOpen={modelModalOpen}

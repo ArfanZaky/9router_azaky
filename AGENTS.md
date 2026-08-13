@@ -36,6 +36,7 @@
 | Add translator | `open-sse/translator/request/` or `response/` | Register in `translator/index.js` |
 | Add executor | `open-sse/executors/` | One file per provider protocol |
 | Dashboard page | `src/app/(dashboard)/dashboard/{name}/` | Next.js App Router conventions |
+| Freebuff provider | `open-sse/providers/registry/freebuff.js` | Device flow + Google SSO (see `src/lib/oauth/services/freebuff.js`) |
 | API route | `src/app/api/` | Next.js route handlers |
 | OAuth/automation | `src/lib/oauth/services/` | Bulk import managers |
 | Database schema | `src/lib/db/repos/` | SQLite via better-sqlite3 or sql.js |

@@ -523,6 +523,59 @@ describe("Qoder flattened response tool recovery", () => {
     expect(output).not.toContain('"tool_calls"');
     expect(output).toContain("data: [DONE]");
   });
+
+  // Regression: qoder emits the flattened tool block AND finish_reason:"stop"
+  // together in one final chunk. The old finish-first ordering forwarded the
+  // raw "[assistant requested tools]" text as content, so opencode treated the
+  // tool request as the final answer and stopped (user-reported "suka putus",
+  // "assistant requested tools" leaking into the answer).
+  it("recovers flattened tool calls bundled with finish_reason stop in a single chunk", async () => {
+    const args = { path: "F:\\project\\php\\konimex\\stock\\app\\Models\\Product.php" };
+    const content = `[assistant requested tools]\nread_file(${JSON.stringify(args)})`;
+    const source = `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    const response = recoverQoderToolCallStream(
+      new Response(source, { headers: { "Content-Type": "text/event-stream" } }),
+      "qoder/qmodel_latest",
+      [{ type: "function", function: { name: "read_file" } }],
+    );
+    const output = await response.text();
+    const events = output
+      .split("\n\n")
+      .filter((l) => l.startsWith("data: ") && !l.includes("[DONE]"))
+      .map((l) => JSON.parse(l.slice("data: ".length)));
+    const toolChunk = events.find((e) => e.choices?.[0]?.delta?.tool_calls);
+    expect(toolChunk).toBeDefined();
+    expect(toolChunk.choices[0].delta.tool_calls[0].function.name).toBe("read_file");
+    expect(JSON.parse(toolChunk.choices[0].delta.tool_calls[0].function.arguments)).toEqual(args);
+    expect(output).toContain('"finish_reason":"tool_calls"');
+    expect(output).not.toContain("[assistant requested tools]");
+    // Exactly one non-null terminal signal reaches the client (the tool_calls
+    // chunk also carries "finish_reason":null, which is harmless).
+    expect((output.match(/"finish_reason":"tool_calls"/g) || []).length).toBe(1);
+    expect(output).not.toContain('"finish_reason":"stop"');
+    expect((output.match(/data: \[DONE\]/g) || []).length).toBe(1);
+  });
+
+  // Regression: marker text split across multiple deltas with the terminal
+  // finish_reason arriving later — recovery must still work and the terminal
+  // must not be dropped.
+  it("recovers flattened tool calls across multiple deltas before finish_reason", async () => {
+    const source = [
+      { choices: [{ delta: { content: "assistant requested tools\n" }, finish_reason: null }] },
+      { choices: [{ delta: { content: 'edit({"filePath":"a.js","oldString":"x","newString":"y"})\n' }, finish_reason: null }] },
+      { choices: [{ delta: { content: "" }, finish_reason: "stop" }] },
+    ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n";
+    const response = recoverQoderToolCallStream(
+      new Response(source, { headers: { "Content-Type": "text/event-stream" } }),
+      "qoder/qmodel_latest",
+      [{ type: "function", function: { name: "edit" } }],
+    );
+    const output = await response.text();
+    expect(output).toContain('"name":"edit"');
+    expect(output).toContain('"finish_reason":"tool_calls"');
+    expect(output).not.toContain("assistant requested tools");
+    expect((output.match(/data: \[DONE\]/g) || []).length).toBe(1);
+  });
 });
 
 describe("Qoder transport", () => {

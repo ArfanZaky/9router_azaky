@@ -12,6 +12,8 @@ function rowToSession(row) {
     systemPrompt: row.systemPrompt || "",
     params: parseJson(row.params, {}),
     pinned: row.pinned === 1,
+    workspacePath: row.workspacePath || "",
+    projectMeta: parseJson(row.projectMeta, {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -31,6 +33,8 @@ function rowToMessage(row) {
     tool_call_id: row.toolCallId || null,
     name: row.toolName || null,
     tool_calls: parseJson(row.toolCalls, null),
+    reasoning: row.reasoning || "",
+    segments: parseJson(row.segments, []),
     createdAt: row.createdAt,
   };
 }
@@ -48,6 +52,8 @@ function messageInsertParams(message) {
     message.tool_call_id || message.toolCallId || null,
     message.name || message.toolName || null,
     message.tool_calls ? stringifyJson(message.tool_calls) : null,
+    message.reasoning || null,
+    stringifyJson(message.segments || []),
     message.createdAt,
   ];
 }
@@ -103,12 +109,14 @@ export async function createChatSession(data = {}) {
     systemPrompt: data.systemPrompt || "",
     params: data.params || {},
     pinned: !!data.pinned,
+    workspacePath: data.workspacePath || "",
+    projectMeta: data.projectMeta || {},
     createdAt: now,
     updatedAt: now,
   };
   db.run(
-    `INSERT INTO chatSessions(id, title, model, providerId, systemPrompt, params, pinned, createdAt, updatedAt)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO chatSessions(id, title, model, providerId, systemPrompt, params, pinned, workspacePath, projectMeta, createdAt, updatedAt)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       session.id,
       session.title,
@@ -117,6 +125,8 @@ export async function createChatSession(data = {}) {
       session.systemPrompt,
       stringifyJson(session.params),
       session.pinned ? 1 : 0,
+      session.workspacePath,
+      stringifyJson(session.projectMeta),
       session.createdAt,
       session.updatedAt,
     ]
@@ -136,10 +146,12 @@ export async function updateChatSession(id, data = {}) {
       ...data,
       params: data.params !== undefined ? data.params : prev.params,
       pinned: data.pinned !== undefined ? !!data.pinned : prev.pinned,
+      workspacePath: data.workspacePath !== undefined ? data.workspacePath : prev.workspacePath,
+      projectMeta: data.projectMeta !== undefined ? data.projectMeta : prev.projectMeta,
       updatedAt: new Date().toISOString(),
     };
     db.run(
-      `UPDATE chatSessions SET title = ?, model = ?, providerId = ?, systemPrompt = ?, params = ?, pinned = ?, updatedAt = ? WHERE id = ?`,
+      `UPDATE chatSessions SET title = ?, model = ?, providerId = ?, systemPrompt = ?, params = ?, pinned = ?, workspacePath = ?, projectMeta = ?, updatedAt = ? WHERE id = ?`,
       [
         merged.title,
         merged.model,
@@ -147,6 +159,8 @@ export async function updateChatSession(id, data = {}) {
         merged.systemPrompt,
         stringifyJson(merged.params || {}),
         merged.pinned ? 1 : 0,
+        merged.workspacePath || "",
+        stringifyJson(merged.projectMeta || {}),
         merged.updatedAt,
         id,
       ]
@@ -195,12 +209,14 @@ export async function createChatMessage(sessionId, data = {}) {
     tool_call_id: data.tool_call_id || data.toolCallId || null,
     name: data.name || data.toolName || null,
     tool_calls: data.tool_calls || data.toolCalls || null,
+    reasoning: data.reasoning || "",
+    segments: data.segments || [],
     createdAt: data.createdAt || now,
   };
   db.transaction(() => {
     db.run(
-      `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, createdAt)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, reasoning, segments, createdAt)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       messageInsertParams(message)
     );
     db.run(`UPDATE chatSessions SET updatedAt = ? WHERE id = ?`, [now, sessionId]);
@@ -232,11 +248,13 @@ export async function updateChatMessage(id, data = {}) {
         data.tool_calls !== undefined || data.toolCalls !== undefined
           ? data.tool_calls || data.toolCalls || null
           : prev.tool_calls,
+      reasoning: data.reasoning !== undefined ? data.reasoning : prev.reasoning,
+      segments: data.segments !== undefined ? data.segments : prev.segments,
     };
     const content =
       typeof merged.content === "string" ? merged.content : stringifyJson(merged.content);
     db.run(
-      `UPDATE chatMessages SET role = ?, content = ?, attachments = ?, status = ?, error = ?, tokenUsage = ?, toolCallId = ?, toolName = ?, toolCalls = ? WHERE id = ?`,
+      `UPDATE chatMessages SET role = ?, content = ?, attachments = ?, status = ?, error = ?, tokenUsage = ?, toolCallId = ?, toolName = ?, toolCalls = ?, reasoning = ?, segments = ? WHERE id = ?`,
       [
         merged.role,
         content,
@@ -247,6 +265,8 @@ export async function updateChatMessage(id, data = {}) {
         merged.tool_call_id || null,
         merged.name || null,
         merged.tool_calls ? stringifyJson(merged.tool_calls) : null,
+        merged.reasoning || null,
+        stringifyJson(merged.segments || []),
         id,
       ]
     );
@@ -295,11 +315,13 @@ export async function replaceChatMessages(sessionId, messages = []) {
         tool_call_id: data.tool_call_id || data.toolCallId || null,
         name: data.name || data.toolName || null,
         tool_calls: data.tool_calls || data.toolCalls || null,
+        reasoning: data.reasoning || "",
+        segments: data.segments || [],
         createdAt: data.createdAt || now,
       };
       db.run(
-        `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, createdAt)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, reasoning, segments, createdAt)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         messageInsertParams(message)
       );
       saved.push(message);
@@ -307,4 +329,68 @@ export async function replaceChatMessages(sessionId, messages = []) {
     db.run(`UPDATE chatSessions SET updatedAt = ? WHERE id = ?`, [now, sessionId]);
   });
   return saved;
+}
+
+function cloneMessage(message, sessionId) {
+  return {
+    ...message,
+    id: uuidv4(),
+    sessionId,
+    tool_call_id: null,
+    tool_calls: null,
+  };
+}
+
+export async function clearChatSession(id) {
+  const db = await getAdapter();
+  const session = db.get(`SELECT id FROM chatSessions WHERE id = ?`, [id]);
+  if (!session) return null;
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    db.run(`DELETE FROM chatMessages WHERE sessionId = ?`, [id]);
+    db.run(`UPDATE chatSessions SET updatedAt = ? WHERE id = ?`, [now, id]);
+  });
+  return getChatSession(id);
+}
+
+export async function undoChatExchange(id) {
+  const session = await getChatSession(id);
+  if (!session) return null;
+  let cut = session.messages.length;
+  for (let i = session.messages.length - 1; i >= 0; i--) {
+    if (session.messages[i].role === "user") {
+      cut = i;
+      break;
+    }
+  }
+  return { ...(await getChatSession(id, { includeMessages: false })), messages: await replaceChatMessages(id, session.messages.slice(0, cut)) };
+}
+
+export async function editChatFromMessage(id, messageId, content) {
+  const session = await getChatSession(id);
+  if (!session) return null;
+  const index = session.messages.findIndex((message) => message.id === messageId);
+  if (index < 0 || session.messages[index].role !== "user") return false;
+  const messages = session.messages.slice(0, index + 1);
+  messages[index] = { ...messages[index], content: String(content || "").trim() };
+  return { ...(await getChatSession(id, { includeMessages: false })), messages: await replaceChatMessages(id, messages) };
+}
+
+export async function forkChatSession(id, { messageId = "", title = "" } = {}) {
+  const source = await getChatSession(id);
+  if (!source) return null;
+  let messages = source.messages;
+  if (messageId) {
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return false;
+    messages = messages.slice(0, index + 1);
+  }
+  const fork = await createChatSession({
+    ...source,
+    id: undefined,
+    title: title.trim() || `${source.title} (fork)`,
+    pinned: false,
+  });
+  const cloned = messages.map((message) => cloneMessage(message, fork.id));
+  return { ...fork, messages: await replaceChatMessages(fork.id, cloned) };
 }

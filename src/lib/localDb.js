@@ -20,7 +20,9 @@ export {
   exportDb, importDb,
   listChatSessions, getChatSession, createChatSession, updateChatSession, deleteChatSession,
    listChatMessages, createChatMessage, updateChatMessage, deleteChatMessage, replaceChatMessages,
-   createChatRun, getChatRunRecord, updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
+   clearChatSession, undoChatExchange, editChatFromMessage, forkChatSession,
+   createChatRun, getChatRunRecord, getActiveChatRunForSession,
+   updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
   getImageAsset, addImageAssets,
 } from "./db/index.js";
