@@ -241,7 +241,9 @@ export async function runAgentLoop({
 
   let lastError = "";
   const limit = maxSteps > 0 ? maxSteps : Infinity;
+  let lastStep = 0;
   for (let step = 0; step < limit; step++) {
+    lastStep = step + 1;
     if (signal?.aborted) {
       break;
     }
@@ -481,14 +483,14 @@ export async function runAgentLoop({
       const summary = extractMessageText(data?.choices?.[0]?.message);
       if (summary) {
         finalText = summary;
-        const nextStep = (limit === Infinity ? step : limit) + 1;
+        const nextStep = (limit === Infinity ? lastStep : limit) + 1;
         transcript.push({ role: "assistant", content: summary, tool_calls: null, step: nextStep });
         await emit("text", { step: nextStep, content: summary });
         await emit("message", { role: "assistant", content: summary, tool_calls: null, step: nextStep });
       }
     } catch (error) {
       finalText = `${finalText ? `${finalText}\n\n` : ""}(Agent response was cut off; final summary failed: ${error.message || String(error)})`;
-      await emit("text", { step: step + 1, content: finalText });
+      await emit("text", { step: lastStep + 1, content: finalText });
     }
   }
 
