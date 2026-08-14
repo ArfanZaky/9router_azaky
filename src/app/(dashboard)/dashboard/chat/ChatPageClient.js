@@ -445,9 +445,9 @@ export default function ChatPageClient() {
   const transcriptScrollRef = useRef(null);
   const listRef = useRef(null);
   const composerRef = useRef(null);
-  const websocketRef = useRef(null);
-  const reconnectTimerRef = useRef(null);
-  const liveRunRef = useRef(null);
+  const websocketRef = useRef(new Map()); // runId → WebSocket
+  const reconnectTimerRef = useRef(new Map()); // runId → timer
+  const liveRunRef = useRef(new Map()); // runId → live run context
 
   // Transport callbacks need the latest session without reconnecting on every selection.
   // eslint-disable-next-line react-hooks/refs
@@ -612,9 +612,9 @@ export default function ChatPageClient() {
     const existing = getChatRun();
     if (existing?.isSending && existing.runId) {
       const existingSessionId = existing.sessionId;
-      if (!liveRunRef.current || liveRunRef.current.runId !== existing.runId) {
+      if (!liveRunRef.current.get(existing.runId)) {
         let lastSeq = 0;
-        liveRunRef.current = {
+        const liveCtx = {
           runId: existing.runId,
           lastSeq: () => lastSeq,
           isActive: () => !!getChatRun(existingSessionId)?.isSending,
@@ -672,7 +672,7 @@ export default function ChatPageClient() {
               setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
             } else if (event.type === "tool_start" || event.type === "tool_result") {
               // Reload session messages on tool boundaries after remount.
-              loadSessionDetail(existing.sessionId).catch(() => {});
+              loadSessionDetail(existingSessionId).catch(() => {});
               patchChatRun(existingSessionId, {
                 agentStatus:
                   event.type === "tool_start"
@@ -695,11 +695,11 @@ export default function ChatPageClient() {
                 error: event.type === "error" ? data.message || "Chat failed" : "",
               });
               clearChatRun(existingSessionId);
-              liveRunRef.current = null;
+              // eslint-disable-next-line react-hooks/immutability
+              stopRunTransport(existing.runId);
+              liveRunRef.current.delete(existing.runId);
               setApprovals([]);
               setAsks([]);
-              // eslint-disable-next-line react-hooks/immutability
-              stopRunTransport();
               if (mountedRef.current && activeSessionIdRef.current === existing.sessionId) {
                 setMessages(finalMessages);
                 setIsSending(false);
@@ -709,9 +709,10 @@ export default function ChatPageClient() {
             }
           },
         };
+        liveRunRef.current.set(existing.runId, liveCtx);
       }
       // eslint-disable-next-line react-hooks/immutability
-      connectRunSocket(existing.runId, 0);
+      connectRunSocket(existing.runId, 0, liveRunRef.current.get(existing.runId));
     }
     return () => {
       mountedRef.current = false;
@@ -1116,29 +1117,34 @@ export default function ChatPageClient() {
     abortRef.current?.abort();
   };
 
-  const stopRunTransport = () => {
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-    if (websocketRef.current) {
-      try {
-        websocketRef.current.onclose = null;
-        websocketRef.current.onerror = null;
-        websocketRef.current.close();
-      } catch {
-        // ignore
+  const stopRunTransport = (runId) => {
+    if (runId) {
+      const timer = reconnectTimerRef.current.get(runId);
+      if (timer) { clearTimeout(timer); reconnectTimerRef.current.delete(runId); }
+      const socket = websocketRef.current.get(runId);
+      if (socket) {
+        try { socket.onclose = null; socket.onerror = null; socket.close(); } catch { /* ignore */ }
+        websocketRef.current.delete(runId);
       }
-      websocketRef.current = null;
+      return;
     }
+    // Stop all transports (full teardown).
+    for (const timer of reconnectTimerRef.current.values()) clearTimeout(timer);
+    reconnectTimerRef.current.clear();
+    for (const socket of websocketRef.current.values()) {
+      try { socket.onclose = null; socket.onerror = null; socket.close(); } catch { /* ignore */ }
+    }
+    websocketRef.current.clear();
   };
 
-  const connectRunSocket = (runId, after = 0) => {
+  const connectRunSocket = (runId, after = 0, ctx = null) => {
     if (!runId || typeof WebSocket === "undefined") return;
-    stopRunTransport();
+    // Do NOT close other runs' sockets — each active run keeps its own WS.
+    stopRunTransport(runId);
     const protocol = globalThis.location?.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${protocol}://${globalThis.location.host}/api/chat/ws`);
-    websocketRef.current = socket;
+    websocketRef.current.set(runId, socket);
+    const live = ctx || liveRunRef.current.get(runId);
     socket.onopen = () => {
       socket.send(JSON.stringify({ type: "subscribe", runId, after }));
     };
@@ -1150,19 +1156,20 @@ export default function ChatPageClient() {
         return;
       }
       if (payload.type === "snapshot" && payload.run?.events) {
-        for (const event of payload.run.events) liveRunRef.current?.applyEvent(event);
+        for (const event of payload.run.events) live?.applyEvent(event);
         return;
       }
       const event = payload.type === "event" ? payload.event : null;
-      if (!event || !liveRunRef.current || liveRunRef.current.runId !== runId) return;
-      liveRunRef.current.applyEvent(event);
+      if (!event || !live || live.runId !== runId) return;
+      live.applyEvent(event);
     };
     socket.onclose = () => {
-      if (liveRunRef.current?.runId === runId && liveRunRef.current.isActive()) {
-        reconnectTimerRef.current = setTimeout(
-          () => connectRunSocket(runId, liveRunRef.current?.lastSeq?.() || 0),
+      if (live && live.isActive()) {
+        const timer = setTimeout(
+          () => connectRunSocket(runId, live.lastSeq?.() || 0, live),
           1000
         );
+        reconnectTimerRef.current.set(runId, timer);
       }
     };
   };
@@ -1422,6 +1429,7 @@ export default function ChatPageClient() {
 
     let assistantText = "";
     let liveMessages = workingMessages;
+    let currentRunId = null;
 
     const pushLive = (next, statusText) => {
       liveMessages = next;
@@ -1451,10 +1459,10 @@ export default function ChatPageClient() {
         error: isError ? data.message || "Chat failed" : "",
       });
       clearChatRun(sessionId);
-      liveRunRef.current = null;
+      if (currentRunId) liveRunRef.current.delete(currentRunId);
       setApprovals([]);
       setAsks([]);
-      stopRunTransport();
+      stopRunTransport(currentRunId || undefined);
       if (mountedRef.current) {
         setSessions((prev) =>
           prev.map((s) =>
@@ -1511,8 +1519,9 @@ export default function ChatPageClient() {
         return;
       }
       patchChatRun(sessionId, { runId: started.id, agentStatus: `${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} running…` });
+      currentRunId = started.id;
       let lastSeq = 0;
-      liveRunRef.current = {
+      const liveCtx = {
         runId: started.id,
         lastSeq: () => lastSeq,
         isActive: () => !!getChatRun(sessionId)?.isSending,
@@ -1638,7 +1647,8 @@ export default function ChatPageClient() {
           }
         },
       };
-      connectRunSocket(started.id, 0);
+      liveRunRef.current.set(started.id, liveCtx);
+      connectRunSocket(started.id, 0, liveCtx);
     } catch (e) {
       const errText = textValue(e.message) || "Failed to send";
       await finalizeRun({
@@ -1651,8 +1661,8 @@ export default function ChatPageClient() {
         stopped: false,
         errorText: errText,
       });
-      liveRunRef.current = null;
-      stopRunTransport();
+      if (currentRunId) liveRunRef.current.delete(currentRunId);
+      stopRunTransport(currentRunId || undefined);
       applyUiIfActive(sessionId, () => {
         setIsSending(false);
         setAgentStatus("");
