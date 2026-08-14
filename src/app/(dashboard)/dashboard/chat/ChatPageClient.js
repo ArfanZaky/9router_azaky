@@ -203,17 +203,60 @@ export default function ChatPageClient() {
   });
   const [imagePreview, setImagePreview] = useState(null); // { src, name }
   const [showReasoning, setShowReasoning] = useState(true);
+  const [reasoningEffort, setReasoningEffort] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem("chat.reasoningEffort") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [effortMenuOpen, setEffortMenuOpen] = useState(false);
+  const [maxSteps, setMaxSteps] = useState(() => {
+    try {
+      const v = Number(globalThis.localStorage?.getItem("chat.maxSteps"));
+      return Number.isFinite(v) && v >= 0 && v <= 1000 ? v : 0;
+    } catch {
+      return 0;
+    }
+  });
   const [tasks, setTasks] = useState([]);
   const [subAgents, setSubAgents] = useState([]);
+  const [approvals, setApprovals] = useState([]);
+  const [asks, setAsks] = useState([]);
   const [projectOpen, setProjectOpen] = useState(true);
   const [projectInfo, setProjectInfo] = useState(null);
+  const [codebase, setCodebase] = useState("");
+  const [codebaseEdit, setCodebaseEdit] = useState(false);
+  const [codebaseValue, setCodebaseValue] = useState("");
+  const [sessionModalOpen, setSessionModalOpen] = useState(false);
+  const [sessionModalMode, setSessionModalMode] = useState("create"); // create | edit
+  const [sessionFormName, setSessionFormName] = useState("");
+  const [sessionFormUrl, setSessionFormUrl] = useState("");
+  const [sessionFormEditId, setSessionFormEditId] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
+  const [ctxUsed, setCtxUsed] = useState(0);
+  const [ctxWindow, setCtxWindow] = useState(0);
+  const [windowIndex, setWindowIndex] = useState(-1);
+  const [verifyMode, setVerifyMode] = useState(false);
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [inputHistory, setInputHistory] = useState(() => {
+    try {
+      const raw = globalThis.localStorage?.getItem("chat.inputHistory");
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string").slice(0, 50) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [historyPos, setHistoryPos] = useState(-1);
+  const draftRefForHistory = useRef("");
 
   const abortRef = useRef(null);
   const mountedRef = useRef(true);
   const activeSessionIdRef = useRef(activeSessionId);
   const fileInputRef = useRef(null);
   const bottomRef = useRef(null);
+  const transcriptScrollRef = useRef(null);
   const listRef = useRef(null);
   const composerRef = useRef(null);
   const websocketRef = useRef(null);
@@ -242,11 +285,27 @@ export default function ChatPageClient() {
 
   useEffect(() => {
     try {
+      globalThis.localStorage?.setItem("chat.maxSteps", String(maxSteps));
+    } catch {
+      // ignore
+    }
+  }, [maxSteps]);
+
+  useEffect(() => {
+    try {
       globalThis.localStorage?.setItem("chat.viewMode", viewMode);
     } catch {
       // ignore
     }
   }, [viewMode]);
+
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem("chat.reasoningEffort", reasoningEffort);
+    } catch {
+      // ignore
+    }
+  }, [reasoningEffort]);
 
   useEffect(() => {
     if (!imagePreview) return undefined;
@@ -261,6 +320,16 @@ export default function ChatPageClient() {
     const embeddedTools = new Set(messages.flatMap((m) => (m.segments || []).filter((segment) => segment.type === "tool").map((segment) => segment.callId)));
     return messages.filter((m) => m.role !== "tool" || (viewMode === "raw" && !embeddedTools.has(m.tool_call_id)));
   }, [messages, viewMode]);
+
+  // Windowing for very long transcripts: render a ±50 window around an anchor
+  // index. windowIndex stays -1 (render all) until the list passes 120 messages.
+  const WINDOW = 50;
+  const windowed = useMemo(() => {
+    if (visibleMessages.length <= 120 || windowIndex < 0) return { list: visibleMessages, start: 0, end: visibleMessages.length };
+    const start = Math.max(0, windowIndex - WINDOW);
+    const end = Math.min(visibleMessages.length, windowIndex + WINDOW + 1);
+    return { list: visibleMessages.slice(start, end), start, end };
+  }, [visibleMessages, windowIndex]);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) || null,
@@ -289,6 +358,26 @@ export default function ChatPageClient() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
+  const handleTranscriptScroll = useCallback((event) => {
+    const el = event.currentTarget;
+    if (visibleMessages.length <= 120) return;
+    const rect = el.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    const rows = Array.from(el.querySelectorAll("[data-chat-message-index]"));
+    let best = -1;
+    let bestDist = Infinity;
+    for (const row of rows) {
+      const index = Number(row.getAttribute("data-chat-message-index") || -1);
+      const r = row.getBoundingClientRect();
+      const dist = Math.abs(r.top + r.height / 2 - midY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = index;
+      }
+    }
+    if (best >= 0) setWindowIndex(best);
+  }, [visibleMessages.length]);
+
   const loadSessions = useCallback(async (preferId) => {
     const res = await fetch("/api/chat/sessions?limit=200");
     const data = await res.json().catch(() => ({}));
@@ -309,6 +398,8 @@ export default function ChatPageClient() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Failed to load session");
     setMessages(data.messages || []);
+    setTasks(Array.isArray(data.tasks) ? data.tasks : []);
+    if (data.codebase) setCodebase(data.codebase);
     setSessions((prev) =>
       prev.map((s) => (s.id === id ? { ...s, ...data, messages: undefined } : s))
     );
@@ -360,12 +451,14 @@ export default function ChatPageClient() {
                 ),
               });
             } else if (event.type === "status") {
-              patchChatRun({
-                agentStatus:
-                  data.phase === "thinking"
-                    ? `Thinking (step ${data.step || "?"})…`
-                    : data.phase || "Working…",
-              });
+              const roleLabel = AGENT_ROLES.find((r) => r.id === agentRole)?.label || "Agent";
+              const detail =
+                data.phase === "thinking"
+                  ? `thinking (step ${data.step || "?"})`
+                  : data.phase === "init"
+                    ? `workspace ${data.workspace || "…"}`
+                    : data.phase || "working";
+              patchChatRun({ agentStatus: `${roleLabel} ${detail}…` });
             } else if (event.type === "reasoning") {
               const reasoning = data.content || "";
               patchChatRun({
@@ -373,8 +466,18 @@ export default function ChatPageClient() {
                   ? { ...m, reasoning, segments: [...(m.segments || []).filter((s) => s.type !== "reasoning"), { type: "reasoning", content: reasoning }] }
                   : m),
               });
+            } else if (event.type === "usage") {
+              const used = Number(data.context_tokens || 0);
+              const win = Number(data.context_window || 0);
+              if (used > 0) setCtxUsed(used);
+              if (win > 0) setCtxWindow(win);
             } else if (event.type === "task_update") {
               setTasks(data.items || []);
+            } else if (event.type === "approval") {
+              setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+              setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
+            } else if (event.type === "ask") {              setAsks((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+              setAgentStatus("Waiting for your answer…");
             } else if (event.type === "subagent_start") {
               setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
             } else if (event.type === "subagent_done") {
@@ -388,6 +491,12 @@ export default function ChatPageClient() {
                     ? `Tool: ${data.name}…`
                     : `Tool done: ${data.name}`,
               });
+            } else if (event.type === "tool_progress") {
+              patchChatRun({
+                messages: (getChatRun()?.messages || []).map((m) => m.id === existing.assistantId
+                  ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, progress: (segment.progress || "") + (data.chunk || "") } : segment) }
+                  : m),
+              });
             } else if (event.type === "done" || event.type === "error") {
               const finalMessages = data.messages || getChatRun()?.messages || [];
               patchChatRun({
@@ -399,6 +508,8 @@ export default function ChatPageClient() {
               });
               clearChatRun();
               liveRunRef.current = null;
+              setApprovals([]);
+              setAsks([]);
               // eslint-disable-next-line react-hooks/immutability
               stopRunTransport();
               if (mountedRef.current && activeSessionIdRef.current === existing.sessionId) {
@@ -426,18 +537,22 @@ export default function ChatPageClient() {
     (async () => {
       try {
         setLoading(true);
-        const [keysRes, providersRes, aliasesRes] = await Promise.all([
+        const [keysRes, providersRes, aliasesRes, modelsRes] = await Promise.all([
           fetch("/api/keys"),
           fetch("/api/providers"),
           fetch("/api/models/alias").catch(() => null),
+          fetch("/api/models").catch(() => null),
         ]);
         const keysData = await keysRes.json().catch(() => ({}));
         const providersData = await providersRes.json().catch(() => ({}));
         const aliasesData = aliasesRes ? await aliasesRes.json().catch(() => ({})) : {};
+        const modelsData = modelsRes ? await modelsRes.json().catch(() => ({})) : {};
         if (cancelled) return;
         setApiKey((keysData.keys || []).find((k) => k.isActive !== false)?.key || "");
         setActiveProviders(providersData.connections || []);
         setModelAliases(aliasesData.aliases || {});
+        const ctxWin = Number(modelsData?.context_window || 0) || Number(modelsData?.models?.[0]?.context_window || 0);
+        if (ctxWin > 0) setCtxWindow(ctxWin);
         let list = await loadSessions();
         if (!cancelled && list.length === 0) {
           const res = await fetch("/api/chat/sessions", {
@@ -476,6 +591,20 @@ export default function ChatPageClient() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    // Fallback status pulse: keep the agent status visible even when a model
+    // call is silent for a while (non-stream reasoning, long tool runs).
+    const id = setInterval(() => {
+      const run = getChatRun();
+      if (run?.isSending && !agentStatus) {
+        const roleLabel = AGENT_ROLES.find((r) => r.id === agentRole)?.label || "Agent";
+        setAgentStatus(`${roleLabel} running…`);
+      }
+    }, 15_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     if (!activeSessionId) return;
     const run = getChatRun();
     if (run?.isSending && run.sessionId === activeSessionId) {
@@ -504,8 +633,13 @@ export default function ChatPageClient() {
   }, [activeSession?.workspacePath]);
 
   useEffect(() => {
+    // Keep the streaming tail in view; when windowed, anchor the window to the end.
+    if (visibleMessages.length > 120) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setWindowIndex(visibleMessages.length - 1);
+    }
     scrollToBottom();
-  }, [messages, isSending, scrollToBottom]);
+  }, [messages, isSending, scrollToBottom, visibleMessages.length]);
 
   const patchSession = async (id, patch) => {
     const res = await fetch(`/api/chat/sessions/${id}`, {
@@ -517,6 +651,59 @@ export default function ChatPageClient() {
     if (!res.ok) throw new Error(data.error || "Failed to update session");
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, ...data } : s)));
     return data;
+  };
+
+  const openCreateModal = () => {
+    setSessionModalMode("create");
+    setSessionFormName("");
+    setSessionFormUrl("");
+    setSessionFormEditId("");
+    setSessionModalOpen(true);
+  };
+
+  const openEditModal = (session) => {
+    setSessionModalMode("edit");
+    setSessionFormName(session.title || "");
+    setSessionFormUrl(session.codebase || "");
+    setSessionFormEditId(session.id);
+    setSessionModalOpen(true);
+  };
+
+  const saveSessionModal = async () => {
+    const name = sessionFormName.trim();
+    const url = sessionFormUrl.trim();
+    try {
+      if (sessionModalMode === "edit" && sessionFormEditId) {
+        await patchSession(sessionFormEditId, { title: name || "New chat", codebase: url });
+        setCodebase(url);
+        setSessions((prev) => prev.map((s) => s.id === sessionFormEditId ? { ...s, title: name || "New chat", codebase: url } : s));
+      } else {
+        const res = await fetch("/api/chat/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: name || "New chat",
+            model: activeSession?.model || "",
+            providerId: activeSession?.providerId || "",
+            systemPrompt: activeSession?.systemPrompt || "",
+            params: activeSession?.params || DEFAULT_PARAMS,
+            codebase: url,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Failed to create session");
+        setSessions((prev) => [data, ...prev]);
+        setActiveSessionId(data.id);
+        setCodebase(url);
+        setMessages([]);
+        setDraft("");
+        setAttachments([]);
+        setTasks([]);
+      }
+      setSessionModalOpen(false);
+    } catch (e) {
+      setError(textValue(e.message));
+    }
   };
 
   const handleNewChat = async () => {
@@ -531,6 +718,7 @@ export default function ChatPageClient() {
           providerId: activeSession?.providerId || "",
           systemPrompt: activeSession?.systemPrompt || "",
           params: activeSession?.params || DEFAULT_PARAMS,
+          codebase: codebase || "",
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -540,6 +728,7 @@ export default function ChatPageClient() {
       setMessages([]);
       setDraft("");
       setAttachments([]);
+      setTasks([]);
     } catch (e) {
       setError(textValue(e.message));
     }
@@ -633,10 +822,34 @@ export default function ChatPageClient() {
     setAttachments((prev) => [...prev, ...converted]);
   };
 
+  const addDocFiles = async (files) => {
+    const docs = Array.from(files || []).filter((f) => !f.type?.startsWith("image/"));
+    if (docs.length === 0) return;
+    for (const file of docs.slice(0, 8)) {
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        const res = await fetch("/api/chat/uploads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: file.name, data: dataUrl }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Upload failed");
+        setAttachments((prev) => [
+          ...prev,
+          { id: createId(), name: data.name || file.name, type: file.type || "application/octet-stream", size: file.size || 0, docPath: data.path },
+        ].slice(0, 8));
+      } catch (e) {
+        setError(textValue(e.message));
+      }
+    }
+  };
+
   const handleAttachFiles = async (event) => {
     const files = Array.from(event.target.files || []);
     event.target.value = "";
     await addImageFiles(files);
+    await addDocFiles(files);
   };
 
   const handleComposerPaste = async (event) => {
@@ -651,9 +864,11 @@ export default function ChatPageClient() {
   const handleComposerDrop = async (event) => {
     const files = Array.from(event.dataTransfer?.files || []);
     const images = files.filter((f) => f.type?.startsWith("image/"));
-    if (images.length === 0) return;
+    const others = files.filter((f) => !f.type?.startsWith("image/"));
+    if (images.length === 0 && others.length === 0) return;
     event.preventDefault();
     await addImageFiles(images);
+    await addDocFiles(others);
   };
 
   const persistMessages = async (sessionId, nextMessages) => {
@@ -791,6 +1006,8 @@ export default function ChatPageClient() {
       setAgentStatus("");
       if (errorText) setError(errorText);
     });
+    setApprovals([]);
+    setAsks([]);
 
     return finalMessages;
   };
@@ -824,15 +1041,22 @@ export default function ChatPageClient() {
     } else {
       const userText = draft.trim();
       if (!userText && attachments.length === 0) return;
+      const docList = attachments.filter((a) => a.docPath);
+      let content = userText;
+      if (docList.length > 0) {
+        const note = docList.map((d) => `- ${d.name} (path: ${d.docPath})`).join("\n");
+        content = content ? `${content}\n\nAttached file(s) — read each with the read_document tool before answering:\n${note}` : `Attached file(s) — read each with the read_document tool before answering:\n${note}`;
+      }
       const userMessage = {
         id: createId(),
         role: "user",
-        content: userText,
+        content,
         attachments: attachments.map((a) => ({
           id: a.id,
           name: a.name,
           type: a.type,
           dataUrl: a.dataUrl,
+          docPath: a.docPath,
         })),
         status: "done",
         createdAt: new Date().toISOString(),
@@ -840,6 +1064,19 @@ export default function ChatPageClient() {
       workingMessages = [...workingMessages, userMessage];
       setDraft("");
       setAttachments([]);
+      if (userText) {
+        setInputHistory((prev) => {
+          const next = prev[0] === userText ? prev : [userText, ...prev.filter((x) => x !== userText)].slice(0, 50);
+          try {
+            globalThis.localStorage?.setItem("chat.inputHistory", JSON.stringify(next));
+          } catch {
+            // ignore
+          }
+          return next;
+        });
+      }
+      setHistoryPos(-1);
+      draftRefForHistory.current = "";
     }
 
     const assistantId = createId();
@@ -959,6 +1196,8 @@ export default function ChatPageClient() {
       });
       clearChatRun();
       liveRunRef.current = null;
+      setApprovals([]);
+      setAsks([]);
       stopRunTransport();
       if (mountedRef.current) {
         setSessions((prev) =>
@@ -995,12 +1234,16 @@ export default function ChatPageClient() {
           ].filter(Boolean).join("\n\n"),
           apiKey,
           accessMode,
+          verify: verifyMode,
+          codebase: codebase || activeSession?.codebase || "",
+          autoApprove,
           params: {
             temperature: params.temperature,
             max_tokens: params.max_tokens,
             top_p: params.top_p,
+            ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
           },
-          maxSteps: 12,
+          maxSteps,
         }),
       });
       const started = await response.json().catch(() => ({}));
@@ -1059,13 +1302,14 @@ export default function ChatPageClient() {
               )
             );
           } else if (event.type === "status") {
-            const st =
+            const roleLabel = AGENT_ROLES.find((r) => r.id === agentRole)?.label || "Agent";
+            const detail =
               data.phase === "thinking"
-                ? `Thinking (step ${data.step || "?"})…`
+                ? `thinking (step ${data.step || "?"})`
                 : data.phase === "init"
-                  ? `Workspace: ${data.workspace || "…"}`
-                  : data.phase || "Working…";
-            pushLive(liveMessages, st);
+                  ? `workspace ${data.workspace || "…"}`
+                  : data.phase || "working";
+            pushLive(liveMessages, `${roleLabel} ${detail}…`);
           } else if (event.type === "tool_start") {
             pushLive(liveMessages.map((m) => m.id === assistantId
               ? { ...m, segments: [...(m.segments || []), { type: "tool", callId: data.id, name: data.name, arguments: data.arguments, status: "running" }] }
@@ -1107,12 +1351,27 @@ export default function ChatPageClient() {
             pushLive(liveMessages.map((m) => m.id === assistantId
               ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, content: data.content, status: "done" } : segment) }
               : m));
+          } else if (event.type === "usage") {
+            const used = Number(data.context_tokens || 0);
+            const win = Number(data.context_window || 0);
+            if (used > 0) setCtxUsed(used);
+            if (win > 0) setCtxWindow(win);
           } else if (event.type === "task_update") {
             setTasks(data.items || []);
+          } else if (event.type === "approval") {
+            setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+            setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
+          } else if (event.type === "ask") {
+            setAsks((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+            setAgentStatus("Waiting for your answer…");
           } else if (event.type === "subagent_start") {
             setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
           } else if (event.type === "subagent_done") {
             setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
+          } else if (event.type === "tool_progress") {
+            pushLive(liveMessages.map((m) => m.id === assistantId
+              ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, progress: (segment.progress || "") + (data.chunk || "") } : segment) }
+              : m));
           } else if (event.type === "notice") {
             setAgentStatus(data.message || "Working…");
           } else if (event.type === "done") {
@@ -1167,8 +1426,71 @@ export default function ChatPageClient() {
       event.preventDefault();
       if (draft.trim().startsWith("/")) runCommand(draft);
       else if (canSend) sendMessage();
+      return;
+    }
+    const caretOnFirstLine = !draft.slice(0, event.currentTarget.selectionStart || 0).includes("\n");
+    const caretOnLastLine = !draft.slice(event.currentTarget.selectionStart || 0).includes("\n");
+    if (event.key === "ArrowUp" && caretOnFirstLine && inputHistory.length > 0) {
+      event.preventDefault();
+      if (historyPos === -1) draftRefForHistory.current = draft;
+      const idx = historyPos === -1 ? 0 : Math.min(historyPos + 1, inputHistory.length - 1);
+      setHistoryPos(idx);
+      setDraft(inputHistory[idx] || "");
+      return;
+    }
+    if (event.key === "ArrowDown" && historyPos >= 0 && caretOnLastLine) {
+      event.preventDefault();
+      if (historyPos <= 0) {
+        setHistoryPos(-1);
+        setDraft(draftRefForHistory.current);
+      } else {
+        const idx = historyPos - 1;
+        setHistoryPos(idx);
+        setDraft(inputHistory[idx] || "");
+      }
+      return;
     }
     if (event.key === "Escape" && isSending) handleStop();
+    if ((event.altKey || event.ctrlKey) && !event.shiftKey) {
+      if (event.key === "a" || event.key === "A") {
+        if (approvals.length > 0) {
+          event.preventDefault();
+          resolveGate(approvals[0], "allow");
+        }
+        return;
+      }
+      if (event.key === "d" || event.key === "D") {
+        if (approvals.length > 0) {
+          event.preventDefault();
+          resolveGate(approvals[0], "deny");
+        }
+        return;
+      }
+    }
+  };
+
+  const resolveGate = async (gate, outcome, always = false) => {
+    const runId = getChatRun()?.runId;
+    if (!runId) return;
+    try {
+      const res = await fetch(`/api/chat/runs/${runId}/gates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gateId: gate.id, outcome, always }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Unable to resolve");
+      }
+      if (always && outcome === "allow") {
+        setAutoApprove(true);
+        setError("Auto-approve enabled for this run");
+      }
+    } catch (e) {
+      setError(textValue(e.message));
+    }
+    setApprovals((prev) => prev.filter((item) => item.id !== gate.id));
+    setAsks((prev) => prev.filter((item) => item.id !== gate.id));
   };
 
   const handleExport = (format) => {
@@ -1207,6 +1529,18 @@ export default function ChatPageClient() {
     }
     setMessages(data.messages || []);
     return data;
+  };
+
+  const saveCodebase = async () => {
+    const value = codebaseValue.trim();
+    try {
+      await patchSession(activeSessionId, { codebase: value });
+      setCodebase(value);
+      setCodebaseEdit(false);
+      setError(value ? `Codebase set: ${value}` : "Codebase cleared");
+    } catch (e) {
+      setError(textValue(e.message));
+    }
   };
 
   const handleEditMessage = async (message) => {
@@ -1251,6 +1585,14 @@ export default function ChatPageClient() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "Unable to steer run");
         setAgentStatus("Steering queued");
+      }       else if (name === "approve") {
+        if (approvals.length === 0) throw new Error("No pending approval");
+        await resolveGate(approvals[0], "allow");
+        setError("Approval granted");
+      } else if (name === "deny") {
+        if (approvals.length === 0) throw new Error("No pending approval");
+        await resolveGate(approvals[0], "deny");
+        setError("Approval denied");
       } else if (name === "project") {
         if (!value) throw new Error("Usage: /project <absolute path>");
         const inspect = await fetch("/api/chat/projects/inspect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: value }) });
@@ -1259,6 +1601,31 @@ export default function ChatPageClient() {
         await patchSession(activeSessionId, { workspacePath: data.workspacePath, projectMeta: { name: data.name, packageName: data.packageName } });
         setProjectInfo(data);
         setProjectOpen(true);
+      } else if (name === "codebase") {
+        const current = sessions.find((s) => s.id === activeSessionId);
+        if (current) openEditModal(current);
+      } else if (name === "goal") {
+        const [sub, ...rest] = value.split(/\s+/);
+        const arg = rest.join(" ");
+        if (!sub) throw new Error("Usage: /goal <text> | status | pause | resume | clear");
+        let action = "set";
+        let text = value;
+        if (sub === "status") action = "status";
+        else if (sub === "pause") action = "pause";
+        else if (sub === "resume") action = "resume";
+        else if (sub === "clear") action = "clear";
+        else if (sub === "set") { action = "set"; text = arg; if (!text) throw new Error("/goal set <text>"); }
+        const res = await fetch(`/api/chat/sessions/${activeSessionId}/goal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, text }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Unable to update goal");
+        setError(data.goal ? `Goal: ${data.goal.text} (${data.goal.status}, ${data.goal.iterations} iterations)` : "Goal cleared");
+      } else if (name === "verify") {
+        setVerifyMode((v) => !v);
+        setError(verifyMode ? "Verification disabled for next run" : "Verification enabled for next run");
       } else throw new Error(`Unknown command: /${name}`);
     } catch (e) {
       setError(textValue(e.message));
@@ -1278,7 +1645,7 @@ export default function ChatPageClient() {
       {/* Sessions rail */}
       <aside className="hidden md:flex w-72 shrink-0 flex-col border-r border-border bg-sidebar/40">
         <div className="p-3 border-b border-border space-y-2">
-          <Button className="w-full" icon="add" onClick={handleNewChat}>
+          <Button className="w-full" icon="add" onClick={openCreateModal}>
             New chat
           </Button>
           <input
@@ -1345,8 +1712,7 @@ export default function ChatPageClient() {
                         className="material-symbols-outlined text-[15px] text-text-muted hover:text-primary"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setRenameId(session.id);
-                          setRenameValue(session.title || "");
+                          openEditModal(session);
                         }}
                       >
                         edit
@@ -1384,6 +1750,28 @@ export default function ChatPageClient() {
               <p className="truncate text-[11px] text-text-muted">Click to change</p>
             </div>
           </button>
+
+          {codebase ? (
+            <button
+              type="button"
+              onClick={() => { setCodebaseValue(codebase); setCodebaseEdit(true); }}
+              className="hidden min-w-0 max-w-[16rem] items-center gap-1.5 rounded-xl border border-border bg-sidebar/50 px-3 py-2 text-left hover:bg-sidebar md:flex"
+              title="Session codebase / repository URL — click to edit"
+            >
+              <span className="material-symbols-outlined text-[15px] text-primary">link</span>
+              <span className="truncate font-mono text-[11px] text-text-muted">{codebase}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setCodebaseValue(codebase); setCodebaseEdit(true); }}
+              className="hidden items-center gap-1.5 rounded-xl border border-dashed border-border px-3 py-2 text-[11px] text-text-muted hover:bg-sidebar md:flex"
+              title="Set a codebase / repository URL for this session"
+            >
+              <span className="material-symbols-outlined text-[15px]">link</span>
+              Codebase
+            </button>
+          )}
 
           <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
             <div className="flex rounded-full border border-border overflow-hidden text-[11px]">
@@ -1429,7 +1817,7 @@ export default function ChatPageClient() {
             <Button variant="ghost" size="sm" icon="data_object" onClick={() => handleExport("json")}>
               JSON
             </Button>
-            <Button className="md:hidden" variant="ghost" size="sm" icon="add" onClick={handleNewChat}>
+            <Button className="md:hidden" variant="ghost" size="sm" icon="add" onClick={openCreateModal}>
               New
             </Button>
           </div>
@@ -1442,7 +1830,7 @@ export default function ChatPageClient() {
         ) : null}
 
         {paramsOpen ? (
-          <div className="shrink-0 border-b border-border bg-sidebar/30 px-4 py-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="shrink-0 border-b border-border bg-sidebar/30 px-4 py-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <label className="text-xs text-text-muted space-y-1">
               <span>Temperature ({params.temperature})</span>
               <input
@@ -1463,6 +1851,18 @@ export default function ChatPageClient() {
                 value={params.max_tokens}
                 onChange={(e) => handleParamsChange("max_tokens", e.target.value)}
                 className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-text-main"
+              />
+            </label>
+            <label className="text-xs text-text-muted space-y-1">
+              <span>Max tool steps ({maxSteps === 0 ? "Unlimited" : maxSteps})</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={maxSteps}
+                onChange={(e) => setMaxSteps(Number(e.target.value) || 0)}
+                className="w-full"
               />
             </label>
             <label className="text-xs text-text-muted space-y-1">
@@ -1521,7 +1921,7 @@ export default function ChatPageClient() {
           </div>
         ) : null}
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar px-3 py-4 lg:px-6">
+        <div ref={transcriptScrollRef} onScroll={handleTranscriptScroll} className="flex-1 overflow-y-auto custom-scrollbar px-3 py-4 lg:px-6">
           {messages.length === 0 ? (
             <div className="flex min-h-[50vh] flex-col items-center justify-center text-center gap-4">
               <div className="size-14 rounded-2xl border border-border bg-sidebar flex items-center justify-center">
@@ -1552,16 +1952,18 @@ export default function ChatPageClient() {
             </div>
           ) : (
             <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
-              {visibleMessages.map((message) => {
+              {windowed.start > 0 ? <div className="py-2 text-center text-[11px] text-text-muted">Earlier messages hidden · scroll up to reveal</div> : null}
+              {windowed.list.map((message, wi) => {
                 const isUser = message.role === "user";
                 const isTool = message.role === "tool";
                 const content = textValue(message.content);
+                const globalIndex = windowed.start + wi;
 
                 if (isTool) {
                   const preview =
                     content.length > 1200 ? `${content.slice(0, 1200)}\n…` : content;
                   return (
-                    <div key={message.id} className="flex justify-start">
+                    <div key={message.id} data-chat-message-index={globalIndex} className="flex justify-start">
                       <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2">
                         <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
                           <span className="material-symbols-outlined text-[14px]">
@@ -1588,7 +1990,7 @@ export default function ChatPageClient() {
                 }
 
                 return (
-                  <div key={message.id} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+                  <div key={message.id} data-chat-message-index={globalIndex} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
                     <div
                       className={`max-w-[min(92%,42rem)] rounded-2xl px-4 py-3 ${
                         isUser
@@ -1690,6 +2092,7 @@ export default function ChatPageClient() {
                   </div>
                 );
               })}
+              {windowed.end < visibleMessages.length ? <div className="py-2 text-center text-[11px] text-text-muted">Scroll down for newer messages</div> : null}
               <div ref={bottomRef} />
             </div>
           )}
@@ -1712,7 +2115,9 @@ export default function ChatPageClient() {
                     >
                       <img src={a.dataUrl} alt={a.name} className="h-10 w-10 rounded-lg object-cover border border-border" />
                     </button>
-                  ) : null}
+                  ) : (
+                    <span className="material-symbols-outlined shrink-0 text-[18px] text-primary">description</span>
+                  )}
                   <span className="max-w-[8rem] truncate">{a.name}</span>
                   <button
                     type="button"
@@ -1734,6 +2139,51 @@ export default function ChatPageClient() {
               </div>
             </div>
           ) : null}
+          {approvals.map((approval) => (
+            <div key={approval.id} className="mx-auto mb-2 max-w-3xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+              <div className="flex items-start gap-2">
+                <span className="material-symbols-outlined text-[20px] text-amber-500">shield</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">Allow {approval.tool} to run?</p>
+                  <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-background/60 p-2.5 font-mono text-[11px] leading-5">{approval.arguments || "{}"}</pre>
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                    <Button size="sm" onClick={() => resolveGate(approval, "allow")}>Allow</Button>
+                    <Button size="sm" variant="outline" onClick={() => resolveGate(approval, "allow", true)}>Always allow</Button>
+                    <Button size="sm" variant="ghost" onClick={() => resolveGate(approval, "deny")}>Deny</Button>
+                    <span className="text-[10px] text-text-muted">Auto-deny after 120s</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+          {asks.map((ask) => (
+            <div key={ask.id} className="mx-auto mb-2 max-w-3xl rounded-xl border border-primary/40 bg-primary/10 px-4 py-3">
+              <div className="flex items-start gap-2">
+                <span className="material-symbols-outlined text-[20px] text-primary">help</span>
+                <div className="min-w-0 flex-1">
+                  {(Array.isArray(ask.questions) ? ask.questions : []).map((q, qi) => (
+                    <p key={qi} className="text-sm font-medium">{q.question || q.header || "Question"}</p>
+                  ))}
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    {Array.isArray(ask.questions) && ask.questions[0]?.options?.length ? ask.questions[0].options.map((opt) => (
+                      <Button key={opt} size="sm" variant="outline" onClick={() => resolveGate(ask, opt)}>{opt}</Button>
+                    )) : null}
+                  </div>
+                  <input
+                    autoFocus
+                    type="text"
+                    placeholder="Type your answer…"
+                    className="mt-2.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && e.currentTarget.value.trim()) {
+                        resolveGate(ask, e.currentTarget.value.trim());
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          ))}
           <div
             ref={composerRef}
             className="relative mx-auto max-w-3xl rounded-2xl border border-border bg-sidebar/40 p-2 shadow-sm"
@@ -1751,7 +2201,7 @@ export default function ChatPageClient() {
               rows={1}
               placeholder={
                 activeSession?.model
-                  ? "Message… (paste or drop images)"
+                  ? "Message… (paste or drop images/files)"
                   : "Select a model first"
               }
               className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none max-h-[25vh] custom-scrollbar"
@@ -1769,11 +2219,27 @@ export default function ChatPageClient() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
                   multiple
                   className="hidden"
                   onChange={handleAttachFiles}
                 />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="hidden rounded-lg p-2 text-text-muted hover:bg-sidebar hover:text-text-main sm:block"
+                  title="Attach or drop files"
+                >
+                  <span className="material-symbols-outlined text-[20px]">attach_file</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAutoApprove((value) => !value)}
+                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${autoApprove ? "bg-emerald-500/10 text-emerald-600" : "text-text-muted hover:bg-sidebar"}`}
+                  title="Auto-approve all tools for this run"
+                >
+                  <span className="material-symbols-outlined text-[15px]">{autoApprove ? "task_alt" : "shield"}</span>
+                  {autoApprove ? "Auto" : "Approve"}
+                </button>
                 <div className="relative">
                   <button
                     type="button"
@@ -1788,7 +2254,7 @@ export default function ChatPageClient() {
                     <span className="material-symbols-outlined text-[14px]">expand_more</span>
                   </button>
                   {roleMenuOpen ? (
-                    <div className="absolute bottom-full left-0 z-30 mb-2 w-64 rounded-xl border border-border bg-background p-1 shadow-2xl">
+                    <div className="absolute bottom-full left-0 z-40 mb-3 w-64 rounded-xl border border-primary/35 bg-surface p-1.5 shadow-[0_20px_55px_rgba(0,0,0,0.65)] ring-1 ring-black/30">
                       <p className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Agent role</p>
                       {AGENT_ROLES.map((role) => (
                         <button
@@ -1798,7 +2264,7 @@ export default function ChatPageClient() {
                             setAgentRole(role.id);
                             setRoleMenuOpen(false);
                           }}
-                          className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left ${agentRole === role.id ? "bg-primary/10" : "hover:bg-sidebar"}`}
+                          className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${agentRole === role.id ? "border-primary/35 bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
                         >
                           <span className="material-symbols-outlined mt-0.5 text-[17px] text-primary">{role.icon}</span>
                           <span className="min-w-0 flex-1">
@@ -1814,7 +2280,7 @@ export default function ChatPageClient() {
                 <button
                   type="button"
                   onClick={() => setAccessMode((value) => value === "full" ? "sandbox" : "full")}
-                  className={`hidden items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${accessMode === "full" ? "bg-amber-500/10 text-amber-700 dark:text-amber-300" : "text-text-muted hover:bg-sidebar"}`}
+                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] ${accessMode === "full" ? "bg-amber-500/10 text-amber-700 dark:text-amber-300" : "text-text-muted hover:bg-sidebar"}`}
                   title={accessMode === "full" ? "Full: bash and file writes enabled" : "Sandbox: read-only host tools"}
                 >
                   <span className="material-symbols-outlined text-[15px]">{accessMode === "full" ? "admin_panel_settings" : "shield"}</span>
@@ -1823,14 +2289,54 @@ export default function ChatPageClient() {
                 <button
                   type="button"
                   onClick={() => setShowReasoning((value) => !value)}
-                  className={`hidden items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${showReasoning ? "text-primary" : "text-text-muted hover:bg-sidebar"}`}
+                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] ${showReasoning ? "text-primary" : "text-text-muted hover:bg-sidebar"}`}
                   title="Show or hide reasoning"
                 >
                   <span className="material-symbols-outlined text-[15px]">psychology</span>
                   Reasoning
                 </button>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setEffortMenuOpen((value) => !value)}
+                    className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${reasoningEffort ? "text-primary" : "text-text-muted hover:bg-sidebar"}`}
+                    title="Reasoning effort for the next turn"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">tune</span>
+                    <span>{reasoningEffort ? reasoningEffort.charAt(0).toUpperCase() + reasoningEffort.slice(1) : "Effort"}</span>
+                    <span className="material-symbols-outlined text-[14px]">expand_more</span>
+                  </button>
+                  {effortMenuOpen ? (
+                    <div className="absolute bottom-full left-0 z-40 mb-3 w-56 rounded-xl border border-primary/35 bg-surface p-1.5 shadow-[0_20px_55px_rgba(0,0,0,0.65)] ring-1 ring-black/30">
+                      <p className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Reasoning effort</p>
+                      {[{ value: "", label: "Default", hint: "Use the configured default" }, { value: "none", label: "Off", hint: "No reasoning" }, { value: "low", label: "Low", hint: "Brief reasoning" }, { value: "medium", label: "Medium", hint: "Balanced reasoning" }, { value: "high", label: "High", hint: "Deep reasoning" }].map((option) => (
+                        <button
+                          key={option.value || "default"}
+                          type="button"
+                          onClick={() => {
+                            setReasoningEffort(option.value);
+                            setEffortMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${reasoningEffort === option.value ? "border-primary/35 bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
+                        >
+                          <span className={`material-symbols-outlined text-[15px] ${reasoningEffort === option.value ? "text-primary" : "text-text-muted"}`}>{reasoningEffort === option.value ? "check" : "radio_button_unchecked"}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-xs font-medium">{option.label}</span>
+                            <span className="block text-[10px] text-text-muted">{option.hint}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <div className="flex items-center gap-2">
+                {ctxWindow > 0 ? (
+                  <div className="flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-[10px]" title={`Context: ${ctxUsed?.toLocaleString() ?? 0} / ${ctxWindow?.toLocaleString() ?? "?"} tokens`}>
+                    <span className={`size-2.5 rounded-full ${ctxUsed > ctxWindow * 0.8 ? "bg-red-500" : ctxUsed > ctxWindow * 0.6 ? "bg-amber-500" : "bg-emerald-500"}`} />
+                    <span className="hidden text-text-muted sm:inline">{Math.round((ctxUsed / ctxWindow) * 100)}%</span>
+                  </div>
+                ) : null}
                 {isSending ? (
                   <Button variant="ghost" size="sm" icon="stop" onClick={handleStop}>
                     Stop
@@ -1843,7 +2349,7 @@ export default function ChatPageClient() {
             </div>
           </div>
           <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-text-muted">
-            Enter send · Shift+Enter newline · Esc stop · / for commands · {AGENT_ROLES.find((role) => role.id === agentRole)?.label} · {accessMode} access
+            Enter send · Shift+Enter newline · ↑/↓ history · Esc stop · / for commands · {AGENT_ROLES.find((role) => role.id === agentRole)?.label} · {accessMode} access
           </p>
         </div>
       </section>
@@ -1871,6 +2377,94 @@ export default function ChatPageClient() {
         modelAliases={modelAliases}
         title="Select chat model"
       />
+
+      {sessionModalOpen ? (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setSessionModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={sessionModalMode === "edit" ? "Edit session" : "New session"}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-border bg-surface p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <span className="material-symbols-outlined text-[20px] text-primary">
+                {sessionModalMode === "edit" ? "edit" : "add"}
+              </span>
+              <p className="text-sm font-semibold">
+                {sessionModalMode === "edit" ? "Edit session" : "New session"}
+              </p>
+            </div>
+            <label className="mb-1 block text-[11px] font-medium text-text-muted">Session name</label>
+            <input
+              autoFocus
+              type="text"
+              value={sessionFormName}
+              onChange={(e) => setSessionFormName(e.target.value)}
+              placeholder="e.g. Antares chat integration"
+              className="mb-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            />
+            <label className="mb-1 block text-[11px] font-medium text-text-muted">Project URL / path</label>
+            <input
+              type="text"
+              value={sessionFormUrl}
+              onChange={(e) => setSessionFormUrl(e.target.value)}
+              placeholder="https://github.com/org/repo  or  F:\\project\\my-app"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveSessionModal();
+                if (e.key === "Escape") setSessionModalOpen(false);
+              }}
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setSessionModalOpen(false)}>Cancel</Button>
+              <Button size="sm" onClick={saveSessionModal}>
+                {sessionModalMode === "edit" ? "Save" : "Create"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {codebaseEdit ? (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setCodebaseEdit(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Set codebase"
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-border bg-surface p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <span className="material-symbols-outlined text-[20px] text-primary">link</span>
+              <p className="text-sm font-semibold">Session codebase / repository URL</p>
+            </div>
+            <input
+              autoFocus
+              type="text"
+              value={codebaseValue}
+              onChange={(e) => setCodebaseValue(e.target.value)}
+              placeholder="https://github.com/org/repo or git@host:org/repo.git"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveCodebase();
+                if (e.key === "Escape") setCodebaseEdit(false);
+              }}
+            />
+            <p className="mt-2 text-[11px] text-text-muted">Leave empty to clear. Applies to this session only.</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setCodebaseEdit(false)}>Cancel</Button>
+              <Button size="sm" onClick={saveCodebase}>Save</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {imagePreview?.src ? (
         <div

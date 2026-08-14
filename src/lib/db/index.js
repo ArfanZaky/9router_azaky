@@ -74,9 +74,13 @@ export {
   clearChatSession, undoChatExchange, editChatFromMessage, forkChatSession,
 } from "./repos/chatRepo.js";
 export {
-  createChatRun, getChatRunRecord, getActiveChatRunForSession, updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
+  createChatRun, getChatRunRecord, getActiveChatRunForSession,
+  updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
 } from "./repos/chatRunRepo.js";
-
+export {
+  getActiveChatGoal, setChatGoal, pauseChatGoal, resumeChatGoal,
+  clearChatGoal, bumpChatGoalIteration, completeChatGoal,
+} from "./repos/chatGoalRepo.js";
 // Image generation playground
 export {
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,

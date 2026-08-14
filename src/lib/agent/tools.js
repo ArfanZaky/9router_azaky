@@ -74,6 +74,9 @@ const TOOL_ACCESS = {
   generate_image: "sandbox",
   todo_update: "sandbox",
   delegate_task: "sandbox",
+  read_document: "sandbox",
+  ask_user: "sandbox",
+  goal_update: "sandbox",
 };
 
 export function getOpenAiTools(accessMode = "sandbox") {
@@ -91,7 +94,7 @@ function truncate(str, max) {
   return `${s.slice(0, max)}\n\n… [truncated ${s.length - max} chars]`;
 }
 
-async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS } = {}) {
+async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress } = {}) {
   const cmd = String(command || "").trim();
   if (!cmd) return { ok: false, error: "Empty command" };
   for (const re of DENY_CMD) {
@@ -107,6 +110,11 @@ async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS } = {}) {
     });
     let stdout = "";
     let stderr = "";
+    const pushProgress = (chunk) => {
+      if (onProgress && typeof onProgress === "function") {
+        try { onProgress(String(chunk)); } catch { /* ignore */ }
+      }
+    };
     const timer = setTimeout(() => {
       try {
         child.kill("SIGTERM");
@@ -121,12 +129,16 @@ async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS } = {}) {
       });
     }, timeoutMs);
     child.stdout?.on("data", (d) => {
-      stdout += d.toString();
+      const chunk = d.toString();
+      stdout += chunk;
       if (stdout.length > MAX_BASH_OUT * 2) stdout = stdout.slice(-MAX_BASH_OUT);
+      pushProgress(chunk);
     });
     child.stderr?.on("data", (d) => {
-      stderr += d.toString();
+      const chunk = d.toString();
+      stderr += chunk;
       if (stderr.length > MAX_BASH_OUT * 2) stderr = stderr.slice(-MAX_BASH_OUT);
+      pushProgress(chunk);
     });
     child.on("error", (err) => {
       clearTimeout(timer);
@@ -209,6 +221,50 @@ export const TOOL_DEFS = [
           task: { type: "string", description: "Focused task with the expected result" },
         },
         required: ["task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_document",
+      description: "Read an uploaded document (text, PDF text, or code) by absolute path and return its content.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute path of the uploaded document" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description: "Ask the user a question and pause the run until they answer. Use for decisions, preferences, or missing context.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The question to ask" },
+          options: { type: "array", items: { type: "string" }, description: "Optional answer choices" },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "goal_update",
+      description: "Report on a standing goal. Use report_complete when you believe the goal is met and want a judge to verify.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["report_complete"] },
+          summary: { type: "string", description: "Brief summary of completed work" },
+        },
+        required: ["action"],
       },
     },
   },
@@ -403,6 +459,22 @@ export async function executeTool(name, args = {}, ctx = {}) {
     });
   }
 
+  if (name === "ask_user") {
+    const questions = Array.isArray(args.questions) ? args.questions : args.question ? [args] : [];
+    if (questions.length === 0) return JSON.stringify({ ok: false, error: "ask_user requires questions" });
+    if (!ctx.onAskUser) return JSON.stringify({ ok: false, error: "ask_user runtime unavailable" });
+    const answer = await ctx.onAskUser(questions);
+    return JSON.stringify({ ok: true, answer });
+  }
+
+  const APPROVAL_TOOLS = new Set(["bash"]);
+  if (APPROVAL_TOOLS.has(name) && accessMode === "full" && ctx.onApproval) {
+    const allowed = await ctx.onApproval({ name, arguments: args });
+    if (!allowed) {
+      return JSON.stringify({ ok: false, denied: true, error: `User denied ${name}` });
+    }
+  }
+
   try {
     switch (name) {
       case "bash": {
@@ -410,7 +482,7 @@ export async function executeTool(name, args = {}, ctx = {}) {
           ? resolveSafePath(args.cwd, workspace, accessMode)
           : path.resolve(workspace || process.cwd());
         // sandbox never reaches here; full still denies dangerous patterns
-        const result = await runBash(args.command, { cwd });
+        const result = await runBash(args.command, { cwd, onProgress: ctx.onProgress });
         return JSON.stringify(result);
       }
       case "read_file": {
@@ -553,6 +625,31 @@ export async function executeTool(name, args = {}, ctx = {}) {
           role: String(args.role || "researcher").trim().slice(0, 60),
           task: String(args.task || "").trim().slice(0, 4000),
         }));
+      }
+      case "read_document": {
+        const p = path.resolve(String(args.path || ""));
+        const uploadRoot = path.resolve(path.join(DATA_DIR, "chat-uploads"));
+        if (!p.startsWith(uploadRoot + path.sep)) {
+          return JSON.stringify({ ok: false, error: "Document path must be an uploaded file" });
+        }
+        if (!fs.existsSync(p) || !fs.statSync(p).isFile()) {
+          return JSON.stringify({ ok: false, error: "Document not found" });
+        }
+        const ext = path.extname(p).toLowerCase();
+        let content;
+        if (ext === ".pdf") {
+          content = `PDF document (${path.basename(p)}) — binary; read visually if needed.`;
+        } else {
+          content = fs.readFileSync(p, "utf8");
+        }
+        return JSON.stringify({ ok: true, path: p, bytes: fs.statSync(p).size, content: truncate(content, MAX_READ) });
+      }
+      case "goal_update": {
+        if (args.action === "report_complete") {
+          if (!ctx.onGoalJudge) return JSON.stringify({ ok: false, error: "Goal judge unavailable" });
+          return JSON.stringify(await ctx.onGoalJudge(String(args.summary || "")));
+        }
+        return JSON.stringify({ ok: false, error: "Unsupported goal_update action" });
       }
       default:
         return JSON.stringify({ ok: false, error: `Unknown tool: ${name}` });

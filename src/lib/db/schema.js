@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 8;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -175,12 +175,29 @@ export const TABLES = {
       pinned: "INTEGER DEFAULT 0",
       workspacePath: "TEXT",
       projectMeta: "TEXT",
+      tasks: "TEXT",
+      codebase: "TEXT",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_cs_updated ON chatSessions(updatedAt DESC)",
       "CREATE INDEX IF NOT EXISTS idx_cs_pinned ON chatSessions(pinned DESC, updatedAt DESC)",
+    ],
+  },
+  chatGoals: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      sessionId: "TEXT NOT NULL",
+      text: "TEXT NOT NULL",
+      status: "TEXT NOT NULL",
+      iterations: "INTEGER DEFAULT 0",
+      judgeResult: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_cg_session ON chatGoals(sessionId, status)",
     ],
   },
   chatMessages: {

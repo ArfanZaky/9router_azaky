@@ -23,6 +23,8 @@ export {
    clearChatSession, undoChatExchange, editChatFromMessage, forkChatSession,
    createChatRun, getChatRunRecord, getActiveChatRunForSession,
    updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
+   getActiveChatGoal, setChatGoal, pauseChatGoal, resumeChatGoal,
+   clearChatGoal, bumpChatGoalIteration, completeChatGoal,
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
   getImageAsset, addImageAssets,
 } from "./db/index.js";

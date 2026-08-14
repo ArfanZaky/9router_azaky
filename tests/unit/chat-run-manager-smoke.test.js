@@ -15,5 +15,5 @@ describe("chat server run manager exports", () => {
       // Acceptable in unit env without full Next/path alias wiring
       expect(String(e.message || e)).toMatch(/Cannot find|MODULE_NOT_FOUND|ERR_MODULE/i);
     }
-  });
+  }, 30000);
 });

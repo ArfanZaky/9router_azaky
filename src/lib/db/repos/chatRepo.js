@@ -14,6 +14,8 @@ function rowToSession(row) {
     pinned: row.pinned === 1,
     workspacePath: row.workspacePath || "",
     projectMeta: parseJson(row.projectMeta, {}),
+    tasks: parseJson(row.tasks, []),
+    codebase: row.codebase || "",
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -111,12 +113,14 @@ export async function createChatSession(data = {}) {
     pinned: !!data.pinned,
     workspacePath: data.workspacePath || "",
     projectMeta: data.projectMeta || {},
+    tasks: data.tasks || [],
+    codebase: data.codebase || "",
     createdAt: now,
     updatedAt: now,
   };
   db.run(
-    `INSERT INTO chatSessions(id, title, model, providerId, systemPrompt, params, pinned, workspacePath, projectMeta, createdAt, updatedAt)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO chatSessions(id, title, model, providerId, systemPrompt, params, pinned, workspacePath, projectMeta, tasks, codebase, createdAt, updatedAt)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       session.id,
       session.title,
@@ -127,6 +131,8 @@ export async function createChatSession(data = {}) {
       session.pinned ? 1 : 0,
       session.workspacePath,
       stringifyJson(session.projectMeta),
+      stringifyJson(session.tasks),
+      session.codebase,
       session.createdAt,
       session.updatedAt,
     ]
@@ -148,10 +154,12 @@ export async function updateChatSession(id, data = {}) {
       pinned: data.pinned !== undefined ? !!data.pinned : prev.pinned,
       workspacePath: data.workspacePath !== undefined ? data.workspacePath : prev.workspacePath,
       projectMeta: data.projectMeta !== undefined ? data.projectMeta : prev.projectMeta,
+      tasks: data.tasks !== undefined ? data.tasks : prev.tasks,
+      codebase: data.codebase !== undefined ? data.codebase : prev.codebase,
       updatedAt: new Date().toISOString(),
     };
     db.run(
-      `UPDATE chatSessions SET title = ?, model = ?, providerId = ?, systemPrompt = ?, params = ?, pinned = ?, workspacePath = ?, projectMeta = ?, updatedAt = ? WHERE id = ?`,
+      `UPDATE chatSessions SET title = ?, model = ?, providerId = ?, systemPrompt = ?, params = ?, pinned = ?, workspacePath = ?, projectMeta = ?, tasks = ?, codebase = ?, updatedAt = ? WHERE id = ?`,
       [
         merged.title,
         merged.model,
@@ -161,6 +169,8 @@ export async function updateChatSession(id, data = {}) {
         merged.pinned ? 1 : 0,
         merged.workspacePath || "",
         stringifyJson(merged.projectMeta || {}),
+        stringifyJson(merged.tasks || []),
+        merged.codebase || "",
         merged.updatedAt,
         id,
       ]
