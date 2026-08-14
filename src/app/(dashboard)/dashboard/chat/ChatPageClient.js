@@ -429,21 +429,22 @@ export default function ChatPageClient() {
     // Reattach transport if a server run is still active after remount.
     const existing = getChatRun();
     if (existing?.isSending && existing.runId) {
+      const existingSessionId = existing.sessionId;
       if (!liveRunRef.current || liveRunRef.current.runId !== existing.runId) {
         let lastSeq = 0;
         liveRunRef.current = {
           runId: existing.runId,
           lastSeq: () => lastSeq,
-          isActive: () => !!getChatRun()?.isSending,
+          isActive: () => !!getChatRun(existingSessionId)?.isSending,
           applyEvent: (event) => {
             if (!event || event.seq <= lastSeq) return;
             lastSeq = event.seq;
             const data = event.data || {};
             if (event.type === "text" || (event.type === "message" && data.role === "assistant")) {
               const content = data.content || existing.assistantText || "";
-              patchChatRun({
+              patchChatRun(existingSessionId, {
                 assistantText: content,
-                messages: (getChatRun()?.messages || []).map((m) =>
+                messages: (getChatRun(existingSessionId)?.messages || []).map((m) =>
                   m.id === existing.assistantId
                     ? {
                         ...m,
@@ -462,11 +463,11 @@ export default function ChatPageClient() {
                   : data.phase === "init"
                     ? `workspace ${data.workspace || "…"}`
                     : data.phase || "working";
-              patchChatRun({ agentStatus: `${roleLabel} ${detail}…` });
+              patchChatRun(existingSessionId, { agentStatus: `${roleLabel} ${detail}…` });
             } else if (event.type === "reasoning") {
               const reasoning = data.content || "";
-              patchChatRun({
-                messages: (getChatRun()?.messages || []).map((m) => m.id === existing.assistantId
+              patchChatRun(existingSessionId, {
+                messages: (getChatRun(existingSessionId)?.messages || []).map((m) => m.id === existing.assistantId
                   ? { ...m, reasoning, segments: [...(m.segments || []).filter((s) => s.type !== "reasoning"), { type: "reasoning", content: reasoning }] }
                   : m),
               });
@@ -480,7 +481,8 @@ export default function ChatPageClient() {
             } else if (event.type === "approval") {
               setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
               setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
-            } else if (event.type === "ask") {              setAsks((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+            } else if (event.type === "ask") {
+              setAsks((prev) => [...prev.filter((item) => item.id !== data.id), data]);
               setAgentStatus("Waiting for your answer…");
             } else if (event.type === "subagent_start") {
               setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
@@ -489,28 +491,28 @@ export default function ChatPageClient() {
             } else if (event.type === "tool_start" || event.type === "tool_result") {
               // Reload session messages on tool boundaries after remount.
               loadSessionDetail(existing.sessionId).catch(() => {});
-              patchChatRun({
+              patchChatRun(existingSessionId, {
                 agentStatus:
                   event.type === "tool_start"
                     ? `Tool: ${data.name}…`
                     : `Tool done: ${data.name}`,
               });
             } else if (event.type === "tool_progress") {
-              patchChatRun({
-                messages: (getChatRun()?.messages || []).map((m) => m.id === existing.assistantId
+              patchChatRun(existingSessionId, {
+                messages: (getChatRun(existingSessionId)?.messages || []).map((m) => m.id === existing.assistantId
                   ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, progress: (segment.progress || "") + (data.chunk || "") } : segment) }
                   : m),
               });
             } else if (event.type === "done" || event.type === "error") {
-              const finalMessages = data.messages || getChatRun()?.messages || [];
-              patchChatRun({
+              const finalMessages = data.messages || getChatRun(existingSessionId)?.messages || [];
+              patchChatRun(existingSessionId, {
                 messages: finalMessages,
                 assistantText: data.finalText || data.message || "",
                 isSending: false,
                 agentStatus: "",
                 error: event.type === "error" ? data.message || "Chat failed" : "",
               });
-              clearChatRun();
+              clearChatRun(existingSessionId);
               liveRunRef.current = null;
               setApprovals([]);
               setAsks([]);
@@ -599,7 +601,7 @@ export default function ChatPageClient() {
     // Fallback status pulse: keep the agent status visible even when a model
     // call is silent for a while (non-stream reasoning, long tool runs).
     const id = setInterval(() => {
-      const run = getChatRun();
+      const run = getChatRun(activeSessionId);
       if (run?.isSending && !agentStatus) {
         const roleLabel = AGENT_ROLES.find((r) => r.id === agentRole)?.label || "Agent";
         setAgentStatus(`${roleLabel} running…`);
@@ -611,7 +613,7 @@ export default function ChatPageClient() {
 
   useEffect(() => {
     if (!activeSessionId) return;
-    const run = getChatRun();
+    const run = getChatRun(activeSessionId);
     if (run?.isSending && run.sessionId === activeSessionId) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages(run.messages || []);
@@ -881,7 +883,7 @@ export default function ChatPageClient() {
   };
 
   const handleStop = () => {
-    abortChatRun();
+    abortChatRun(activeSessionId);
     abortRef.current?.abort();
   };
 
@@ -988,14 +990,14 @@ export default function ChatPageClient() {
     }).catch(() => {});
     await persistChatMessages(sessionId, finalMessages).catch(() => {});
 
-    patchChatRun({
+    patchChatRun(sessionId, {
       messages: finalMessages,
       assistantText: summary,
       isSending: false,
       agentStatus: "",
       error: errorText || "",
     });
-    clearChatRun();
+    clearChatRun(sessionId);
 
     // session list always refresh; transcript only if viewing this session
     if (mountedRef.current) {
@@ -1026,8 +1028,8 @@ export default function ChatPageClient() {
       setError("No API key. Create one in Endpoint & Key.");
       return;
     }
-    if (getChatRun()?.isSending) {
-      setError("A chat is already running. Stop it first or wait.");
+    if (getChatRun(activeSessionId)?.isSending) {
+      setError("This session is already running. Stop it first or wait.");
       return;
     }
 
@@ -1174,10 +1176,10 @@ export default function ChatPageClient() {
 
     const pushLive = (next, statusText) => {
       liveMessages = next;
-      patchChatRun({
+      patchChatRun(sessionId, {
         messages: next,
         assistantText,
-        agentStatus: statusText ?? getChatRun()?.agentStatus ?? "",
+        agentStatus: statusText ?? getChatRun(sessionId)?.agentStatus ?? "",
       });
       applyUiIfActive(sessionId, () => {
         setMessages(next);
@@ -1192,14 +1194,14 @@ export default function ChatPageClient() {
         sessionMeta?.title === "New chat" || !sessionMeta?.title
           ? makeSessionTitle(titleSeed)
           : sessionMeta.title;
-      patchChatRun({
+      patchChatRun(sessionId, {
         messages: finalMessages,
         assistantText: finalText,
         isSending: false,
         agentStatus: "",
         error: isError ? data.message || "Chat failed" : "",
       });
-      clearChatRun();
+      clearChatRun(sessionId);
       liveRunRef.current = null;
       setApprovals([]);
       setAsks([]);
@@ -1259,12 +1261,12 @@ export default function ChatPageClient() {
         await fetch(`/api/chat/runs/${started.id}`, { method: "DELETE" }).catch(() => {});
         return;
       }
-      patchChatRun({ runId: started.id, agentStatus: `${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} running…` });
+      patchChatRun(sessionId, { runId: started.id, agentStatus: `${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} running…` });
       let lastSeq = 0;
       liveRunRef.current = {
         runId: started.id,
         lastSeq: () => lastSeq,
-        isActive: () => !!getChatRun()?.isSending,
+        isActive: () => !!getChatRun(sessionId)?.isSending,
         applyEvent: (event) => {
           if (!event || event.seq <= lastSeq) return;
           lastSeq = event.seq;
@@ -1475,7 +1477,7 @@ export default function ChatPageClient() {
   };
 
   const resolveGate = async (gate, outcome, always = false) => {
-    const runId = getChatRun()?.runId;
+    const runId = getChatRun(activeSessionId)?.runId;
     if (!runId) return;
     try {
       const res = await fetch(`/api/chat/runs/${runId}/gates`, {
@@ -1673,7 +1675,7 @@ export default function ChatPageClient() {
       else if (name === "stop") handleStop();
       else if (name === "export") handleExport(value === "json" ? "json" : "md");
       else if (name === "steer") {
-        const runId = getChatRun()?.runId;
+        const runId = getChatRun(activeSessionId)?.runId;
         if (!runId || !value) throw new Error("Usage during an active run: /steer <instruction>");
         const res = await fetch(`/api/chat/runs/${runId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instruction: value }) });
         const data = await res.json().catch(() => ({}));
