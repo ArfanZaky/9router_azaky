@@ -140,6 +140,8 @@ export async function runAgentLoop({
   onAskUser,
   activeGoal,
   onGoalJudge,
+  onMcpCall,
+  mcpTools = [],
   depth = 0,
   reasoning_effort,
 }) {
@@ -149,7 +151,8 @@ export async function runAgentLoop({
   };
 
   const mode = accessMode === "full" ? "full" : "sandbox";
-  const tools = getOpenAiTools(mode);
+  const baseTools = getOpenAiTools(mode);
+  const tools = [...baseTools, ...(Array.isArray(mcpTools) ? mcpTools : [])];
   const agentSystem = buildAgentSystemPrompt({
     workspace,
     userSystem: systemPrompt,
@@ -390,20 +393,29 @@ export async function runAgentLoop({
         break;
       }
 
-      const result = await executeTool(call.name, call.arguments, {
-        workspace,
-        apiKey,
-        origin,
-        accessMode: mode,
-        onTaskUpdate,
-        onDelegate: depth < 1 ? onDelegate : null,
-        onApproval,
-        onAskUser,
-        onGoalJudge,
-        onProgress: async (chunk) => {
-          await emit("tool_progress", { id: call.id, name: call.name, chunk });
-        },
-      });
+      let result;
+      if (call.name.startsWith("mcp__") && onMcpCall) {
+        try {
+          result = JSON.stringify(await onMcpCall(call.name, call.arguments || {}));
+        } catch (e) {
+          result = JSON.stringify({ ok: false, error: e?.message || String(e) });
+        }
+      } else {
+        result = await executeTool(call.name, call.arguments, {
+          workspace,
+          apiKey,
+          origin,
+          accessMode: mode,
+          onTaskUpdate,
+          onDelegate: depth < 1 ? onDelegate : null,
+          onApproval,
+          onAskUser,
+          onGoalJudge,
+          onProgress: async (chunk) => {
+            await emit("tool_progress", { id: call.id, name: call.name, chunk });
+          },
+        });
+      }
 
       await emit("tool_result", {
         id: call.id,

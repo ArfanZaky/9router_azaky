@@ -233,6 +233,10 @@ export default function ChatPageClient() {
   const [sessionFormName, setSessionFormName] = useState("");
   const [sessionFormUrl, setSessionFormUrl] = useState("");
   const [sessionFormEditId, setSessionFormEditId] = useState("");
+  const [mcpServers, setMcpServers] = useState([]);
+  const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [mcpForm, setMcpForm] = useState({ name: "", url: "", transport: "sse", command: "", args: "" });
+  const [mcpProbe, setMcpProbe] = useState(null);
   const [commandIndex, setCommandIndex] = useState(0);
   const [ctxUsed, setCtxUsed] = useState(0);
   const [ctxWindow, setCtxWindow] = useState(0);
@@ -569,6 +573,7 @@ export default function ChatPageClient() {
         }
         const preferRun = getChatRun();
         const bootId = preferRun?.sessionId || list[0]?.id;
+        fetch("/api/chat/mcp").then((r) => r.json()).then((d) => { if (!cancelled && d.servers) setMcpServers(d.servers); }).catch(() => {});
         if (!cancelled && bootId) {
           setActiveSessionId(bootId);
           if (preferRun?.isSending && preferRun.sessionId === bootId) {
@@ -1543,6 +1548,95 @@ export default function ChatPageClient() {
     }
   };
 
+  const loadMcpServers = async () => {
+    try {
+      const res = await fetch("/api/chat/mcp");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) setMcpServers(data.servers || []);
+    } catch {
+      // ignore
+    }
+  };
+
+  const addMcpServer = async () => {
+    const name = mcpForm.name.trim();
+    const url = mcpForm.url.trim();
+    const command = mcpForm.command.trim();
+    const args = mcpForm.args.split(" ").map((a) => a.trim()).filter(Boolean);
+    if (!name) {
+      setError("MCP server name is required");
+      return;
+    }
+    if (mcpForm.transport === "sse" && !url) {
+      setError("MCP URL is required for SSE transport");
+      return;
+    }
+    if (mcpForm.transport === "stdio" && !command) {
+      setError("MCP command is required for stdio transport");
+      return;
+    }
+    try {
+      const res = await fetch("/api/chat/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, url, transport: mcpForm.transport, command, args }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Unable to add MCP server");
+      setMcpForm({ name: "", url: "", transport: "sse", command: "", args: "" });
+      await loadMcpServers();
+    } catch (e) {
+      setError(textValue(e.message));
+    }
+  };
+
+  const removeMcpServer = async (id) => {
+    try {
+      await fetch(`/api/chat/mcp/${id}`, { method: "DELETE" });
+      await loadMcpServers();
+    } catch (e) {
+      setError(textValue(e.message));
+    }
+  };
+
+  const toggleMcpServer = async (server) => {
+    try {
+      const res = await fetch(`/api/chat/mcp/${server.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !server.enabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Unable to toggle");
+      await loadMcpServers();
+    } catch (e) {
+      setError(textValue(e.message));
+    }
+  };
+
+  const probeMcpServer = async () => {
+    const url = mcpForm.url.trim();
+    const command = mcpForm.command.trim();
+    if (mcpForm.transport === "sse" && !url) return;
+    if (mcpForm.transport === "stdio" && !command) return;
+    setMcpProbe({ loading: true });
+    try {
+      const res = await fetch("/api/chat/mcp", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          probe: mcpForm.transport === "sse"
+            ? { transport: "sse", url }
+            : { transport: "stdio", command, args: mcpForm.args.split(" ").map((a) => a.trim()).filter(Boolean) },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setMcpProbe({ loading: false, tools: data.tools || [], error: data.error || null });
+    } catch (e) {
+      setMcpProbe({ loading: false, tools: [], error: textValue(e.message) });
+    }
+  };
+
   const handleEditMessage = async (message) => {
     const nextText = globalThis.prompt?.("Edit message", textValue(message.content));
     if (nextText == null || !nextText.trim() || nextText.trim() === textValue(message.content).trim()) return;
@@ -1604,6 +1698,9 @@ export default function ChatPageClient() {
       } else if (name === "codebase") {
         const current = sessions.find((s) => s.id === activeSessionId);
         if (current) openEditModal(current);
+      } else if (name === "mcp") {
+        await loadMcpServers();
+        setMcpModalOpen(true);
       } else if (name === "goal") {
         const [sub, ...rest] = value.split(/\s+/);
         const arg = rest.join(" ");
@@ -1805,6 +1902,9 @@ export default function ChatPageClient() {
             </Button>
             <Button variant="ghost" size="sm" icon="psychology" onClick={() => setShowReasoning((value) => !value)}>
               {showReasoning ? "Reasoning" : "Hidden"}
+            </Button>
+            <Button variant="ghost" size="sm" icon="extension" onClick={() => { loadMcpServers(); setMcpModalOpen(true); }}>
+              MCP
             </Button>
             {activeSession?.workspacePath ? (
               <Button variant="ghost" size="sm" icon="folder_open" onClick={() => setProjectOpen((value) => !value)}>
@@ -2377,6 +2477,126 @@ export default function ChatPageClient() {
         modelAliases={modelAliases}
         title="Select chat model"
       />
+
+      {mcpModalOpen ? (
+        <div
+          className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setMcpModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Manage MCP servers"
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl border border-border bg-surface p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[20px] text-primary">extension</span>
+                <p className="text-sm font-semibold">MCP Servers</p>
+              </div>
+              <button onClick={() => setMcpModalOpen(false)} className="text-text-muted hover:text-text-main">
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            <div className="mb-3 space-y-2">
+              <input
+                type="text"
+                value={mcpForm.name}
+                onChange={(e) => setMcpForm((f) => ({ ...f, name: e.target.value.replace(/\s+/g, "-").toLowerCase() }))}
+                placeholder="Server name (e.g. my-server)"
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+              />
+              <div className="flex rounded-full border border-border overflow-hidden text-[11px] w-fit">
+                <button
+                  type="button"
+                  onClick={() => setMcpForm((f) => ({ ...f, transport: "sse" }))}
+                  className={`px-3 py-1.5 ${mcpForm.transport === "sse" ? "bg-primary/15 text-primary font-medium" : "text-text-muted hover:bg-sidebar"}`}
+                >
+                  SSE / HTTP
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMcpForm((f) => ({ ...f, transport: "stdio" }))}
+                  className={`px-3 py-1.5 border-l border-border ${mcpForm.transport === "stdio" ? "bg-primary/15 text-primary font-medium" : "text-text-muted hover:bg-sidebar"}`}
+                >
+                  Stdio
+                </button>
+              </div>
+              {mcpForm.transport === "sse" ? (
+                <input
+                  type="text"
+                  value={mcpForm.url}
+                  onChange={(e) => setMcpForm((f) => ({ ...f, url: e.target.value }))}
+                  placeholder="https://host/mcp or http://host/sse"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={mcpForm.command}
+                    onChange={(e) => setMcpForm((f) => ({ ...f, command: e.target.value }))}
+                    placeholder="Command (e.g. npx, uvx, bun, node)"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                  />
+                  <input
+                    type="text"
+                    value={mcpForm.args}
+                    onChange={(e) => setMcpForm((f) => ({ ...f, args: e.target.value }))}
+                    placeholder="Args (space separated, e.g. -y @mcp/server)"
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                  />
+                </>
+              )}
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={addMcpServer}>Add</Button>
+                <Button size="sm" variant="ghost" onClick={probeMcpServer}>Probe tools</Button>
+                {mcpProbe?.loading ? <span className="text-[11px] text-text-muted">Probing…</span> : null}
+              </div>
+              {mcpProbe?.tools?.length ? (
+                <div className="rounded-lg border border-border bg-background p-2">
+                  <p className="mb-1 text-[10px] font-medium text-text-muted">{mcpProbe.tools.length} tools discovered</p>
+                  <div className="flex flex-wrap gap-1">
+                    {mcpProbe.tools.map((t) => (
+                      <span key={t.name} className="rounded bg-sidebar px-1.5 py-0.5 font-mono text-[10px]">{t.name}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {mcpProbe?.error ? <p className="text-[11px] text-red-500">{mcpProbe.error}</p> : null}
+            </div>
+
+            <div className="max-h-56 space-y-1 overflow-y-auto">
+              {mcpServers.length === 0 ? (
+                <p className="py-3 text-center text-xs text-text-muted">No MCP servers yet.</p>
+              ) : (
+                mcpServers.map((s) => (
+                  <div key={s.id} className="flex items-center gap-2 rounded-lg border border-border px-2.5 py-2">
+                    <button
+                      onClick={() => toggleMcpServer(s)}
+                      className={`size-3.5 rounded-full ${s.enabled ? "bg-emerald-500" : "bg-border"}`}
+                      title={s.enabled ? "Enabled" : "Disabled"}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs font-medium">{s.name}</p>
+                      <p className="truncate font-mono text-[10px] text-text-muted">{s.url || s.command}</p>
+                    </div>
+                    <span className="text-[10px] uppercase text-text-muted">{s.transport}</span>
+                    <button
+                      onClick={() => removeMcpServer(s.id)}
+                      className="material-symbols-outlined text-[15px] text-text-muted hover:text-red-500"
+                    >
+                      delete
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {sessionModalOpen ? (
         <div

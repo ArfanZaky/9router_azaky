@@ -14,6 +14,7 @@ export const CHAT_COMMANDS = [
   { name: "export", args: "md|json", summary: "Export this conversation" },
   { name: "project", args: "<absolute path>", summary: "Bind a project workspace" },
   { name: "codebase", summary: "Edit this session's name and project URL/path" },
+  { name: "mcp", summary: "Manage MCP servers for this chat" },
   { name: "steer", args: "<instruction>", summary: "Redirect the active agent" },
   { name: "approve", summary: "Allow the pending tool approval (Alt+A)" },
   { name: "deny", summary: "Deny the pending tool approval (Alt+D)" },

@@ -25,6 +25,8 @@ export {
    updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
    getActiveChatGoal, setChatGoal, pauseChatGoal, resumeChatGoal,
    clearChatGoal, bumpChatGoalIteration, completeChatGoal,
+   listChatMcpServers, getChatMcpServer, createChatMcpServer,
+   updateChatMcpServer, deleteChatMcpServer,
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
   getImageAsset, addImageAssets,
 } from "./db/index.js";

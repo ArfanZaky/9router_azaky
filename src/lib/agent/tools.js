@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { DATA_DIR } from "../dataDir.js";
+import { getSkillByName, loadAllSkillIndex } from "./skills.js";
 
 const MAX_READ = 200_000;
 const MAX_LIST = 500;
@@ -77,6 +78,7 @@ const TOOL_ACCESS = {
   read_document: "sandbox",
   ask_user: "sandbox",
   goal_update: "sandbox",
+  read_skill: "sandbox",
 };
 
 export function getOpenAiTools(accessMode = "sandbox") {
@@ -265,6 +267,20 @@ export const TOOL_DEFS = [
           summary: { type: "string", description: "Brief summary of completed work" },
         },
         required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_skill",
+      description: "Load the full body of a skill by name (listed in the available skills catalogue). Use when a task matches a skill.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Skill id or name, e.g. 9router, react, sql-database" },
+        },
+        required: ["name"],
       },
     },
   },
@@ -650,6 +666,14 @@ export async function executeTool(name, args = {}, ctx = {}) {
           return JSON.stringify(await ctx.onGoalJudge(String(args.summary || "")));
         }
         return JSON.stringify({ ok: false, error: "Unsupported goal_update action" });
+      }
+      case "read_skill": {
+        const skill = getSkillByName(String(args.name || ""));
+        if (!skill) {
+          const names = loadAllSkillIndex().map((s) => s.name).join(", ");
+          return JSON.stringify({ ok: false, error: `Skill not found. Available: ${names}` });
+        }
+        return JSON.stringify({ ok: true, name: skill.name, content: `${skill.description ? `# ${skill.name}\n\n${skill.description}\n\n` : ""}${skill.body}` });
       }
       default:
         return JSON.stringify({ ok: false, error: `Unknown tool: ${name}` });

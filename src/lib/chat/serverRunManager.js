@@ -14,8 +14,10 @@ import {
   getActiveChatGoal,
   bumpChatGoalIteration,
   completeChatGoal,
+  listChatMcpServers,
 } from "@/lib/localDb";
 import { resolveProjectWorkspace } from "./projectWorkspace.js";
+import { listTools as listMcpTools, callTool as callMcpTool } from "./mcpClient.js";
 
 const liveRuns = globalThis.__chatServerRuns || new Map();
 globalThis.__chatServerRuns = liveRuns;
@@ -116,6 +118,52 @@ async function callChatCompletionsForJudge(run, summary) {
   } catch {
     return { met: false, reason: content.slice(0, 200), next_step: "" };
   }
+}
+
+// Build OpenAI function-tool schemas from enabled MCP servers, namespaced
+// mcp__<server>__<tool>. tools/list is cached per process (10 min) so every
+// message does not re-spawn stdio servers / hit the network.
+const mcpToolsCache = globalThis.__chatMcpToolsCache || new Map();
+globalThis.__chatMcpToolsCache = mcpToolsCache;
+
+async function loadMcpTools() {
+  const servers = (await listChatMcpServers().catch(() => []))
+    .filter((s) => s.enabled);
+  const tools = [];
+  const registry = []; // [{ name, server }]
+  for (const server of servers) {
+    const cacheKey = `${server.id}:${server.updatedAt}`;
+    let listed = mcpToolsCache.get(cacheKey);
+    if (!listed) {
+      try {
+        const fetched = await listMcpTools(server);
+        listed = fetched;
+        mcpToolsCache.set(cacheKey, { _at: Date.now(), list: fetched });
+        if (mcpToolsCache.size > 200) {
+          const now = Date.now();
+          for (const [k, v] of mcpToolsCache) {
+            if (v?._at && now - v._at > 600_000) mcpToolsCache.delete(k);
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    const toolList = listed?.list || listed;
+    for (const t of toolList) {
+      const name = `mcp__${server.name}__${t.name}`;
+      tools.push({
+        type: "function",
+        function: {
+          name,
+          description: t.description || `MCP tool ${t.name} from ${server.name}`,
+          parameters: { type: "object", properties: {}, additionalProperties: true },
+        },
+      });
+      registry.push({ name, server });
+    }
+  }
+  return { tools, registry };
 }
 
 function stoppedSummary(messages, assistantText, stopped) {
@@ -329,6 +377,7 @@ async function runPlainChat(run) {
 }
 
 async function runAgent(run) {
+  const mcp = await loadMcpTools();
   await runAgentLoop({
     model: run.request.model,
     messages: run.request.messages,
@@ -344,6 +393,12 @@ async function runAgent(run) {
     reasoning_effort: run.request.params.reasoning_effort || "",
     signal: run.abortController.signal,
     activeGoal: run.goal,
+    mcpTools: mcp.tools,
+    onMcpCall: async (name, args) => {
+      const entry = mcp.registry.find((r) => r.name === name);
+      if (!entry) return { ok: false, error: `Unknown MCP tool ${name}` };
+      return callMcpTool(entry.server, name.slice(`mcp__${entry.server.name}__`.length), args);
+    },
     onGoalJudge: async (summary) => {
       if (!run.goal) return { ok: false, error: "No active goal" };
       await bumpChatGoalIteration(run.sessionId).catch(() => {});

@@ -81,6 +81,10 @@ export {
   getActiveChatGoal, setChatGoal, pauseChatGoal, resumeChatGoal,
   clearChatGoal, bumpChatGoalIteration, completeChatGoal,
 } from "./repos/chatGoalRepo.js";
+export {
+  listChatMcpServers, getChatMcpServer, createChatMcpServer,
+  updateChatMcpServer, deleteChatMcpServer,
+} from "./repos/chatMcpServerRepo.js";
 // Image generation playground
 export {
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
