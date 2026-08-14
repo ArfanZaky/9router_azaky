@@ -229,7 +229,6 @@ export async function runAgentLoop({
   const transcript = []; // UI-facing turns (assistant/tool)
   let finalText = "";
   let endedWithToolCalls = false;
-  let continuationUsed = false;
   let lastFinish = "";
   let lastIncomplete = false;
   const callCounts = new Map();
@@ -352,17 +351,19 @@ export async function runAgentLoop({
     endedWithToolCalls = toolCalls.length > 0;
     if (!toolCalls.length) {
       const incomplete = finish === "length" || content.trimEnd().endsWith(":");
-      if (incomplete && !continuationUsed && (limit === Infinity || step < limit - 1)) {
-        continuationUsed = true;
+      if (incomplete) {
+        // Keep going (unlimited): push a continue turn instead of giving up.
+        // `continue` on every truncated reply, no one-shot cap, so long outputs
+        // are never cut short by an arbitrary "too truncated" heuristic.
         working.push({
           role: "user",
-          content: "Continue the unfinished task now. Use tools when changes or checks are required, then provide a final summary.",
+          content: "Your previous response was cut off. Continue from where it stopped and finish the task. Use tools if needed.",
         });
+        lastIncomplete = false;
         continue;
       }
-      // Track truncated responses so we can synthesize a summary after the loop
-      // (a "length" cut or trailing ":" means the model was still writing).
-      lastIncomplete = Boolean(incomplete);
+      // Model finished cleanly (no tools, not truncated).
+      lastIncomplete = false;
       break;
     }
     lastIncomplete = false;
@@ -465,9 +466,7 @@ export async function runAgentLoop({
         model,
         messages: [...working, {
           role: "user",
-          content: endedWithToolCalls
-            ? "The tool-step limit was reached. Summarize completed work, verification, and anything still unfinished. Do not call tools."
-            : "Your previous response was cut off. Continue from where it stopped and provide a complete final answer with a short summary. Do not call tools.",
+          content: "The previous exchange is being wrapped up. Provide a concise summary of what was accomplished, what was verified, and any remaining work. Keep it short.",
         }],
         tools: [],
         apiKey,
