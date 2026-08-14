@@ -606,7 +606,14 @@ export async function startServerChatRun(input) {
   const id = randomUUID();
   const session = await getChatSession(input.sessionId, { includeMessages: false });
   if (!session) throw new Error("Session not found");
-  const workspace = session.workspacePath ? resolveProjectWorkspace(session.workspacePath) : process.cwd();
+  let workspace = process.cwd();
+  if (session.workspacePath) {
+    try {
+      workspace = resolveProjectWorkspace(session.workspacePath);
+    } catch {
+      workspace = process.cwd();
+    }
+  }
   const codebase = session.codebase || input.codebase || "";
   const assistantId = input.assistantId || randomUUID();
   const messages = Array.isArray(input.persistedMessages)
@@ -642,6 +649,26 @@ export function isRunLiveForSession(sessionId) {
     return true;
   }
   return false;
+}
+
+/** Look up a sub-agent and its live events across all in-process runs. */
+export function getSubAgentInfo(subId) {
+  for (const run of liveRuns.values()) {
+    const sub = run.subAgents?.get(subId);
+    if (sub) {
+      return {
+        id: sub.id,
+        role: sub.role,
+        task: sub.task,
+        status: sub.status,
+        runId: run.id,
+        sessionId: run.sessionId,
+        events: sub.events || [],
+        lastSeq: sub.seq || 0,
+      };
+    }
+  }
+  return null;
 }
 
 export async function stopServerChatRun(id) {

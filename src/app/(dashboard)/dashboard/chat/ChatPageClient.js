@@ -6,6 +6,7 @@ import { Button, ModelSelectModal } from "@/shared/components";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatToolCard from "./ChatToolCard";
 import SlashCommandPalette, { CHAT_COMMANDS, commandMatches } from "./SlashCommandPalette";
+import ProjectSidebar from "./ProjectSidebar";
 import {
   abortChatRun,
   buildStopSummary,
@@ -159,6 +160,183 @@ function downloadText(filename, text) {
   URL.revokeObjectURL(url);
 }
 
+function SubAgentOverlay({ agent, onClose }) {
+  const [info, setInfo] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch(`/api/chat/subagents/${agent.id}`)
+        .then((r) => r.json())
+        .then((d) => { if (alive && !d.error) setInfo(d); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 1500);
+    return () => { alive = false; clearInterval(id); };
+  }, [agent.id]);
+
+  const textEvents = (info?.events || []).filter((e) => e.type === "text" || e.type === "message");
+  const lastText = textEvents.at(-1)?.data?.content || "";
+  const reasoning = (info?.events || []).filter((e) => e.type === "reasoning").at(-1)?.data?.content || "";
+  const toolCount = (info?.events || []).filter((e) => e.type === "tool_start").length;
+
+  return (
+    <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label="Sub-agent transcript">
+      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-2xl border border-border bg-surface shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <span className="material-symbols-outlined text-[20px] text-primary">account_tree</span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold">{agent.role || "Sub-agent"}</p>
+            <p className="truncate text-[11px] text-text-muted">{agent.task}</p>
+          </div>
+          <span className={`text-[11px] ${info?.status === "running" ? "text-primary" : info?.status === "failed" ? "text-red-500" : "text-emerald-500"}`}>
+            {info?.status || "running"}
+          </span>
+          <button onClick={onClose} className="text-text-muted hover:text-text-main"><span className="material-symbols-outlined text-[18px]">close</span></button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div className="mx-auto max-w-3xl space-y-4">
+            {reasoning ? (
+              <details open className="rounded-xl border border-border bg-background/40 px-3 py-2">
+                <summary className="cursor-pointer text-[11px] font-medium text-text-muted">Reasoning</summary>
+                <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">{reasoning}</div>
+              </details>
+            ) : null}
+            <div className="whitespace-pre-wrap break-words text-sm leading-6">{lastText || "Working…"}</div>
+            {toolCount > 0 ? <p className="text-[11px] text-text-muted">{toolCount} tool call{toolCount > 1 ? "s" : ""}</p> : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AskWizard({ ask, onAnswer }) {
+  const questions = Array.isArray(ask.questions) ? ask.questions.filter((q) => q && q.question) : [];
+  const [idx, setIdx] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [custom, setCustom] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+
+  if (questions.length === 0) return null;
+
+  const q = questions[idx];
+  const isLast = idx === questions.length - 1;
+  const multi = !!q.multiSelect;
+  const selected = answers[idx] || [];
+
+  const commitCustom = (base) => {
+    const v = custom.trim();
+    if (!v) return base;
+    const cur = base[idx] || [];
+    return multi ? { ...base, [idx]: [...cur.filter((x) => x !== v), v] } : { ...base, [idx]: [v] };
+  };
+
+  const submit = (final) => {
+    const all = final || answers;
+    const lines = questions.map((qq, i) => {
+      const a = all[i]?.length ? all[i].join(", ") : "(no answer)";
+      return `${qq.header || qq.question}: ${a}`;
+    });
+    setSubmitted(true);
+    onAnswer(questions.length === 1 ? (all[0]?.join(", ") || "") : lines.join("\n"));
+  };
+
+  const toggleOption = (o) => {
+    if (multi) {
+      setAnswers((a) => ({ ...a, [idx]: selected.includes(o) ? selected.filter((x) => x !== o) : [...selected, o] }));
+    } else {
+      const next = { ...answers, [idx]: [o] };
+      setAnswers(next);
+      if (questions.length === 1) submit(next);
+    }
+  };
+
+  if (submitted) {
+    return (
+      <div className="rounded-xl border border-primary/40 bg-primary/10 px-4 py-3">
+        <p className="text-[11px] text-text-muted">Answered ✓</p>
+      </div>
+    );
+  }
+
+  const hasOptions = (q.options || []).length > 0;
+
+  return (
+    <div className="rounded-xl border border-primary/40 bg-primary/10 px-4 py-3">
+      <div className="flex items-start gap-2">
+        <span className="material-symbols-outlined text-[20px] text-primary">help</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            {q.header ? (
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">{q.header}</span>
+            ) : null}
+            {questions.length > 1 ? (
+              <span className="text-[11px] text-text-muted">{idx + 1}/{questions.length}</span>
+            ) : null}
+          </div>
+          <p className="mt-1.5 text-sm font-medium">{q.question}</p>
+
+          {hasOptions ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {q.options.map((o) => (
+                <Button
+                  key={o}
+                  size="sm"
+                  variant={selected.includes(o) ? "secondary" : "outline"}
+                  onClick={() => toggleOption(o)}
+                >
+                  {o}
+                </Button>
+              ))}
+            </div>
+          ) : null}
+
+          <input
+            type="text"
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            placeholder={hasOptions ? "Or type your own…" : "Type your answer…"}
+            className="mt-2.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (isLast) submit(commitCustom(answers));
+                else {
+                  setAnswers(commitCustom(answers));
+                  setCustom("");
+                  setIdx((i) => Math.min(questions.length - 1, i + 1));
+                }
+              }
+            }}
+          />
+
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <Button size="sm" variant="ghost" disabled={idx === 0} onClick={() => setIdx((i) => Math.max(0, i - 1))}>
+              Prev
+            </Button>
+            {isLast ? (
+              <Button size="sm" onClick={() => submit(commitCustom(answers))}>Submit</Button>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => {
+                  setAnswers(commitCustom(answers));
+                  setCustom("");
+                  setIdx((i) => Math.min(questions.length - 1, i + 1));
+                }}
+              >
+                Next
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatPageClient() {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState("");
@@ -221,10 +399,14 @@ export default function ChatPageClient() {
   });
   const [tasks, setTasks] = useState([]);
   const [subAgents, setSubAgents] = useState([]);
+  const [viewingAgent, setViewingAgent] = useState(null);
+  const [liveInfo, setLiveInfo] = useState({ turn: 0, tool: null, waiting: false, notice: "", elapsed: 0 });
   const [approvals, setApprovals] = useState([]);
   const [asks, setAsks] = useState([]);
   const [projectOpen, setProjectOpen] = useState(true);
   const [projectInfo, setProjectInfo] = useState(null);
+  const [projectRefresh, setProjectRefresh] = useState(0);
+  const [pendingProject, setPendingProject] = useState(null);
   const [codebase, setCodebase] = useState("");
   const [codebaseEdit, setCodebaseEdit] = useState(false);
   const [codebaseValue, setCodebaseValue] = useState("");
@@ -611,6 +793,19 @@ export default function ChatPageClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Elapsed-seconds ticker for the streaming indicator while a run is sending.
+  useEffect(() => {
+    if (!isSending) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLiveInfo((s) => ({ ...s, elapsed: 0 }));
+      return undefined;
+    }
+    const id = setInterval(() => {
+      setLiveInfo((s) => ({ ...s, elapsed: s.elapsed + 1 }));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isSending]);
+
   useEffect(() => {
     if (!activeSessionId) return;
     const run = getChatRun(activeSessionId);
@@ -668,6 +863,16 @@ export default function ChatPageClient() {
     setSessionModalOpen(true);
   };
 
+  const resolveAnalyze = (analyze) => {
+    const proj = pendingProject;
+    setPendingProject(null);
+    if (!proj) return;
+    if (analyze) {
+      setDraft("Analyze this project: structure, stack, scripts, and how to run it.");
+      sendMessage();
+    }
+  };
+
   const openEditModal = (session) => {
     setSessionModalMode("edit");
     setSessionFormName(session.title || "");
@@ -679,11 +884,33 @@ export default function ChatPageClient() {
   const saveSessionModal = async () => {
     const name = sessionFormName.trim();
     const url = sessionFormUrl.trim();
+    // If the URL looks like a local folder path, resolve it into a project workspace
+    // (so the agent runs `cd`/tools inside it, not the 9Router root).
+    let workspacePath = "";
+    let projectMeta = {};
+    const isLocalPath = /^[A-Za-z]:[\\/]|^[\\/]|^\.\.?[\\/]/i.test(url);
+    if (url && isLocalPath) {
+      try {
+        const insp = await fetch("/api/chat/projects/inspect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: url }),
+        });
+        const inspData = await insp.json().catch(() => ({}));
+        if (insp.ok && inspData.workspacePath) {
+          workspacePath = inspData.workspacePath;
+          projectMeta = { name: inspData.name, packageName: inspData.packageName };
+        }
+      } catch {
+        // ignore — keep codebase-only if inspect fails
+      }
+    }
     try {
       if (sessionModalMode === "edit" && sessionFormEditId) {
-        await patchSession(sessionFormEditId, { title: name || "New chat", codebase: url });
+        await patchSession(sessionFormEditId, { title: name || "New chat", codebase: url, workspacePath, projectMeta });
         setCodebase(url);
-        setSessions((prev) => prev.map((s) => s.id === sessionFormEditId ? { ...s, title: name || "New chat", codebase: url } : s));
+        setSessions((prev) => prev.map((s) => s.id === sessionFormEditId ? { ...s, title: name || "New chat", codebase: url, workspacePath, projectMeta } : s));
+        if (workspacePath) { setProjectInfo({ workspacePath, name: projectMeta.name, scripts: {}, packageName: projectMeta.packageName }); setProjectOpen(true); }
       } else {
         const res = await fetch("/api/chat/sessions", {
           method: "POST",
@@ -695,6 +922,8 @@ export default function ChatPageClient() {
             systemPrompt: activeSession?.systemPrompt || "",
             params: activeSession?.params || DEFAULT_PARAMS,
             codebase: url,
+            workspacePath,
+            projectMeta,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -944,6 +1173,25 @@ export default function ChatPageClient() {
     fn();
   };
 
+  // Keep the live streaming indicator in sync with run events.
+  const updateLiveFromEvent = (event, data) => {
+    if (event.type === "status") {
+      setLiveInfo((s) => ({ ...s, turn: Number(data.step) || s.turn, notice: "", waiting: false }));
+    } else if (event.type === "tool_start") {
+      setLiveInfo((s) => ({ ...s, tool: data.name || null, waiting: false, notice: "" }));
+    } else if (event.type === "tool_result") {
+      setLiveInfo((s) => ({ ...s, tool: null, notice: "" }));
+    } else if (event.type === "ask") {
+      setLiveInfo((s) => ({ ...s, waiting: true, tool: null }));
+    } else if (event.type === "approval") {
+      setLiveInfo((s) => ({ ...s, waiting: true, tool: data.tool || null }));
+    } else if (event.type === "notice") {
+      setLiveInfo((s) => ({ ...s, notice: data.message || "" }));
+    } else if (event.type === "done" || event.type === "error") {
+      setLiveInfo({ turn: 0, tool: null, waiting: false, notice: "", elapsed: 0 });
+    }
+  };
+
   const finalizeRun = async ({
     sessionId,
     sessionMeta,
@@ -1007,6 +1255,7 @@ export default function ChatPageClient() {
         )
       );
     }
+    setProjectRefresh((n) => n + 1);
     applyUiIfActive(sessionId, () => {
       setMessages(finalMessages);
       setIsSending(false);
@@ -1271,6 +1520,7 @@ export default function ChatPageClient() {
           if (!event || event.seq <= lastSeq) return;
           lastSeq = event.seq;
           const data = event.data || {};
+          updateLiveFromEvent(event, data);
           if (event.type === "text") {
             assistantText = data.content || assistantText;
             pushLive(
@@ -1657,7 +1907,8 @@ export default function ChatPageClient() {
     setDraft("");
     try {
       if (name === "help") {
-        setError(CHAT_COMMANDS.map((command) => `/${command.name}${command.args ? ` ${command.args}` : ""} — ${command.summary}`).join("\n"));
+        const list = CHAT_COMMANDS.map((command) => `/${command.name}${command.args ? ` ${command.args}` : ""} — ${command.summary}`).join("\n");
+        setMessages((prev) => [...prev, { id: `sys_${Date.now()}`, role: "system", content: list, status: "done", createdAt: new Date().toISOString() }]);
       } else if (name === "new") await handleNewChat();
       else if (name === "clear") await sessionAction("clear");
       else if (name === "undo") await sessionAction("undo");
@@ -1697,6 +1948,7 @@ export default function ChatPageClient() {
         await patchSession(activeSessionId, { workspacePath: data.workspacePath, projectMeta: { name: data.name, packageName: data.packageName } });
         setProjectInfo(data);
         setProjectOpen(true);
+        setPendingProject({ path: data.workspacePath, name: data.name });
       } else if (name === "codebase") {
         const current = sessions.find((s) => s.id === activeSessionId);
         if (current) openEditModal(current);
@@ -1925,9 +2177,34 @@ export default function ChatPageClient() {
           </div>
         </header>
 
-        {agentStatus ? (
-          <div className="shrink-0 border-b border-border bg-primary/5 px-4 py-1.5 text-[11px] text-primary">
-            {agentStatus}
+        {isSending ? (
+          <div className="shrink-0 border-b border-border bg-primary/5 px-4 py-1.5 text-[11px] text-primary flex items-center gap-2">
+            <span className="flex items-center gap-0.5">
+              <span className="size-1.5 rounded-full bg-primary animate-pulse" />
+              <span className="size-1.5 rounded-full bg-primary animate-pulse [animation-delay:0.15s]" />
+              <span className="size-1.5 rounded-full bg-primary animate-pulse [animation-delay:0.3s]" />
+            </span>
+            <span className="truncate">
+              {liveInfo.waiting ? (
+                <span className="flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[14px]">help</span>
+                  Waiting for your answer…
+                </span>
+              ) : liveInfo.notice ? (
+                liveInfo.notice
+              ) : liveInfo.tool ? (
+                <span className="flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[14px]">build</span>
+                  Running: {liveInfo.tool}
+                  {liveInfo.turn > 0 ? ` · step ${liveInfo.turn}` : ""}
+                </span>
+              ) : (
+                <span>
+                  Working{liveInfo.turn > 0 ? ` · step ${liveInfo.turn}` : ""}
+                  {liveInfo.elapsed > 0 ? ` · ${liveInfo.elapsed}s` : ""}
+                </span>
+              )}
+            </span>
           </div>
         ) : null}
 
@@ -2058,8 +2335,23 @@ export default function ChatPageClient() {
               {windowed.list.map((message, wi) => {
                 const isUser = message.role === "user";
                 const isTool = message.role === "tool";
+                const isSystem = message.role === "system";
                 const content = textValue(message.content);
                 const globalIndex = windowed.start + wi;
+
+                if (isSystem) {
+                  return (
+                    <div key={message.id} data-chat-message-index={globalIndex} className="flex justify-start">
+                      <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-border bg-background/40 px-3 py-2">
+                        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-text-muted">
+                          <span className="material-symbols-outlined text-[13px]">terminal</span>
+                          Command
+                        </div>
+                        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-muted">{content}</pre>
+                      </div>
+                    </div>
+                  );
+                }
 
                 if (isTool) {
                   const preview =
@@ -2237,7 +2529,7 @@ export default function ChatPageClient() {
               <div className="flex flex-wrap items-center gap-2 text-[11px]">
                 {tasks.length > 0 ? <span className="font-medium">Tasks {tasks.filter((item) => item.status === "completed").length}/{tasks.length}</span> : null}
                 {tasks.map((item, index) => <span key={index} className={`rounded-full px-2 py-0.5 ${item.status === "completed" ? "bg-emerald-500/10 text-emerald-600" : item.status === "in_progress" ? "bg-primary/10 text-primary" : "bg-background text-text-muted"}`}>{item.content}</span>)}
-                {subAgents.map((agent) => <span key={agent.id} title={agent.task} className="rounded-full border border-border px-2 py-0.5"><span className={agent.status === "running" ? "text-primary" : agent.status === "failed" ? "text-red-500" : "text-emerald-500"}>●</span> {agent.role}</span>)}
+                {subAgents.map((agent) => <button key={agent.id} type="button" title={agent.task} onClick={() => setViewingAgent(agent)} className="rounded-full border border-border px-2 py-0.5 hover:bg-sidebar"><span className={agent.status === "running" ? "text-primary" : agent.status === "failed" ? "text-red-500" : "text-emerald-500"}>●</span> {agent.role}</button>)}
               </div>
             </div>
           ) : null}
@@ -2259,32 +2551,7 @@ export default function ChatPageClient() {
             </div>
           ))}
           {asks.map((ask) => (
-            <div key={ask.id} className="mx-auto mb-2 max-w-3xl rounded-xl border border-primary/40 bg-primary/10 px-4 py-3">
-              <div className="flex items-start gap-2">
-                <span className="material-symbols-outlined text-[20px] text-primary">help</span>
-                <div className="min-w-0 flex-1">
-                  {(Array.isArray(ask.questions) ? ask.questions : []).map((q, qi) => (
-                    <p key={qi} className="text-sm font-medium">{q.question || q.header || "Question"}</p>
-                  ))}
-                  <div className="mt-2.5 flex flex-wrap gap-2">
-                    {Array.isArray(ask.questions) && ask.questions[0]?.options?.length ? ask.questions[0].options.map((opt) => (
-                      <Button key={opt} size="sm" variant="outline" onClick={() => resolveGate(ask, opt)}>{opt}</Button>
-                    )) : null}
-                  </div>
-                  <input
-                    autoFocus
-                    type="text"
-                    placeholder="Type your answer…"
-                    className="mt-2.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && e.currentTarget.value.trim()) {
-                        resolveGate(ask, e.currentTarget.value.trim());
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
+            <AskWizard key={ask.id} ask={ask} onAnswer={(answer) => resolveGate(ask, answer)} />
           ))}
           <div
             ref={composerRef}
@@ -2457,17 +2724,16 @@ export default function ChatPageClient() {
       </section>
 
       {projectOpen && activeSession?.workspacePath ? (
-        <aside className="hidden xl:flex w-80 shrink-0 flex-col border-l border-border bg-sidebar/25">
-          <div className="border-b border-border px-4 py-3">
-            <div className="flex items-center gap-2"><span className="material-symbols-outlined text-[18px] text-primary">folder_open</span><p className="truncate text-sm font-semibold">{projectInfo?.name || activeSession.projectMeta?.name || "Project"}</p></div>
-            <p className="mt-1 truncate font-mono text-[10px] text-text-muted" title={activeSession.workspacePath}>{activeSession.workspacePath}</p>
-          </div>
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-3">
-            {Object.keys(projectInfo?.scripts || {}).length ? <div className="mb-4"><p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Scripts</p>{Object.entries(projectInfo.scripts).map(([name, command]) => <button key={name} type="button" onClick={() => setDraft(`Run npm script ${name}: ${command}`)} className="mb-1 block w-full rounded-lg border border-border bg-background px-2 py-1.5 text-left"><span className="font-mono text-[11px] text-primary">{name}</span><span className="ml-2 truncate font-mono text-[10px] text-text-muted">{command}</span></button>)}</div> : null}
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Files</p>
-            <div className="space-y-0.5">{(projectInfo?.files || []).map((file) => <div key={file.path} className="flex items-center gap-1.5 rounded px-1.5 py-1 text-[11px] hover:bg-sidebar"><span className="material-symbols-outlined text-[14px] text-text-muted">{file.type === "directory" ? "folder" : "description"}</span><span className="truncate font-mono">{file.path}</span></div>)}</div>
-          </div>
-        </aside>
+        <div className="hidden xl:block w-80 shrink-0 min-w-0">
+          <ProjectSidebar
+            workspacePath={activeSession.workspacePath}
+            sessionId={activeSessionId}
+            refreshKey={projectRefresh}
+            messages={messages}
+            onRun={(cmd) => { setDraft(`Run: ${cmd}`); }}
+            onClose={() => setProjectOpen(false)}
+          />
+        </div>
       ) : null}
 
       <ModelSelectModal
@@ -2600,6 +2866,28 @@ export default function ChatPageClient() {
         </div>
       ) : null}
 
+      {pendingProject ? (
+        <div
+          className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setPendingProject(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Analyze project"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center gap-2">
+              <span className="material-symbols-outlined text-[20px] text-primary">travel_explore</span>
+              <p className="text-sm font-semibold">Project bound: {pendingProject.name}</p>
+            </div>
+            <p className="text-[12px] text-text-muted">Analyze this project first so the agent understands the structure, stack, and how to run it?</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => resolveAnalyze(false)}>No, just chat</Button>
+              <Button size="sm" onClick={() => resolveAnalyze(true)}>Analyze</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {sessionModalOpen ? (
         <div
           className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4"
@@ -2686,6 +2974,10 @@ export default function ChatPageClient() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {viewingAgent ? (
+        <SubAgentOverlay agent={viewingAgent} onClose={() => setViewingAgent(null)} />
       ) : null}
 
       {imagePreview?.src ? (
