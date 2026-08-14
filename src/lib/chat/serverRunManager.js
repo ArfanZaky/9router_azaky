@@ -577,6 +577,7 @@ async function execute(run) {
     const title = !session?.title || session.title === "New chat" ? makeTitle(run.titleSeed) : session.title;
     await updateChatSession(run.sessionId, { title, model: run.request.model, providerId: run.providerId }).catch(() => {});
     const status = stopped ? "stopped" : "completed";
+    run.status = status;
     const result = { messages: run.messages, finalText: content, title, tokenUsage: run.tokenUsage || null };
     await updateChatRunRecord(run.id, { status, result, finishedAt: new Date().toISOString() });
     await emit(run, "done", { ...result, stopped });
@@ -591,6 +592,7 @@ async function execute(run) {
     patchAssistant(run, { content, status: run.abortController.signal.aborted ? "done" : "error", error: run.abortController.signal.aborted ? undefined : message });
     await checkpoint(run, true);
     const status = run.abortController.signal.aborted ? "stopped" : "failed";
+    run.status = status;
     await updateChatRunRecord(run.id, { status, error: status === "failed" ? message : null, result: { messages: run.messages, finalText: content }, finishedAt: new Date().toISOString() });
     await emit(run, status === "failed" ? "error" : "done", { message, messages: run.messages, finalText: content, stopped: status === "stopped" });
   } finally {
@@ -610,7 +612,7 @@ export async function startServerChatRun(input) {
   const messages = Array.isArray(input.persistedMessages)
     ? input.persistedMessages
     : [...request.messages, { id: assistantId, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }];
-  const run = { id, sessionId: input.sessionId, mode: input.mode === "agent" ? "agent" : "plain", providerId: input.providerId || "", request, assistantId, messages, assistantText: "", reasoning: "", tokenUsage: null, titleSeed: input.titleSeed || "", workspace, codebase, steering: [], tasks: [], subAgents: new Map(), gates: new Map(), goal: null, autoApprove: request.autoApprove, abortController: new AbortController(), listeners: new Set(), events: [], seq: 0, lastCheckpointAt: 0 };
+  const run = { id, sessionId: input.sessionId, mode: input.mode === "agent" ? "agent" : "plain", providerId: input.providerId || "", request, assistantId, messages, assistantText: "", reasoning: "", tokenUsage: null, titleSeed: input.titleSeed || "", workspace, codebase, steering: [], tasks: [], subAgents: new Map(), gates: new Map(), goal: null, autoApprove: request.autoApprove, status: "queued", abortController: new AbortController(), listeners: new Set(), events: [], seq: 0, lastCheckpointAt: 0 };
   run.goal = (await getActiveChatGoal(run.sessionId).catch(() => null)) || null;
   await createChatRun({ id, sessionId: run.sessionId, mode: run.mode, request: { ...request, apiKey: "" } });
   liveRuns.set(id, run);
@@ -624,6 +626,22 @@ export async function getServerChatRun(id, after = 0) {
   if (!record) return null;
   const events = live ? live.events.filter((event) => event.seq > Number(after || 0)) : await listChatRunEvents(id, { after });
   return { ...record, events, live: !!live, lastSeq: live?.seq || events.at(-1)?.seq || 0 };
+}
+
+/**
+ * True only when a run for this session is genuinely executing in THIS process.
+ * A DB row stuck in 'queued'/'running' after a server restart is stale and must
+ * NOT block session edits — otherwise /clear, undo, fork, edit hang forever.
+ * A finished run (status stopped/completed/failed) no longer counts as live.
+ */
+export function isRunLiveForSession(sessionId) {
+  for (const run of liveRuns.values()) {
+    if (run.sessionId !== sessionId) continue;
+    if (run.status === "stopped" || run.status === "completed" || run.status === "failed") continue;
+    if (run.abortController.signal.aborted) continue;
+    return true;
+  }
+  return false;
 }
 
 export async function stopServerChatRun(id) {

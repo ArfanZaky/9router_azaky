@@ -3,9 +3,9 @@ import {
   clearChatSession,
   editChatFromMessage,
   forkChatSession,
-  getActiveChatRunForSession,
   undoChatExchange,
 } from "@/lib/localDb";
+import { isRunLiveForSession } from "@/lib/chat/serverRunManager.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,10 +15,14 @@ export async function POST(request, { params }) {
     const { id } = await params;
     const body = await request.json().catch(() => ({}));
     const action = String(body.action || "");
-    const activeRun = await getActiveChatRunForSession(id);
-    if (activeRun) {
+
+    // Only block when a run is genuinely live in this process. A DB row stuck in
+    // 'queued'/'running' after a restart is stale and must not block edits.
+    if (isRunLiveForSession(id)) {
       return NextResponse.json({ error: "Stop the active run before changing this conversation" }, { status: 409 });
     }
+    // Stale rows (from a crashed/restarted process) are safe to ignore; leave them
+    // untouched here so history is preserved, but no longer block edits.
 
     let result;
     if (action === "clear") result = await clearChatSession(id);
