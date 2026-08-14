@@ -96,16 +96,40 @@ function truncate(str, max) {
   return `${s.slice(0, max)}\n\n… [truncated ${s.length - max} chars]`;
 }
 
-async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress } = {}) {
+// Resolve which shell + argv to use. Returns { shell, args }.
+function resolveShell(shell, cmd, isWin) {
+  const s = String(shell || "").trim().toLowerCase();
+  if (s === "powershell") {
+    return { shell: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", cmd] };
+  }
+  if (s === "pwsh") {
+    return { shell: "pwsh", args: ["-NoProfile", "-NonInteractive", "-Command", cmd] };
+  }
+  if (s === "bash") {
+    return { shell: "bash", args: ["-c", cmd] };
+  }
+  if (s === "sh") {
+    return { shell: "sh", args: ["-c", cmd] };
+  }
+  if (s === "cmd") {
+    return { shell: "cmd.exe", args: ["/d", "/s", "/c", cmd] };
+  }
+  // auto
+  return isWin
+    ? { shell: "cmd.exe", args: ["/d", "/s", "/c", cmd] }
+    : { shell: "/bin/sh", args: ["-c", cmd] };
+}
+
+async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress, shell } = {}) {
   const cmd = String(command || "").trim();
   if (!cmd) return { ok: false, error: "Empty command" };
   for (const re of DENY_CMD) {
     if (re.test(cmd)) return { ok: false, error: `Blocked dangerous command pattern` };
   }
-  const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
-  const args = process.platform === "win32" ? ["/d", "/s", "/c", cmd] : ["-c", cmd];
+  const isWin = process.platform === "win32";
+  const { shell: sh, args } = resolveShell(shell, cmd, isWin);
   return await new Promise((resolve) => {
-    const child = spawn(shell, args, {
+    const child = spawn(sh, args, {
       cwd: cwd || process.cwd(),
       env: process.env,
       windowsHide: true,
@@ -289,12 +313,13 @@ export const TOOL_DEFS = [
     function: {
       name: "bash",
       description:
-        "Run a shell command on the host machine (Windows cmd / Unix sh). Use for git, npm, builds, diagnostics. Prefer non-interactive commands.",
+        "Run a shell command on the host machine. Choose the shell via the optional `shell` arg (auto/cmd/powershell/pwsh/bash/sh; default auto picks cmd on Windows, sh elsewhere). Use for git, npm, builds, diagnostics, PowerShell one-liners. Prefer non-interactive commands.",
       parameters: {
         type: "object",
         properties: {
           command: { type: "string", description: "Shell command to run" },
           cwd: { type: "string", description: "Working directory (must be under workspace)" },
+          shell: { type: "string", description: "Shell to use: auto | cmd | powershell | pwsh | bash | sh. Default auto." },
         },
         required: ["command"],
       },
@@ -498,7 +523,7 @@ export async function executeTool(name, args = {}, ctx = {}) {
           ? resolveSafePath(args.cwd, workspace, accessMode)
           : path.resolve(workspace || process.cwd());
         // sandbox never reaches here; full still denies dangerous patterns
-        const result = await runBash(args.command, { cwd, onProgress: ctx.onProgress });
+        const result = await runBash(args.command, { cwd, shell: args.shell, onProgress: ctx.onProgress });
         return JSON.stringify(result);
       }
       case "read_file": {
