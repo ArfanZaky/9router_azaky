@@ -580,7 +580,7 @@ export default function ChatPageClient() {
       setMessages([]);
       return null;
     }
-    const res = await fetch(`/api/chat/sessions/${id}`);
+    const res = await fetch(`/api/chat/sessions/${id}?limit=1000`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Failed to load session");
     setMessages(data.messages || []);
@@ -1987,6 +1987,11 @@ export default function ChatPageClient() {
       } else if (name === "verify") {
         setVerifyMode((v) => !v);
         setError(verifyMode ? "Verification disabled for next run" : "Verification enabled for next run");
+      } else if (name === "compact") {
+        const keepN = Number(globalThis.prompt?.("Keep last N messages verbatim?", "20")) || 20;
+        await sendMessage({
+          systemPromptOverride: `You are now acting as a session compressor. Your task is to summarize older messages while preserving the most recent ${keepN} messages verbatim. Write your summary using write_file to /tmp/compact_summary.md, then call compact_session with keepLastN=${keepN}.`,
+        });
       } else throw new Error(`Unknown command: /${name}`);
     } catch (e) {
       setError(textValue(e.message));

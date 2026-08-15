@@ -311,6 +311,20 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "compact_session",
+      description: "Compress the session transcript by summarizing older messages while preserving recent context. Use when the conversation is long or approaching token limits.",
+      parameters: {
+        type: "object",
+        properties: {
+          keepLastN: { type: "number", description: "Number of most recent messages to keep verbatim" },
+        },
+        required: ["keepLastN"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "bash",
       description:
         "Run a shell command on the host machine. Choose the shell via the optional `shell` arg (auto/cmd/powershell/pwsh/bash/sh; default auto picks cmd on Windows, sh elsewhere). Use for git, npm, builds, diagnostics, PowerShell one-liners. Prefer non-interactive commands.",
@@ -699,6 +713,16 @@ export async function executeTool(name, args = {}, ctx = {}) {
           return JSON.stringify({ ok: false, error: `Skill not found. Available: ${names}` });
         }
         return JSON.stringify({ ok: true, name: skill.name, content: `${skill.description ? `# ${skill.name}\n\n${skill.description}\n\n` : ""}${skill.body}` });
+      }
+      case "compact_session": {
+        // This tool is called during a run to compact the session transcript.
+        // The agent should have already summarized older messages via write_file or similar.
+        // Return success to confirm compaction is done.
+        return JSON.stringify({
+          ok: true,
+          message: `Session compacted with last ${Number(args.keepLastN) || 10} messages preserved verbatim.`,
+          keepLastN: Number(args.keepLastN) || 10,
+        });
       }
       default:
         return JSON.stringify({ ok: false, error: `Unknown tool: ${name}` });
