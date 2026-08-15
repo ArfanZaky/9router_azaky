@@ -6,7 +6,7 @@
 
 ## OVERVIEW
 
-9Router WYx0 — local AI router/proxy that aggregates 50+ LLM providers behind an OpenAI-compatible API. Next.js 16 App Router + Express-style SSE streaming engine (`open-sse/`). Ships as global npm CLI (`wyxrouter`) with embedded dashboard, MITM proxy, and browser-based bulk account automation.
+9Router — local AI router/proxy that aggregates 50+ LLM providers behind an OpenAI-compatible API. Next.js 16 App Router + Express-style SSE streaming engine (`open-sse/`). Ships as global npm CLI with embedded dashboard, MITM proxy, and browser-based bulk account automation.
 
 ## STRUCTURE
 

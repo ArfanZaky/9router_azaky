@@ -1,4 +1,4 @@
-# v0.5.30-wyx0.1 (2026-07-15)
+# v0.5.30 (2026-07-15)
 
 ## Merge Upstream v0.5.30
 - Merged official 9Router v0.5.30 (115 commits) into WYx0 fork
@@ -8,7 +8,7 @@
 
 ---
 
-# v0.5.9-wyx0.5 (2026-06-23)
+# v0.5.9 (2026-06-23)
 
 ## Sorotan
 - CodeBuddy biasa dan CodeBuddy CN sekarang dipisahkan lagi, jadi provider, jumlah akun, dan quota tracker bisa tampil dua-duanya.
@@ -17,16 +17,7 @@
 - Runtime browser automation untuk Chromium/Camoufox dibuat lebih stabil di dev, CLI, build, dan package npm.
 - Fix blocker Windows CLI yang bikin automation gagal dengan error `File URL path must be absolute`.
 
-# v0.5.9-wyx0.1 (2026-06-23)
-
-## Sorotan
-- CodeBuddy biasa dipisahkan lagi dari CodeBuddy CN, jadi provider dan quota tracker bisa muncul dua-duanya.
-- Automation CodeBuddy CN via 5sim dibuat lebih jelas: cek token/saldo, beli nomor, tunggu OTP, generate API key, lalu simpan koneksi.
-- Tambahan opsi proxy pool dan round-robin proxy untuk automation login.
-- Runtime browser automation dibuat lebih tahan missing dependency Playwright/Camoufox di dev, CLI, build, dan package npm.
-- Perbaikan build CLI Windows saat folder lama terkunci, serta fix build Next karena import registry CodeBuddy dobel.
-
-# v0.5.8-wyx0.1 (2026-06-22)
+# v0.5.8 (2026-06-22)
 
 ## Release Highlight
 - Optimisasi CodeBuddy agar stream panjang lebih stabil.
@@ -418,7 +409,7 @@
 ## Breaking Changes
 - Tunnel public URL changed — old tunnel links no longer work, please reconnect to get the new URL
 
-# v0.4.44 (2026-05-15) [WYx0]
+# v0.4.44 (2026-05-15)
 
 ## Features
 - Add Blackbox provider with `bb` alias (#1143)
@@ -431,7 +422,7 @@
 - Update provider name retrieval for compatibility provider (#1135)
 - Update JWT_SECRET handling
 
-# v0.4.41 (2026-05-14) [WYx0]
+# v0.4.41 (2026-05-14)
 
 ## Features
 - Add jcode CLI tool integration with auto-configuration (#1047)
@@ -452,12 +443,12 @@
 - Add official logos for Amp CLI, jcode, Qwen Code (replace generic icons)
 - Resize deepseek-tui icon 1024→128 with padding for visual consistency
 
-# v0.4.39 (2026-05-14) [WYx0]
+# v0.4.39 (2026-05-14)
 
 ## Fixes
 - fix(docker): restore `/app/server.js` (v0.4.38 regression)
 
-# v0.4.38 (2026-05-13) [WYx0]
+# v0.4.38 (2026-05-13)
 
 ## Features
 - Add DeepSeek TUI as CLI tool in dashboard (#1088)
@@ -468,12 +459,12 @@
 ## Improvements
 - Clean Docker tags + clearer pulls badge
 
-# v0.4.37 (2026-05-13) [WYx0]
+# v0.4.37 (2026-05-13)
 
 ## Improvements
 - Security hardening — upgrade recommended
 
-# v0.4.36 (2026-05-13) [WYx0]
+# v0.4.36 (2026-05-13)
 
 ## Features
 - Add MiniMax TTS provider support (#1043)
