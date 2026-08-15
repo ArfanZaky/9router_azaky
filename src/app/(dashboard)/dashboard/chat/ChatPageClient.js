@@ -1988,9 +1988,9 @@ export default function ChatPageClient() {
         setVerifyMode((v) => !v);
         setError(verifyMode ? "Verification disabled for next run" : "Verification enabled for next run");
       } else if (name === "compact") {
-        const keepN = Number(globalThis.prompt?.("Keep last N messages verbatim?", "20")) || 20;
+        const keepLastN = 20; // auto-compaction preserves last N messages
         await sendMessage({
-          systemPromptOverride: `You are now acting as a session compressor. Your task is to summarize older messages while preserving the most recent ${keepN} messages verbatim. Write your summary using write_file to /tmp/compact_summary.md, then call compact_session with keepLastN=${keepN}.`,
+          systemPromptOverride: `You are now acting as a session compressor. Your task is to summarize all older messages while keeping the most recent ${keepLastN} messages verbatim. Write your comprehensive summary using write_file to /tmp/compact_summary.md. Then call compact_session with keepLastN=${keepLastN}.`,
         });
       } else throw new Error(`Unknown command: /${name}`);
     } catch (e) {
