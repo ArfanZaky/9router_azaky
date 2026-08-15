@@ -91,11 +91,12 @@ export async function getChatSession(id, { includeMessages = true, messageLimit 
   const session = rowToSession(row);
   if (includeMessages) {
     const lim = Math.min(Math.max(Number(messageLimit) || 500, 1), 2000);
+    // Fetch the N most recent messages and then reverse them so the array stays chronologically ordered.
     const msgs = db.all(
-      `SELECT * FROM chatMessages WHERE sessionId = ? ORDER BY createdAt ASC LIMIT ?`,
+      `SELECT * FROM chatMessages WHERE sessionId = ? ORDER BY createdAt DESC LIMIT ?`,
       [id, lim]
     );
-    session.messages = msgs.map(rowToMessage);
+    session.messages = msgs.reverse().map(rowToMessage);
   }
   return session;
 }
