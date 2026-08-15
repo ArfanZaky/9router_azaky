@@ -84,14 +84,14 @@ export async function listChatSessions({ q = "", limit = 100, offset = 0 } = {})
   return rows.map(rowToSession);
 }
 
-export async function getChatSession(id, { includeMessages = true, messageLimit = 500 } = {}) {
+export async function getChatSession(id, { includeMessages = true, messageLimit } = {}) {
   const db = await getAdapter();
   const row = db.get(`SELECT * FROM chatSessions WHERE id = ?`, [id]);
   if (!row) return null;
   const session = rowToSession(row);
   if (includeMessages) {
-    const lim = Math.min(Math.max(Number(messageLimit) || 500, 1), 2000);
-    // Fetch the N most recent messages and then reverse them so the array stays chronologically ordered.
+    // Use unlimited loading for large contexts (250k+ tokens), default to 1000 msgs as a reasonable cap.
+    const lim = typeof messageLimit !== "number" || messageLimit <= 0 ? 1000 : Math.min(Math.max(messageLimit, 1), 10000);
     const msgs = db.all(
       `SELECT * FROM chatMessages WHERE sessionId = ? ORDER BY createdAt DESC LIMIT ?`,
       [id, lim]
@@ -288,6 +288,33 @@ export async function updateChatMessage(id, data = {}) {
     result = { ...merged, content };
   });
   return result;
+}
+
+/** Compact transcript by deleting old messages, keeping last N verbatim. */
+export async function compactSessionMessages(sessionId, keepLastN = 20) {
+  const db = await getAdapter();
+  const session = db.get(`SELECT id FROM chatSessions WHERE id = ?`, [sessionId]);
+  if (!session) return null;
+  
+  // Get total message count
+  const countResult = db.get(`SELECT COUNT(*) as cnt FROM chatMessages WHERE sessionId = ?`, [sessionId]);
+  const totalCount = countResult?.cnt || 0;
+  
+  // If we have fewer messages than we want to keep, nothing to do
+  if (totalCount <= keepLastN) {
+    return { success: true, message: `Session has only ${totalCount} messages — no compaction needed (keeping last ${keepLastN})` };
+  }
+  
+  // Delete all but the last N messages (most recent N via DESC + LIMIT)
+  const deletedCount = db.run(
+    `DELETE FROM chatMessages WHERE sessionId = ? AND createdAt IN (SELECT createdAt FROM chatMessages WHERE sessionId = ? ORDER BY createdAt DESC OFFSET ?)`,
+    [sessionId, sessionId, Math.max(0, totalCount - keepLastN)]
+  ).changes;
+  
+  // Update session timestamp
+  db.run(`UPDATE chatSessions SET updatedAt = ? WHERE id = ?`, [new Date().toISOString(), sessionId]);
+  
+  return { success: true, deletedCount, keepLastN, totalCount, message: `Compacted: deleted ${deletedCount} messages, kept ${keepLastN}, total now: ${totalCount - deletedCount}` };
 }
 
 export async function deleteChatMessage(id) {

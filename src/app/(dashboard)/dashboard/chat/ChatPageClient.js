@@ -1988,10 +1988,23 @@ export default function ChatPageClient() {
         setVerifyMode((v) => !v);
         setError(verifyMode ? "Verification disabled for next run" : "Verification enabled for next run");
       } else if (name === "compact") {
-        const keepLastN = 20; // auto-compaction preserves last N messages
-        await sendMessage({
-          systemPromptOverride: `You are now acting as a session compressor. Your task is to summarize all older messages while keeping the most recent ${keepLastN} messages verbatim. Write your comprehensive summary using write_file to /tmp/compact_summary.md. Then call compact_session with keepLastN=${keepLastN}.`,
-        });
+        try {
+          const keepLastN = 20; // auto-compaction preserves last 20 messages
+          const res = await fetch(`/api/chat/sessions/${activeSessionId}/compact`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ keepLastN }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || "Failed to compact session");
+          
+          // Reload session after compaction
+          const detailRes = await loadSessionDetail(activeSessionId);
+          
+          setError(`Session compacted: deleted ${data.deletedCount || 0} old messages, kept ${data.keepLastN} recent (${data.totalCount} → ${data.totalCount - data.deletedCount})`);
+        } catch (e) {
+          setError(textValue(e.message));
+        }
       } else throw new Error(`Unknown command: /${name}`);
     } catch (e) {
       setError(textValue(e.message));
