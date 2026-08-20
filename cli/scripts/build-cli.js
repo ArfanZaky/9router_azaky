@@ -130,7 +130,7 @@ try {
   cleanPathForRebuild(cliAppDir, {
     staleDir: staleAppDir,
     label: "old CLI app",
-    processHint: "Close any running wyxrouter / node / npm process using cli/app, then rerun the build.",
+    processHint: "Close any running 9router / node / npm process using cli/app, then rerun the build.",
   });
 } catch (error) {
   console.error(error.message);

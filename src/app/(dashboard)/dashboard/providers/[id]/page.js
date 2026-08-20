@@ -83,6 +83,7 @@ export default function ProviderDetailPage() {
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   const [qoderPatMode, setQoderPatMode] = useState(null);
+  const [importingModels, setImportingModels] = useState(false);
   const { copied, copy } = useCopyToClipboard();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
@@ -609,6 +610,53 @@ export default function ProviderDetailPage() {
       alert(translate("Error fetching models") + ": " + error.message);
     } finally {
       setImportingQoderModels(false);
+    }
+  };
+
+  const handleImportModels = async () => {
+    if (importingModels) return;
+    const activeConnection = connections.find((conn) => conn.isActive !== false);
+    if (!activeConnection) {
+      alert(translate("Please add an active connection first"));
+      return;
+    }
+    setImportingModels(true);
+    try {
+      const res = await fetch(`/api/providers/${activeConnection.id}/models`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || translate("Failed to fetch models"));
+        return;
+      }
+      const models = data.models || [];
+      if (models.length === 0) {
+        alert(translate("No models returned from /models."));
+        return;
+      }
+      let importedCount = 0;
+      const existing = new Set(
+        customModels
+          .filter((m) => m.providerAlias === providerStorageAlias)
+          .map((m) => m.id)
+      );
+      for (const model of models) {
+        const modelId = model.id || model.name || model.model;
+        if (!modelId) continue;
+        if (existing.has(modelId)) continue;
+        await handleAddCustomModel(modelId, "llm", providerStorageAlias);
+        existing.add(modelId);
+        importedCount += 1;
+      }
+      alert(
+        importedCount
+          ? translate("Imported") + ` ${importedCount} ` + translate("model(s)")
+          : translate("No new models were added.")
+      );
+    } catch (error) {
+      console.log("Error importing models:", error);
+      alert(translate("Error fetching models") + ": " + error.message);
+    } finally {
+      setImportingModels(false);
     }
   };
 
@@ -1219,6 +1267,24 @@ export default function ProviderDetailPage() {
           <span className="material-symbols-outlined text-sm">add</span>
           Add Model
         </button>
+
+        {/* Import from /models — for providers with a modelsFetcher (e.g. freebuff2api) */}
+        {(() => {
+          const fetcher = (OAUTH_PROVIDERS[providerId] || APIKEY_PROVIDERS[providerId] || FREE_PROVIDERS[providerId] || FREE_TIER_PROVIDERS[providerId] || WEB_COOKIE_PROVIDERS[providerId])?.modelsFetcher;
+          if (!fetcher || !connections.some((conn) => conn.isActive !== false)) return null;
+          return (
+            <button
+              onClick={handleImportModels}
+              disabled={importingModels}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-500/40 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500 hover:bg-blue-500/5 sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span className="material-symbols-outlined text-sm" style={importingModels ? { animation: "spin 1s linear infinite" } : undefined}>
+                {importingModels ? "progress_activity" : "download"}
+              </span>
+              {importingModels ? translate("Importing...") : translate("Import from /models")}
+            </button>
+          );
+        })()}
 
         {/* Import Qoder models button — only show for qoder provider */}
         {providerId === "qoder" && connections.some((conn) => conn.isActive !== false) && (

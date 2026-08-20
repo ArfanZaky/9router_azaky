@@ -133,6 +133,15 @@ export class DefaultExecutor extends BaseExecutor {
       const normalized = baseUrl.replace(/\/$/, "");
       return `${normalized}/messages`;
     }
+    // Fixed OpenAI-format gateway providers (e.g. freebuff2api) allow a per-connection
+    // baseUrl override (registry baseUrl is the default). Accept host, host/v1, or a
+    // full .../chat/completions URL and normalize to the chat endpoint.
+    if (this.config.format === "openai" && credentials?.providerSpecificData?.baseUrl) {
+      const raw = credentials.providerSpecificData.baseUrl.trim().replace(/\/+$/, "");
+      if (!raw) return this.config.baseUrl;
+      if (/\/chat\/completions$/.test(raw)) return raw;
+      return `${raw}/chat/completions`;
+    }
     // gemini-format: build :streamGenerateContent / :generateContent path
     if (this.config.format === "gemini") {
       return `${this.config.baseUrl}/${model}:${stream ? "streamGenerateContent?alt=sse" : "generateContent"}`;

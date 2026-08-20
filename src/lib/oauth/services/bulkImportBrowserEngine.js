@@ -125,7 +125,7 @@ async function launchChromium({ proxyUrl, headless = true, args = [] } = {}) {
   } else {
     if (!runtime?.installPlaywrightOnly) {
       const err = new Error(
-        "Playwright not installed and runtime helper unavailable. Reinstall wyxrouter, then retry."
+        "Playwright not installed and runtime helper unavailable. Reinstall 9router, then retry."
       );
       err.code = "PLAYWRIGHT_PACKAGE_MISSING";
       throw err;
@@ -133,7 +133,7 @@ async function launchChromium({ proxyUrl, headless = true, args = [] } = {}) {
     const installed = runtime.installPlaywrightOnly({ silent: false });
     if (!installed.ok) {
       const err = new Error(
-        `Playwright auto-install failed: ${installed.reason}. Run "wyxrouter doctor" or reinstall wyxrouter, then retry.`
+        `Playwright auto-install failed: ${installed.reason}. Run "9router doctor" or reinstall 9router, then retry.`
       );
       err.code = "PLAYWRIGHT_INSTALL_FAILED";
       throw err;
@@ -141,7 +141,7 @@ async function launchChromium({ proxyUrl, headless = true, args = [] } = {}) {
     const installedRuntimePlaywright = loadRuntimePlaywright(runtime);
     if (!installedRuntimePlaywright?.chromium) {
       const err = new Error(
-        "Playwright installed into the 9router automation runtime, but Node could not load it. Restart wyxrouter and retry."
+        "Playwright installed into the 9router automation runtime, but Node could not load it. Restart 9router and retry."
       );
       err.code = "PLAYWRIGHT_PACKAGE_MISSING";
       throw err;
@@ -175,7 +175,7 @@ async function loadFirefoxForCamoufox() {
     }
   }
   const friendly = new Error(
-    "Playwright is required to drive Camoufox. Reinstall wyxrouter or pick the Chromium engine."
+    "Playwright is required to drive Camoufox. Reinstall 9router or pick the Chromium engine."
   );
   friendly.code = "PLAYWRIGHT_PACKAGE_MISSING";
   throw friendly;
@@ -196,7 +196,7 @@ async function launchCamoufox({ proxyUrl, headless = true, args = [] } = {}) {
   if (!camoufox) {
     if (!runtime?.installCamoufoxOnly) {
       const err = new Error(
-        "Camoufox not installed and runtime helper unavailable. Reinstall wyxrouter or pick the Chromium engine."
+        "Camoufox not installed and runtime helper unavailable. Reinstall 9router or pick the Chromium engine."
       );
       err.code = "CAMOUFOX_PACKAGE_MISSING";
       throw err;

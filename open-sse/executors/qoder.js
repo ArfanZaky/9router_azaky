@@ -38,7 +38,17 @@ import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels
 
 /**
  * Hoist role:"system" messages out of the messages array (Qoder rejects
- * system in messages) and flatten any multipart content arrays.
+ * system in messages), flatten multipart content arrays, and pass native
+ * OpenAI tool_calls / tool results through untouched.
+ *
+ * Native passthrough matters: an earlier version flattened assistant
+ * tool_calls into text ("[assistant requested tools]\nname(args)") and
+ * wrapped tool results ("[tool result id]\n..."). Qoder mirrored that
+ * flattened shape back in its output, and the "[assistant requested tools]"
+ * marker leaked as content, making opencode treat the tool request as the
+ * final answer and stop. Verified live: Qoder accepts native `tool_calls`
+ * arrays and `role:"tool"` messages (HTTP 200, normal streaming), and emits
+ * native `delta.tool_calls` when given native history.
  */
 function normalizeMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -56,44 +66,65 @@ function normalizeMessages(messages) {
       if (text) systemParts.push(text);
       continue;
     }
+    if (msg.role === "tool") {
+      out.push({
+        role: "tool",
+        tool_call_id: msg.tool_call_id || msg.name || "",
+        content: text,
+        contents: [{ type: "text", text }],
+      });
+      continue;
+    }
     let role = msg.role;
     let normalizedText = text;
-    if (role === "tool") {
-      role = "user";
-      normalizedText = `[tool result ${msg.tool_call_id || msg.name || "unknown"}]\n${text}`;
-    } else if (role === "function" || role === "model") {
+    if (role === "function" || role === "model") {
       role = "assistant";
     } else if (role !== "user" && role !== "assistant") {
       role = "assistant";
     }
-    if (role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-      const calls = msg.tool_calls.map((call) => {
-        const fn = call?.function || {};
-        return `${fn.name || "tool"}(${fn.arguments || ""})`;
-      });
-      normalizedText = [text, "[assistant requested tools]", ...calls].filter(Boolean).join("\n");
-    }
-    out.push({
+    const message = {
       role,
       content: normalizedText,
       contents: [{ type: "text", text: normalizedText }],
-    });
+    };
+    if (role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      // Keep native tool_calls — see module comment. Flattening to text is
+      // what taught Qoder to echo the "[assistant requested tools]" marker.
+      message.tool_calls = msg.tool_calls.map((call, index) => {
+        const fn = call?.function || {};
+        const args = fn.arguments;
+        return {
+          id: call.id || `call_qoder_${index}`,
+          type: "function",
+          function: {
+            name: fn.name || "tool",
+            arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}),
+          },
+        };
+      });
+    }
+    out.push(message);
   }
   return { messages: out, systemText: systemParts.join("\n\n"), images };
 }
 
 function compactMessages(messages, maxInputTokens) {
   const budgetChars = Math.max(180000, Math.floor((Number(maxInputTokens) || 0) * 3.2));
-  let total = messages.reduce((sum, message) => sum + (message.content?.length || 0), 0);
+  const size = (message) =>
+    (message?.content?.length || 0) +
+    (Array.isArray(message?.tool_calls)
+      ? message.tool_calls.reduce((sum, call) => sum + (call?.function?.arguments?.length || 0), 0)
+      : 0);
+  let total = messages.reduce((sum, message) => sum + size(message), 0);
   if (total <= budgetChars) return messages;
   const kept = [...messages];
   while (kept.length > 1 && total > budgetChars) {
-    total -= kept.shift().content?.length || 0;
+    total -= size(kept[0]);
+    kept.shift();
   }
   const marker = "[earlier context compacted]";
   return [{ role: "user", content: marker, contents: [{ type: "text", text: marker }] }, ...kept];
 }
-
 function extractText(content) {
   if (typeof content === "string") return content;
   if (content == null) return "";

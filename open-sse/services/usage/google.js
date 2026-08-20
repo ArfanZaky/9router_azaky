@@ -120,7 +120,9 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
   try {
     // Fetch subscription info once — reuse for both projectId and plan
     const subscriptionInfo = await getAntigravitySubscriptionInfo(accessToken, proxyOptions);
-    const projectId = subscriptionInfo?.cloudaicompanionProject || null;
+    const projectId = normalizeCloudCodeProjectId(subscriptionInfo?.cloudaicompanionProject);
+    const currentTierId = subscriptionInfo?.currentTier?.id || null;
+    const paidTierName = subscriptionInfo?.paidTier?.name || null;
 
     const response = await fetchWithTimeout(ANTIGRAVITY_CONFIG.quotaApiUrl, {
       method: "POST",
@@ -207,7 +209,7 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
     }
 
     return {
-      plan: subscriptionInfo?.currentTier?.name || "Unknown",
+      plan: paidTierName || (currentTierId === "free-tier" ? "Free" : (subscriptionInfo?.currentTier?.name || "Unknown")),
       quotas,
       subscriptionInfo,
     };

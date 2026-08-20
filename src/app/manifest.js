@@ -1,8 +1,8 @@
 export default function manifest() {
   return {
-    name: '9Router WYx0 - Provider Automation',
-    short_name: '9Router WYx0',
-    description: 'WYx0 fork focused on Kiro and CodeBuddy automation, multi-account workflows, and quota tracking.',
+    name: '9Router - Provider Automation',
+    short_name: '9Router',
+    description: 'Provider automation, multi-account workflows, and quota tracking.',
     start_url: '/',
     display: 'standalone',
     background_color: '#0a0a0a',

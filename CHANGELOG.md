@@ -1,10 +1,10 @@
 # v0.5.30 (2026-07-15)
 
 ## Merge Upstream v0.5.30
-- Merged official 9Router v0.5.30 (115 commits) into WYx0 fork
+- Merged official 9Router v0.5.30 (115 commits) into custom fork
 - New upstream providers: Perplexity Agent, Grok CLI, Featherless, Kimchi, Venice, ClinePass
 - Major executor refactoring in Codex and streaming handlers
-- Preserved WYx0 automation features, quota tracking, and custom configurations
+- Preserved automation features, quota tracking, and custom configurations
 
 ---
 

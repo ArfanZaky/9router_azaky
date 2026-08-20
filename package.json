@@ -1,15 +1,15 @@
 {
-  "name": "wyxrouter-app",
-  "version": "0.5.30-wyx0.1",
-  "description": "WYx0 fork of 9Router with provider automation and quota tracking",
+  "name": "9router-app",
+  "version": "0.5.30",
+  "description": "9Router web dashboard",
   "private": true,
   "scripts": {
     "dev": "node chat-server.mjs",
     "dev:webpack": "node chat-server.mjs",
     "build": "node ./scripts/build-next.mjs",
     "start": "node chat-server.mjs",
-    "dev:bun": "bun --bun next dev --webpack --port 2026",
-    "build:bun": "bun --bun next build --webpack",
+    "dev:bun": "bun --hot chat-server.mjs",
+    "build:bun": "bun --minify ./scripts/build-next.mjs",
     "start:bun": "bun ./.next/standalone/server.js",
     "cli:pack": "npm --prefix cli run pack:cli",
     "cli:publish": "npm --prefix cli run publish:cli",
@@ -68,7 +68,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Wisyam/9router_wyx0"
+    "url": "https://github.com/decolua/9router"
   },
   "homepage": "https://9router.com"
 }

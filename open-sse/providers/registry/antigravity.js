@@ -19,7 +19,10 @@ export default {
   category: "oauth",
   serviceKinds: ["llm", "image"],
   transport: {
-    baseUrls: [ANTIGRAVITY_IDE_BASE_URL],
+    baseUrls: [
+      ANTIGRAVITY_IDE_BASE_URL,
+      "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    ],
     format: "antigravity",
     headers: {
       "User-Agent": getAntigravityUserAgent(), // Dynamic: matches real IDE v2.1.1

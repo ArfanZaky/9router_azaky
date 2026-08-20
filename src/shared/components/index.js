@@ -44,9 +44,9 @@ export { default as QoderSignupAutomationModal } from "./QoderSignupAutomationMo
 export { default as QoderGrantModal } from "./QoderGrantModal";
 export { default as CodeBuddyQuotaCookieModal } from "./CodeBuddyQuotaCookieModal";
 export { default as MergeConnectionsModal } from "./MergeConnectionsModal";
+export { default as Freebuff2ApiGatewayModal } from "./Freebuff2ApiGatewayModal";
 export { default as Pagination } from "./Pagination";
 
 // Layouts
 export * from "./layouts";
-
 

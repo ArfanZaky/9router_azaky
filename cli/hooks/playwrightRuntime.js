@@ -1,4 +1,4 @@
-// Ensure Playwright + Chromium are usable at runtime. `npm i -g wyxrouter`
+// Ensure Playwright + Chromium are usable at runtime. `npm i -g 9router`
 // installs the playwright npm package but does NOT trigger its postinstall
 // browser download under all package managers, so the first bulk-import
 // attempt fails with "Executable doesn't exist at .../chrome-headless-shell".
@@ -25,7 +25,7 @@ const PLAYWRIGHT_PACKAGE = "playwright";
 
 let cachedReady = null;
 
-// Walk up from `__dirname` (cli/hooks) to find the wyxrouter package root,
+// Walk up from `__dirname` (cli/hooks) to find the 9router package root,
 // then probe both `node_modules/playwright` (when running from source) and
 // `app/node_modules/playwright` (the location used by the published npm
 // package, where the bundled Next.js app keeps its deps).
@@ -44,7 +44,7 @@ function findBundledPlaywrightDirs() {
     if (fs.existsSync(inApp)) dirs.push(path.dirname(inApp));
   }
 
-  // hooks/ -> wyxrouter/ (npm published) -> walk a few levels up for safety
+  // hooks/ -> 9router/ (npm published) -> walk a few levels up for safety
   let dir = path.resolve(__dirname, "..");
   for (let i = 0; i < 6 && dir; i += 1) {
     probe(dir);

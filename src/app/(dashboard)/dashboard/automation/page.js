@@ -13,6 +13,7 @@ import {
   OAuthModal,
   QoderGrantModal,
   QoderSignupAutomationModal,
+  Freebuff2ApiGatewayModal,
 } from "@/shared/components";
 import { FREE_PROVIDERS } from "@/shared/constants/providers";
 
@@ -566,6 +567,36 @@ function FreebuffAutomationPanel({ onRefresh }) {
   );
 }
 
+
+function Freebuff2ApiAutomationPanel({ onRefresh }) {
+  const [isGatewayOpen, setIsGatewayOpen] = useState(false);
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setIsGatewayOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">hub</span>
+            Gateway Manager
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Manage the self-hosted freebuff2api gateway: add account tokens, run GSuite auto-register, view status and quota.
+          </span>
+        </button>
+      </div>
+      <Freebuff2ApiGatewayModal
+        isOpen={isGatewayOpen}
+        onSuccess={onRefresh}
+        onClose={() => setIsGatewayOpen(false)}
+      />
+    </>
+  );
+}
+
 const AUTOMATION_PROVIDERS = [
   {
     id: "grok-cli",
@@ -622,6 +653,14 @@ const AUTOMATION_PROVIDERS = [
     description: "Bulk signup with disposable temp mail, OTP verify, and API key harvest.",
     supportedModes: ["bulk-account"],
     component: BlackboxAutomationPanel,
+  },
+  {
+    id: "freebuff2api",
+    label: "Freebuff2API",
+    icon: "hub",
+    description: "Self-hosted gateway manager: account pool, GSuite auto-register, status and quota.",
+    supportedModes: ["gateway", "register", "account-pool"],
+    component: Freebuff2ApiAutomationPanel,
   },
   {
     id: "freebuff",

@@ -406,16 +406,33 @@ describe("normalizeMessages", () => {
     expect(result.systemText).toBe("");
   });
 
-  it("flattens assistant tool calls and tool results into supported roles", () => {
+  // Regression: Qoder mirrored our old flattened "[assistant requested tools]"
+  // text back in its output, leaking the marker as content and stopping
+  // opencode early. Now we send native tool_calls + role:"tool" messages
+  // (verified live: Qoder accepts both and returns native delta.tool_calls).
+  it("passes assistant tool calls and tool results through natively", () => {
     const result = normalizeMessages([
-      { role: "assistant", content: "", tool_calls: [{ function: { name: "read_file", arguments: '{"path":"a"}' } }] },
+      { role: "assistant", content: "", tool_calls: [{ id: "call-1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' } }] },
       { role: "tool", tool_call_id: "call-1", content: "file body" },
     ]);
-    expect(result.messages.map((message) => message.role)).toEqual(["assistant", "user"]);
-    expect(result.messages[0].content).toContain("[assistant requested tools]");
-    expect(result.messages[0].content).toContain('read_file({"path":"a"})');
-    expect(result.messages[1].content).toBe("[tool result call-1]\nfile body");
-    expect(result.messages[1].contents[0].text).toBe(result.messages[1].content);
+    expect(result.messages.map((message) => message.role)).toEqual(["assistant", "tool"]);
+    expect(result.messages[0].content).toBe("");
+    expect(result.messages[0].tool_calls).toHaveLength(1);
+    expect(result.messages[0].tool_calls[0].function.name).toBe("read_file");
+    expect(result.messages[0].tool_calls[0].function.arguments).toBe('{"path":"a"}');
+    expect(result.messages[0].tool_calls[0].id).toBe("call-1");
+    expect(result.messages[0].content).not.toContain("[assistant requested tools]");
+    expect(result.messages[1].role).toBe("tool");
+    expect(result.messages[1].tool_call_id).toBe("call-1");
+    expect(result.messages[1].content).toBe("file body");
+  });
+
+  it("normalizes missing tool call ids and object-form arguments", () => {
+    const result = normalizeMessages([
+      { role: "assistant", content: "x", tool_calls: [{ function: { name: "grep", arguments: { pattern: "a", path: "b" } } }] },
+    ]);
+    expect(result.messages[0].tool_calls[0].id).toMatch(/^call_qoder_0$/);
+    expect(result.messages[0].tool_calls[0].function.arguments).toBe(JSON.stringify({ pattern: "a", path: "b" }));
   });
 
   it("hoists developer messages and normalizes function messages", () => {

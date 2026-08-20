@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { AntigravityExecutor } from "../../open-sse/executors/antigravity.js";
 import antigravity from "../../open-sse/providers/registry/antigravity.js";
+import { getAntigravityUserAgent } from "../../open-sse/providers/shared.js";
 
 const MAX = 10000;
 function res(status, headers = {}, body = null) {
@@ -68,14 +69,17 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
   });
 
   it("registry uses the official IDE cloudcode host and user agent", () => {
-    expect(antigravity.transport.baseUrls).toEqual(["https://cloudcode-pa.googleapis.com"]);
-    expect(antigravity.transport.headers["User-Agent"]).toBe("antigravity/ide/2.1.1 darwin/arm64");
+    expect(antigravity.transport.baseUrls).toEqual([
+      "https://daily-cloudcode-pa.googleapis.com",
+      "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    ]);
+    expect(antigravity.transport.headers["User-Agent"]).toBe(getAntigravityUserAgent());
   });
 
   it("buildHeaders matches official IDE stream headers", () => {
     ag._lastSessionId = "sess-123";
     const h = ag.buildHeaders({ accessToken: "tok" }, true);
-    expect(h["User-Agent"]).toBe("antigravity/ide/2.1.1 darwin/arm64");
+    expect(h["User-Agent"]).toBe(getAntigravityUserAgent());
     expect(h["Content-Type"]).toBe("application/json");
     expect(h["Authorization"]).toBe("Bearer tok");
     expect(h).not.toHaveProperty("X-Machine-Session-Id");

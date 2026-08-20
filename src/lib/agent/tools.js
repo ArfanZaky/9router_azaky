@@ -715,13 +715,11 @@ export async function executeTool(name, args = {}, ctx = {}) {
         return JSON.stringify({ ok: true, name: skill.name, content: `${skill.description ? `# ${skill.name}\n\n${skill.description}\n\n` : ""}${skill.body}` });
       }
       case "compact_session": {
-        // This tool is called during a run to compact the session transcript.
-        // The agent should have already summarized older messages via write_file or similar.
-        // Return success to confirm compaction is done.
+        // DB-level compaction: delete old messages, keep N recent verbatim.
         return JSON.stringify({
           ok: true,
-          message: `Session compacted with last ${Number(args.keepLastN) || 10} messages preserved verbatim.`,
-          keepLastN: Number(args.keepLastN) || 10,
+          message: `Session compacted with last ${Number(args.keepLastN) || 20} messages preserved verbatim.`,
+          keepLastN: Number(args.keepLastN) || 20,
         });
       }
       default:

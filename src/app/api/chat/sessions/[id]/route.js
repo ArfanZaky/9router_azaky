@@ -8,7 +8,9 @@ export async function GET(request, { params }) {
     const { id } = await params;
     const { searchParams } = new URL(request.url);
     const includeMessages = searchParams.get("messages") !== "0";
-    const session = await getChatSession(id, { includeMessages });
+    const limitParam = searchParams.get("limit");
+    const messageLimit = typeof limitParam === "string" && Number.isFinite(Number(limitParam)) ? Number(limitParam) : undefined;
+    const session = await getChatSession(id, { includeMessages, messageLimit });
     if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
     return NextResponse.json(session);
   } catch (error) {

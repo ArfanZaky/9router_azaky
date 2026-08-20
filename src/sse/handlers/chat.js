@@ -232,12 +232,20 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
-    // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
-    if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
+    // Keep chat project aligned with quota lookup. A stale saved Antigravity project
+    // can show full quota but fail generation with RESOURCE_EXHAUSTED.
+    if (provider === "antigravity") {
       const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken);
       if (pid) {
         refreshedCredentials.projectId = pid;
-        // Persist to DB in background so subsequent requests have it immediately
+        if (pid !== credentials.projectId) {
+          updateProviderCredentials(credentials.connectionId, { projectId: pid }).catch(() => { });
+        }
+      }
+    } else if (provider === "gemini-cli" && !refreshedCredentials.projectId) {
+      const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken);
+      if (pid) {
+        refreshedCredentials.projectId = pid;
         updateProviderCredentials(credentials.connectionId, { projectId: pid }).catch(() => { });
       }
     }

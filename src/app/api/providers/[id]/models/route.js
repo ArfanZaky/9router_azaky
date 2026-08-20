@@ -246,6 +246,26 @@ const PROVIDER_MODELS_CONFIG = {
   hyperbolic: createOpenAIModelsConfig("https://api.hyperbolic.xyz/v1/models"),
   ollama: createOpenAIModelsConfig("https://ollama.com/api/tags"),
   // ollama-local: url resolved dynamically below via providerSpecificData.baseUrl
+  // Self-hosted freebuff2api gateway: models live at /v1/models on the gateway.
+  // baseUrl override may be a host, host/v1, or a full .../chat/completions URL.
+  freebuff2api: {
+    customResolver: async (connection) => {
+      let base = connection.providerSpecificData?.baseUrl || "http://127.0.0.1:8787/v1/chat/completions";
+      base = base.trim().replace(/\/+$/, "").replace(/\/chat\/completions$/, "");
+      const url = `${base}/models`;
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${connection.apiKey || ""}` },
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log("Error fetching freebuff2api models:", errorText);
+        return { error: `Failed to fetch models: ${response.status} ${errorText}`, status: response.status };
+      }
+      const data = await response.json();
+      return { models: data.data || data.models || [] };
+    },
+  },
   nanobanana: createOpenAIModelsConfig("https://api.nanobananaapi.ai/v1/models"),
   chutes: createOpenAIModelsConfig("https://llm.chutes.ai/v1/models"),
   nvidia: createOpenAIModelsConfig("https://integrate.api.nvidia.com/v1/models"),
