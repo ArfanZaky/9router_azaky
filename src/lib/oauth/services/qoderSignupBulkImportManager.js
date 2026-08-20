@@ -273,7 +273,7 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
           if (autoGrant?.ok) {
             // Persist plan tier onto the saved connection.
             try {
-              const { updateProviderConnection } = await import("../../../db/repos/connectionsRepo.js");
+              const { updateProviderConnection } = await import("../../db/repos/connectionsRepo.js");
               await updateProviderConnection(connection.id, {
                 providerSpecificData: {
                   ...(connection.providerSpecificData || {}),

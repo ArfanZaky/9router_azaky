@@ -64,7 +64,7 @@ export {
 
 // Request details
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders, getProviderRequestCounts,
 } from "./repos/requestDetailsRepo.js";
 
 // Chat playground

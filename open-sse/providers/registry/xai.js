@@ -35,14 +35,18 @@ export default {
     { id: "grok-imagine-image", name: "Grok Imagine Image", params: ["n","response_format"], kind: "image" },
     { id: "grok-imagine-image-quality", name: "Grok Imagine Image Quality", params: ["n","response_format"], kind: "image" },
     { id: "grok-imagine-image-pro", name: "Grok Imagine Image Pro", params: ["n","response_format"], kind: "image" },
+    { id: "grok-imagine-video", name: "Grok Imagine Video", params: ["duration","aspect_ratio","resolution"], kind: "video" },
   ],
-  serviceKinds: ["llm","imageToText","webSearch","image"],
+  serviceKinds: ["llm","imageToText","webSearch","image","video"],
   imageConfig: {
     baseUrl: "https://api.x.ai/v1/images/generations",
     editUrl: "https://api.x.ai/v1/images/edits",
     // whitelist for generations; adapter always injects `image` when present for edits
     bodyFields: ["model", "prompt", "n", "response_format", "image"],
   },
+  // Async video jobs (POST returns { request_id }, GET polls until done/failed).
+  // Docs: https://docs.x.ai/developers/rest-api-reference/inference/videos
+  videoConfig: { baseUrl: "https://api.x.ai/v1/videos" },
   searchViaChat: {
     defaultModel: "grok-4.20-reasoning",
     endpoint: "https://api.x.ai/v1/responses",

@@ -9,9 +9,7 @@ import { KimchiExecutor } from "./kimchi.js";
 import { CodexExecutor } from "./codex.js";
 import { CursorExecutor } from "./cursor.js";
 import { VertexExecutor } from "./vertex.js";
-import { QwenExecutor } from "./qwen.js";
 import { OpenCodeExecutor } from "./opencode.js";
-import { OpenCodeGoExecutor } from "./opencode-go.js";
 import { GrokWebExecutor } from "./grok-web.js";
 import { GrokCliExecutor } from "./grok-cli.js";
 import { PerplexityWebExecutor } from "./perplexity-web.js";
@@ -22,7 +20,12 @@ import { MimoFreeExecutor } from "./mimo-free.js";
 import { CodeBuddyExecutor } from "./codebuddy-cn.js";
 import { CodeBuddyGlobalExecutor } from "./codebuddy.js";
 import { FreebuffExecutor } from "./freebuff.js";
+import { CodeBuddyIntlExecutor } from "./codebuddy-intl.js";
+import TraeExecutor from "./trae.js";
+import ZedExecutor from "./zed.js";
+import WindsurfExecutor from "./windsurf.js";
 import { DefaultExecutor } from "./default.js";
+import { DevinCliExecutor } from "./devin-cli.js";
 
 const executors = {
   antigravity: new AntigravityExecutor(),
@@ -38,9 +41,7 @@ const executors = {
   cu: new CursorExecutor(), // Alias for cursor
   vertex: new VertexExecutor("vertex"),
   "vertex-partner": new VertexExecutor("vertex-partner"),
-  qwen: new QwenExecutor(),
   opencode: new OpenCodeExecutor(),
-  "opencode-go": new OpenCodeGoExecutor(),
   "grok-web": new GrokWebExecutor(),
   "grok-cli": new GrokCliExecutor(),
   gcli: new GrokCliExecutor(), // Alias
@@ -54,6 +55,11 @@ const executors = {
   "codebuddy-cn": new CodeBuddyExecutor(),
   codebuddy: new CodeBuddyGlobalExecutor(),
   freebuff: new FreebuffExecutor(),
+  "codebuddy-intl": new CodeBuddyIntlExecutor(),
+  trae: new TraeExecutor(),
+  zed: new ZedExecutor(),
+  windsurf: new WindsurfExecutor(),
+  "devin-cli": new DevinCliExecutor(),
 };
 
 const defaultCache = new Map();
@@ -81,9 +87,7 @@ export { CodexExecutor } from "./codex.js";
 export { CursorExecutor } from "./cursor.js";
 export { VertexExecutor } from "./vertex.js";
 export { DefaultExecutor } from "./default.js";
-export { QwenExecutor } from "./qwen.js";
 export { OpenCodeExecutor } from "./opencode.js";
-export { OpenCodeGoExecutor } from "./opencode-go.js";
 export { GrokWebExecutor } from "./grok-web.js";
 export { GrokCliExecutor } from "./grok-cli.js";
 export { PerplexityWebExecutor } from "./perplexity-web.js";
@@ -94,3 +98,8 @@ export { MimoFreeExecutor } from "./mimo-free.js";
 export { CodeBuddyExecutor } from "./codebuddy-cn.js";
 export { CodeBuddyGlobalExecutor } from "./codebuddy.js";
 export { FreebuffExecutor } from "./freebuff.js";
+export { CodeBuddyIntlExecutor } from "./codebuddy-intl.js";
+export { default as TraeExecutor } from "./trae.js";
+export { default as ZedExecutor } from "./zed.js";
+export { default as WindsurfExecutor } from "./windsurf.js";
+export { DevinCliExecutor } from "./devin-cli.js";

@@ -3,6 +3,17 @@ import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
+const MODEL_TEST_TIMEOUT_MS = 15000;
+const ANTIGRAVITY_MODEL_TEST_TIMEOUT_MS = 5000;
+
+function timeoutResult(start, timeoutMs = MODEL_TEST_TIMEOUT_MS) {
+  return {
+    ok: false,
+    latencyMs: Date.now() - start,
+    error: `Model test timed out after ${timeoutMs / 1000}s`,
+    status: 408,
+  };
+}
 
 function createSilentWavFile() {
   const sampleRate = 16000;
@@ -130,20 +141,44 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
     return { ok: true, latencyMs, error: null, status: res.status };
   }
 
-  const res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model,
-      // Claude-on-Copilot returns empty choices at max_tokens:1 (budget is spent
-      // before a content token emits), so a 1-token probe yields a false negative.
-      max_tokens: 16,
-      stream: false,
-      messages: [{ role: "user", content: "hi" }],
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
+  const isAntigravity = /^(ag|antigravity)\//.test(model);
+  const timeoutMs = isAntigravity ? ANTIGRAVITY_MODEL_TEST_TIMEOUT_MS : MODEL_TEST_TIMEOUT_MS;
+  let res;
+  try {
+    res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model,
+        // Antigravity reasoning can take a minute before a non-stream response.
+        // For dashboard reachability, response headers from a streaming request are enough.
+        max_tokens: isAntigravity ? 16 : 1024,
+        stream: isAntigravity,
+        messages: [{ role: "user", content: isAntigravity ? "__9ROUTER_MODEL_TEST__" : "hi" }],
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      if (isAntigravity) {
+        return {
+          ok: true,
+          latencyMs: Date.now() - start,
+          error: null,
+          status: 202,
+          note: "Antigravity accepted the probe but first-token latency exceeded 5s",
+        };
+      }
+      return timeoutResult(start, timeoutMs);
+    }
+    throw error;
+  }
   const latencyMs = Date.now() - start;
+
+  if (isAntigravity && res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: true, latencyMs, error: null, status: res.status, note: "stream accepted" };
+  }
 
   const rawText = await res.text().catch(() => "");
   let parsed = null;
@@ -180,6 +215,21 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
   }
 
   const hasChoices = Array.isArray(parsed?.choices) && parsed.choices.length > 0;
+
+  // Soft-pass (issue #3010): a reasoning model may burn its whole budget on
+  // chain-of-thought and return finish_reason:"length" with empty content but
+  // non-empty reasoning/thinking. That's a successful connection, not a failure.
+  const firstChoice = parsed?.choices?.[0] || {};
+  const hasReasoning =
+    firstChoice.message?.reasoning ||
+    firstChoice.message?.reasoning_content ||
+    firstChoice.message?.thinking ||
+    firstChoice.message?.thinking_content;
+  const contentEmpty = !String(firstChoice.message?.content || "").trim();
+  if (hasChoices && firstChoice.finish_reason === "length" && contentEmpty && hasReasoning) {
+    return { ok: true, latencyMs, error: null, status: res.status, note: "reasoning-only response (length-limited)" };
+  }
+
   if (!hasChoices) {
     return {
       ok: false,

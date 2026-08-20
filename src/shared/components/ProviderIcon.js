@@ -1,25 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import PropTypes from "prop-types";
+import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
+
+function resolveSrc(src, providerId) {
+  if (providerId) return getProviderIconSrc(providerId);
+  if (!src) return null;
+  const m = String(src).match(/^\/providers\/([^/]+)\.png$/i);
+  if (m) return getProviderIconSrc(m[1]);
+  return src;
+}
 
 export default function ProviderIcon({
   src,
+  providerId,
   alt,
   size = 32,
   className = "",
   fallbackText = "?",
   fallbackColor,
 }) {
-  const [errored, setErrored] = useState(false);
-  const [imageSrc, setImageSrc] = useState(src);
+  const effectiveSrc = resolveSrc(src, providerId);
+  const [failedSrc, setFailedSrc] = useState(null);
+  const errored = failedSrc === effectiveSrc;
 
-  useEffect(() => {
-    setErrored(false);
-    setImageSrc(src);
-  }, [src]);
-
-  if (!imageSrc || errored) {
+  if (!effectiveSrc || errored) {
     return (
       <span
         className={`inline-flex items-center justify-center font-bold rounded-lg ${className}`.trim()}
@@ -37,17 +43,18 @@ export default function ProviderIcon({
 
   return (
     <img
-      src={imageSrc}
+      src={effectiveSrc}
       alt={alt}
       width={size}
       height={size}
       className={className}
+      loading="lazy"
+      decoding="async"
       onError={() => {
-        if (typeof imageSrc === "string" && imageSrc.endsWith(".png")) {
-          setImageSrc(`${imageSrc.slice(0, -4)}.svg`);
-          return;
-        }
-        setErrored(true);
+        const m = effectiveSrc.match(/^\/providers\/([^/]+)\.png$/i);
+        if (m) markProviderIconMissing(m[1]);
+        if (providerId) markProviderIconMissing(providerId);
+        setFailedSrc(effectiveSrc);
       }}
     />
   );
@@ -55,6 +62,7 @@ export default function ProviderIcon({
 
 ProviderIcon.propTypes = {
   src: PropTypes.string,
+  providerId: PropTypes.string,
   alt: PropTypes.string,
   size: PropTypes.number,
   className: PropTypes.string,

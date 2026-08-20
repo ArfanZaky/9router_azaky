@@ -22,7 +22,7 @@ const navItems = [
   { href: "/dashboard/providers", label: "Providers", icon: "dns" },
   { href: "/dashboard/chat", label: "Chat", icon: "chat" },
   { href: "/dashboard/image-gen", label: "Image Gen", icon: "image" },
-  { href: "/dashboard/combos", label: "Combos", icon: "layers" },
+  { href: "/dashboard/combos", label: "Combo & Vision Adapter", icon: "layers" },
   { href: "/dashboard/usage", label: "Usage", icon: "bar_chart" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
   { href: "/dashboard/mitm", label: "MITM", icon: "security" },
@@ -305,8 +305,25 @@ export default function Sidebar({ onClose }) {
               <span className="material-symbols-outlined text-[18px] group-hover:text-primary transition-colors">
                 computer
               </span>
-              <span className="text-[13px] font-medium">Remote</span>
+              <span className="text-[13px] font-medium">9Remote</span>
             </button>
+
+            {/* 9English */}
+            <a
+              href="https://9english.net/"
+              target="_blank"
+              rel="noreferrer"
+              onClick={onClose}
+              className={cn(
+                "flex items-center gap-3 px-3 py-1 rounded-lg transition-all group w-full",
+                "text-text-muted hover:bg-surface-2 hover:text-text-main"
+              )}
+            >
+              <span className="material-symbols-outlined text-[18px] group-hover:text-primary transition-colors">
+                translate
+              </span>
+              <span className="text-[13px] font-medium">9English</span>
+            </a>
 
             {/* Settings */}
             <Link

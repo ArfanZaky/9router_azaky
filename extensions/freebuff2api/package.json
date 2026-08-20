@@ -1,0 +1,20 @@
+{
+  "name": "freebuff2api",
+  "version": "2.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Freebuff/codebuff free models \u2192 OpenAI/Anthropic compatible API with proxy pools, session management and dashboard",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "register": "node scripts/register.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "playwright": "^1.49.0",
+    "undici": "^6.21.0"
+  }
+}

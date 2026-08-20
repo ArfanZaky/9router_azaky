@@ -5,6 +5,21 @@ import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/sha
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { pingModelByKind } from "@/app/api/models/test/ping";
 
+const MODEL_TEST_CONCURRENCY = 3;
+
+export async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 /**
  * POST /api/providers/[id]/test-models
  * id = connectionId — used only to resolve provider + model list.
@@ -49,11 +64,13 @@ export async function POST(request, { params }) {
     const results = [{ modelId: first.id, name: first.name || first.id, ...firstResult }];
 
     if (rest.length > 0) {
-      const restResults = await Promise.all(
-        rest.map(async (model) => {
+      const restResults = await mapWithConcurrency(
+        rest,
+        MODEL_TEST_CONCURRENCY,
+        async (model) => {
           const result = await pingModelByKind(`${alias}/${model.id}`, model.kind || model.type || "llm", baseUrl);
           return { modelId: model.id, name: model.name || model.id, ...result };
-        })
+        }
       );
       results.push(...restResults);
     }

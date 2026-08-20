@@ -76,6 +76,27 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
     expect(antigravity.transport.headers["User-Agent"]).toBe(getAntigravityUserAgent());
   });
 
+  it("does not expose the retired gemini-3.5-flash-high model", () => {
+    const modelIds = antigravity.models.map((model) => model.id);
+    expect(modelIds).not.toContain("gemini-3.5-flash-high");
+    expect(modelIds).toContain("gemini-3-flash-agent");
+  });
+
+  it("strips system prompts and tools from dashboard model probes", () => {
+    const out = ag.transformRequest("gemini-3.7-flash-high", {
+      request: {
+        systemInstruction: { parts: [{ text: "large system prompt" }] },
+        contents: [{ role: "user", parts: [{ text: "__9ROUTER_MODEL_TEST__" }] }],
+        tools: [{ functionDeclarations: [{ name: "read_file", parameters: { type: "object" } }] }],
+      },
+    }, true, { projectId: "project-1", connectionId: "conn-1" });
+
+    expect(out.request.contents).toEqual([{ role: "user", parts: [{ text: "hi" }] }]);
+    expect(out.request.systemInstruction).toBeUndefined();
+    expect(out.request.tools).toBeUndefined();
+    expect(out.request.generationConfig.maxOutputTokens).toBe(16);
+  });
+
   it("buildHeaders matches official IDE stream headers", () => {
     ag._lastSessionId = "sess-123";
     const h = ag.buildHeaders({ accessToken: "tok" }, true);
