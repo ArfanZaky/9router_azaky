@@ -1,6 +1,6 @@
 ﻿# cli/ - Standalone CLI Package
 
-Global npm package (`wyxrouter`) that bundles the Next.js dashboard + SSE engine into a single installable CLI with system tray, port management, and self-healing dependencies. 40 JS files.
+Global npm package (`9router` / `wyxrouter`) that bundles the Next.js dashboard + SSE engine into a single installable CLI with system tray, port management, and self-healing dependencies.
 
 ## STRUCTURE
 

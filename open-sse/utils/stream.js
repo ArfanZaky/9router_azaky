@@ -50,6 +50,7 @@ export function createSSEStream(options = {}) {
     provider = null,
     reqLogger = null,
     toolNameMap = null,
+    customToolNames = null,
     model = null,
     connectionId = null,
     body = null,
@@ -68,6 +69,7 @@ export function createSSEStream(options = {}) {
       ...initState(sourceFormat),
       provider,
       toolNameMap,
+      customToolNames: new Set(customToolNames || []),
       model,
       suppressResponsesReasoning: shouldStabilizeGLMResponses({ sourceFormat, targetFormat, model }),
       coalesceResponsesText: shouldStabilizeGLMResponses({ sourceFormat, targetFormat, model })
@@ -205,6 +207,14 @@ export function createSSEStream(options = {}) {
           }
 
           if (!injectedUsage) {
+            // Dedup terminal [DONE] — executors like qoder already emit it from
+            // their SSE envelope; forwarding a second one makes AI-SDK clients
+            // (opencode) treat the stream as abnormally terminated.
+            const rawData = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : "";
+            if (rawData === "[DONE]") {
+              if (streamDoneSent) continue;
+              streamDoneSent = true;
+            }
             if (line.startsWith("data:") && !line.startsWith("data: ")) {
               output = "data: " + line.slice(5) + "\n";
             } else {
@@ -479,7 +489,7 @@ export function createSSEStream(options = {}) {
   });
 }
 
-export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {
+export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
     targetFormat,
@@ -487,6 +497,7 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
     provider,
     reqLogger,
     toolNameMap,
+    customToolNames,
     model,
     connectionId,
     body,

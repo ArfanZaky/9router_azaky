@@ -1,27 +1,42 @@
 /**
- * Module-level chat run — survives route unmount so streams keep going
- * when user leaves /dashboard/chat. Only explicit Stop aborts.
+ * Module-level chat runs — multiple sessions can run in parallel. Survives
+ * route unmount so streams keep going when user leaves /dashboard/chat.
+ * Only explicit Stop aborts a run.
  */
 
 const listeners = new Set();
+/** Map sessionId → run state. */
+const runs = new Map();
+/** The "focused" session (last started/patched); used by legacy getChatRun(). */
+let focusedSessionId = null;
 
-/** @type {null | {
- *   sessionId: string,
- *   runId?: string,
- *   abortController: AbortController,
- *   messages: any[],
- *   assistantId: string,
- *   assistantText: string,
- *   isSending: boolean,
- *   agentStatus: string,
- *   error: string,
- *   titleSeed: string,
- *   sessionMeta: { title?: string, model?: string, providerId?: string },
- * }} */
-let active = null;
+/** @typedef {object} ChatRunState
+ * @property {string} sessionId
+ * @property {string|null|undefined} runId
+ * @property {AbortController|null|undefined} abortController
+ * @property {any[]} messages
+ * @property {string} assistantId
+ * @property {string} assistantText
+ * @property {boolean} isSending
+ * @property {string} agentStatus
+ * @property {string} error
+ * @property {string} titleSeed
+ * @property {object} sessionMeta */
 
-export function getChatRun() {
-  return active;
+function runFor(sessionId) {
+  if (!sessionId) return null;
+  return runs.get(sessionId) || null;
+}
+
+/** Get a run state. With no argument returns the focused (last-active) run. */
+export function getChatRun(sessionId) {
+  if (sessionId) return runFor(sessionId);
+  return focusedSessionId ? runFor(focusedSessionId) : null;
+}
+
+/** List session ids with an active (sending) run. */
+export function getActiveRunSessions() {
+  return [...runs.values()].filter((r) => r.isSending).map((r) => r.sessionId);
 }
 
 export function subscribeChatRun(fn) {
@@ -32,7 +47,7 @@ export function subscribeChatRun(fn) {
 function notify() {
   for (const fn of listeners) {
     try {
-      fn(active);
+      fn(getChatRun());
     } catch {
       // ignore subscriber errors
     }
@@ -40,7 +55,7 @@ function notify() {
 }
 
 export function startChatRun(snapshot) {
-  active = {
+  const state = {
     sessionId: snapshot.sessionId,
     runId: snapshot.runId || null,
     abortController: snapshot.abortController,
@@ -53,37 +68,51 @@ export function startChatRun(snapshot) {
     titleSeed: snapshot.titleSeed || "",
     sessionMeta: snapshot.sessionMeta || {},
   };
+  runs.set(snapshot.sessionId, state);
+  focusedSessionId = snapshot.sessionId;
   notify();
-  return active;
+  return state;
 }
 
-export function patchChatRun(patch) {
-  if (!active) return null;
-  active = { ...active, ...patch };
-  if (patch.messages) active.messages = patch.messages;
+export function patchChatRun(sessionId, patch) {
+  if (typeof sessionId === "object") {
+    // Backward-compat: patchChatRun(patch) applied to the focused run.
+    patch = sessionId;
+    sessionId = focusedSessionId;
+  }
+  const state = runFor(sessionId);
+  if (!state) return null;
+  const next = { ...state, ...patch };
+  if (patch.messages) next.messages = patch.messages;
+  runs.set(sessionId, next);
+  focusedSessionId = sessionId;
   notify();
-  return active;
+  return next;
 }
 
-export function abortChatRun() {
-  active?.abortController?.abort();
-  if (active?.runId) {
-    fetch(`/api/chat/runs/${active.runId}`, { method: "DELETE" }).catch(() => {});
+export function abortChatRun(sessionId) {
+  const sid = sessionId || focusedSessionId;
+  const state = runFor(sid);
+  if (!state) return;
+  state.abortController?.abort();
+  if (state.runId) {
+    fetch(`/api/chat/runs/${state.runId}`, { method: "DELETE" }).catch(() => {});
   }
 }
 
-export function clearChatRun() {
-  if (active) {
-    active = { ...active, isSending: false, agentStatus: "", abortController: null };
-  }
-  const snap = active;
-  active = null;
+export function clearChatRun(sessionId) {
+  const sid = sessionId || focusedSessionId;
+  if (!sid) return null;
+  const state = runFor(sid);
+  const snap = state ? { ...state, isSending: false, agentStatus: "", abortController: null } : null;
+  runs.delete(sid);
+  if (focusedSessionId === sid) focusedSessionId = null;
   notify();
   return snap;
 }
 
 export function isRunActiveFor(sessionId) {
-  return !!(active?.isSending && active.sessionId === sessionId);
+  return !!(runFor(sessionId)?.isSending);
 }
 
 export async function persistChatMessages(sessionId, messages) {

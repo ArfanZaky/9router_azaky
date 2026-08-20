@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Badge,
+  BlackboxAutomationModal,
   Button,
   BulkAccountAutomationModal,
   Card,
@@ -11,6 +12,9 @@ import {
   KiroOAuthWrapper,
   OAuthModal,
   AutoclawAutomationModal,
+  QoderGrantModal,
+  QoderSignupAutomationModal,
+  Freebuff2ApiGatewayModal,
 } from "@/shared/components";
 import { FREE_PROVIDERS } from "@/shared/constants/providers";
 
@@ -328,6 +332,8 @@ function CodeBuddyCnAutomationPanel({ onRefresh }) {
 function QoderAutomationPanel({ providerInfo, onRefresh }) {
   const [isBulkOpen, setIsBulkOpen] = useState(false);
   const [isOAuthOpen, setIsOAuthOpen] = useState(false);
+  const [isSignupOpen, setIsSignupOpen] = useState(false);
+  const [isGrantOpen, setIsGrantOpen] = useState(false);
 
   return (
     <>
@@ -350,6 +356,32 @@ function QoderAutomationPanel({ providerInfo, onRefresh }) {
             subtitle="Open Qoder device login in browser and poll until the token is saved."
           />
         </button>
+        <button
+          type="button"
+          onClick={() => setIsSignupOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">person_add</span>
+            Bulk Signup (HTTP + Captcha)
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Register new Qoder accounts headlessly: Aliyun captcha solver + mail OTP + PAT creation.
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setIsGrantOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">verified</span>
+            Pro Trial Grant / Check
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Grant Pro Trial with a fresh P1g UMID via the local Qoder harness, or check a PAT&apos;s plan/credits.
+          </span>
+        </button>
       </div>
       <BulkAccountAutomationModal
         isOpen={isBulkOpen}
@@ -368,6 +400,16 @@ function QoderAutomationPanel({ providerInfo, onRefresh }) {
           setIsOAuthOpen(false);
         }}
         onClose={() => setIsOAuthOpen(false)}
+      />
+      <QoderSignupAutomationModal
+        isOpen={isSignupOpen}
+        onSuccess={onRefresh}
+        onClose={() => setIsSignupOpen(false)}
+      />
+      <QoderGrantModal
+        isOpen={isGrantOpen}
+        onSuccess={onRefresh}
+        onClose={() => setIsGrantOpen(false)}
       />
     </>
   );
@@ -567,6 +609,97 @@ function GrokCliAutomationPanel({ onRefresh }) {
   );
 }
 
+function BlackboxAutomationPanel({ onRefresh }) {
+  const [isSignupOpen, setIsSignupOpen] = useState(false);
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setIsSignupOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">smart_toy</span>
+            Bulk Signup + Harvest Keys
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Create Blackbox.ai accounts with disposable temp mail, verify the email OTP, generate an API key per account, and save them all as Blackbox connections.
+          </span>
+        </button>
+      </div>
+      <BlackboxAutomationModal
+        isOpen={isSignupOpen}
+        onSuccess={onRefresh}
+        onClose={() => setIsSignupOpen(false)}
+      />
+    </>
+  );
+}
+
+function FreebuffAutomationPanel({ onRefresh }) {
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setIsBulkOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">bolt</span>
+            Auto Login Bulk (Google SSO)
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Run bulk Gmail:password automation via Google SSO with Freebuff device flow. Free ad-supported coding models (DeepSeek V4 Flash, GLM 5.2, GPT 5.6 Luna, Mimo V2.5).
+          </span>
+        </button>
+      </div>
+      <BulkAccountAutomationModal
+        isOpen={isBulkOpen}
+        provider="freebuff"
+        title="Freebuff Bulk GSuite Login"
+        serviceName="Freebuff"
+        onSuccess={onRefresh}
+        onClose={() => setIsBulkOpen(false)}
+      />
+    </>
+  );
+}
+
+
+function Freebuff2ApiAutomationPanel({ onRefresh }) {
+  const [isGatewayOpen, setIsGatewayOpen] = useState(false);
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setIsGatewayOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">hub</span>
+            Gateway Manager
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Manage the self-hosted freebuff2api gateway: add account tokens, run GSuite auto-register, view status and quota.
+          </span>
+        </button>
+      </div>
+      <Freebuff2ApiGatewayModal
+        isOpen={isGatewayOpen}
+        onSuccess={onRefresh}
+        onClose={() => setIsGatewayOpen(false)}
+      />
+    </>
+  );
+}
+
 const AUTOMATION_PROVIDERS = [
   {
     id: "grok-cli",
@@ -623,6 +756,30 @@ const AUTOMATION_PROVIDERS = [
     description: "Import AutoClaw access tokens or run bulk Google OAuth login. Tracks point balance + auto-refreshes tokens.",
     supportedModes: ["import-token", "bulk-account"],
     component: AutoclawAutomationPanel,
+  },
+  {
+    id: "blackbox",
+    label: "Blackbox AI",
+    icon: "smart_toy",
+    description: "Bulk signup with disposable temp mail, OTP verify, and API key harvest.",
+    supportedModes: ["bulk-account"],
+    component: BlackboxAutomationPanel,
+  },
+  {
+    id: "freebuff2api",
+    label: "Freebuff2API",
+    icon: "hub",
+    description: "Self-hosted gateway manager: account pool, GSuite auto-register, status and quota.",
+    supportedModes: ["gateway", "register", "account-pool"],
+    component: Freebuff2ApiAutomationPanel,
+  },
+  {
+    id: "freebuff",
+    label: "Freebuff",
+    icon: "bolt",
+    description: "Bulk GSuite auto login via Google SSO and device flow. Free ad-supported coding models.",
+    supportedModes: ["bulk-account", "device-oauth"],
+    component: FreebuffAutomationPanel,
   },
 ];
 

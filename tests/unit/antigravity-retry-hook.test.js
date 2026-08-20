@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { AntigravityExecutor } from "../../open-sse/executors/antigravity.js";
 import antigravity from "../../open-sse/providers/registry/antigravity.js";
+import { getAntigravityUserAgent } from "../../open-sse/providers/shared.js";
 
 const MAX = 10000;
 function res(status, headers = {}, body = null) {
@@ -68,14 +69,38 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
   });
 
   it("registry uses the official IDE cloudcode host and user agent", () => {
-    expect(antigravity.transport.baseUrls).toEqual(["https://cloudcode-pa.googleapis.com"]);
-    expect(antigravity.transport.headers["User-Agent"]).toBe("antigravity/ide/2.1.1 darwin/arm64");
+    expect(antigravity.transport.baseUrls).toEqual([
+      "https://daily-cloudcode-pa.googleapis.com",
+      "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    ]);
+    expect(antigravity.transport.headers["User-Agent"]).toBe(getAntigravityUserAgent());
+  });
+
+  it("does not expose the retired gemini-3.5-flash-high model", () => {
+    const modelIds = antigravity.models.map((model) => model.id);
+    expect(modelIds).not.toContain("gemini-3.5-flash-high");
+    expect(modelIds).toContain("gemini-3-flash-agent");
+  });
+
+  it("strips system prompts and tools from dashboard model probes", () => {
+    const out = ag.transformRequest("gemini-3.7-flash-high", {
+      request: {
+        systemInstruction: { parts: [{ text: "large system prompt" }] },
+        contents: [{ role: "user", parts: [{ text: "__9ROUTER_MODEL_TEST__" }] }],
+        tools: [{ functionDeclarations: [{ name: "read_file", parameters: { type: "object" } }] }],
+      },
+    }, true, { projectId: "project-1", connectionId: "conn-1" });
+
+    expect(out.request.contents).toEqual([{ role: "user", parts: [{ text: "hi" }] }]);
+    expect(out.request.systemInstruction).toBeUndefined();
+    expect(out.request.tools).toBeUndefined();
+    expect(out.request.generationConfig.maxOutputTokens).toBe(16);
   });
 
   it("buildHeaders matches official IDE stream headers", () => {
     ag._lastSessionId = "sess-123";
     const h = ag.buildHeaders({ accessToken: "tok" }, true);
-    expect(h["User-Agent"]).toBe("antigravity/ide/2.1.1 darwin/arm64");
+    expect(h["User-Agent"]).toBe(getAntigravityUserAgent());
     expect(h["Content-Type"]).toBe("application/json");
     expect(h["Authorization"]).toBe("Bearer tok");
     expect(h).not.toHaveProperty("X-Machine-Session-Id");

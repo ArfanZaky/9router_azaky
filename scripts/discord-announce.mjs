@@ -4,7 +4,7 @@ import path from "node:path";
 import process from "node:process";
 
 const MENTION = "@everyone";
-const UPDATE_COMMAND = "npm update -g wyxrouter";
+const UPDATE_COMMAND = "npm update -g 9router";
 const CHANGELOG_PATH = path.resolve("CHANGELOG.md");
 const OUTPUT_PATH = path.resolve("discord-payload.json");
 const MAX_BULLET_LEN = 180;

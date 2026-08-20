@@ -1,4 +1,4 @@
-import { GOOGLE_OAUTH_CLIENT } from "../shared.js";
+import { GOOGLE_OAUTH_CLIENT, ANTIGRAVITY_IDE_BASE_URL } from "../shared.js";
 
 export default {
   id: "gemini-cli",
@@ -19,7 +19,10 @@ export default {
   },
   category: "free",
   transport: {
-    baseUrl: "https://cloudcode-pa.googleapis.com/v1internal",
+    // Agent inference uses the daily host (same surface as Antigravity IDE v2.1.1).
+    // The legacy cloudcode-pa host returns 429 RESOURCE_EXHAUSTED for the same
+    // account/token even when quota is full — verified live.
+    baseUrl: `${ANTIGRAVITY_IDE_BASE_URL}/v1internal`,
     format: "gemini-cli",
     cliVersion: "0.34.0",
     apiClient: "google-genai-sdk/1.41.0 gl-node/v22.19.0",

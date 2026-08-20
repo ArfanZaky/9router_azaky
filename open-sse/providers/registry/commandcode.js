@@ -13,7 +13,7 @@ export default {
     textIcon: "CC",
     website: "https://commandcode.ai",
     notice: {
-      text: "Use your CommandCode CLI API key (starts with user_...) from ~/.commandcode/auth.json or commandcode.ai/studio.",
+      text: "Auto-detect from ~/.commandcode/auth.json or paste your Command Code API key (starts with user_...). You can also get a key from commandcode.ai/studio.",
       apiKeyUrl: "https://commandcode.ai/studio",
     },
   },

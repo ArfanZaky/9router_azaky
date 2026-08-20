@@ -169,6 +169,22 @@ Rules:
 - Scale: 	ext-xs (12px), 	ext-sm (14px), 	ext-base (16px), 	ext-lg (18px), 	ext-2xl (24px)
 - Weights: ont-medium (500), ont-semibold (600)
 
+| Task | Location | Notes |
+|------|----------|-------|
+| Add new AI provider | `open-sse/config/providerModels.js` + `providers.js` | Tests auto-cover via matrix |
+| Add translator | `open-sse/translator/request/` or `response/` | Register in `translator/index.js` |
+| Add executor | `open-sse/executors/` | One file per provider protocol |
+| Dashboard page | `src/app/(dashboard)/dashboard/{name}/` | Next.js App Router conventions |
+| Freebuff provider | `open-sse/providers/registry/freebuff.js` | Device flow + Google SSO (see `src/lib/oauth/services/freebuff.js`) |
+| API route | `src/app/api/` | Next.js route handlers |
+| OAuth/automation | `src/lib/oauth/services/` | Bulk import managers |
+| Database schema | `src/lib/db/repos/` | SQLite via better-sqlite3 or sql.js |
+| Token refresh | `open-sse/services/tokenRefresh.js` | Dedup cache prevents reuse attacks |
+| MITM proxy | `src/mitm/manager.js` | Platform-specific elevated ops |
+| CLI commands | `cli/src/cli/menus/` | Interactive menu system |
+| Tests | `tests/unit/` or `tests/translator/` | See `tests/AGENTS.md` |
+| RTK filters | `open-sse/rtk/filters/` | Output compression for agents |
+
 **Spacing:**
 - Standard: p-3 (12px), p-4 (16px), p-6 (24px), p-8 (32px)
 - Gap: gap-2 (8px), gap-3 (12px), gap-4 (16px)

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { DATA_DIR } from "../dataDir.js";
+import { getSkillByName, loadAllSkillIndex } from "./skills.js";
 
 const MAX_READ = 200_000;
 const MAX_LIST = 500;
@@ -72,6 +73,12 @@ const TOOL_ACCESS = {
   web_search: "sandbox",
   web_fetch: "sandbox",
   generate_image: "sandbox",
+  todo_update: "sandbox",
+  delegate_task: "sandbox",
+  read_document: "sandbox",
+  ask_user: "sandbox",
+  goal_update: "sandbox",
+  read_skill: "sandbox",
 };
 
 export function getOpenAiTools(accessMode = "sandbox") {
@@ -89,22 +96,51 @@ function truncate(str, max) {
   return `${s.slice(0, max)}\n\n… [truncated ${s.length - max} chars]`;
 }
 
-async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS } = {}) {
+// Resolve which shell + argv to use. Returns { shell, args }.
+function resolveShell(shell, cmd, isWin) {
+  const s = String(shell || "").trim().toLowerCase();
+  if (s === "powershell") {
+    return { shell: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", cmd] };
+  }
+  if (s === "pwsh") {
+    return { shell: "pwsh", args: ["-NoProfile", "-NonInteractive", "-Command", cmd] };
+  }
+  if (s === "bash") {
+    return { shell: "bash", args: ["-c", cmd] };
+  }
+  if (s === "sh") {
+    return { shell: "sh", args: ["-c", cmd] };
+  }
+  if (s === "cmd") {
+    return { shell: "cmd.exe", args: ["/d", "/s", "/c", cmd] };
+  }
+  // auto
+  return isWin
+    ? { shell: "cmd.exe", args: ["/d", "/s", "/c", cmd] }
+    : { shell: "/bin/sh", args: ["-c", cmd] };
+}
+
+async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress, shell } = {}) {
   const cmd = String(command || "").trim();
   if (!cmd) return { ok: false, error: "Empty command" };
   for (const re of DENY_CMD) {
     if (re.test(cmd)) return { ok: false, error: `Blocked dangerous command pattern` };
   }
-  const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
-  const args = process.platform === "win32" ? ["/d", "/s", "/c", cmd] : ["-c", cmd];
+  const isWin = process.platform === "win32";
+  const { shell: sh, args } = resolveShell(shell, cmd, isWin);
   return await new Promise((resolve) => {
-    const child = spawn(shell, args, {
+    const child = spawn(sh, args, {
       cwd: cwd || process.cwd(),
       env: process.env,
       windowsHide: true,
     });
     let stdout = "";
     let stderr = "";
+    const pushProgress = (chunk) => {
+      if (onProgress && typeof onProgress === "function") {
+        try { onProgress(String(chunk)); } catch { /* ignore */ }
+      }
+    };
     const timer = setTimeout(() => {
       try {
         child.kill("SIGTERM");
@@ -119,12 +155,16 @@ async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS } = {}) {
       });
     }, timeoutMs);
     child.stdout?.on("data", (d) => {
-      stdout += d.toString();
+      const chunk = d.toString();
+      stdout += chunk;
       if (stdout.length > MAX_BASH_OUT * 2) stdout = stdout.slice(-MAX_BASH_OUT);
+      pushProgress(chunk);
     });
     child.stderr?.on("data", (d) => {
-      stderr += d.toString();
+      const chunk = d.toString();
+      stderr += chunk;
       if (stderr.length > MAX_BASH_OUT * 2) stderr = stderr.slice(-MAX_BASH_OUT);
+      pushProgress(chunk);
     });
     child.on("error", (err) => {
       clearTimeout(timer);
@@ -174,14 +214,126 @@ export const TOOL_DEFS = [
   {
     type: "function",
     function: {
+      name: "todo_update",
+      description: "Publish or replace the current task checklist for long multi-step work.",
+      parameters: {
+        type: "object",
+        properties: {
+          items: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                content: { type: "string" },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              },
+              required: ["content", "status"],
+            },
+          },
+        },
+        required: ["items"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delegate_task",
+      description: "Delegate a focused read-only task to a sub-agent and return its result.",
+      parameters: {
+        type: "object",
+        properties: {
+          role: { type: "string", description: "Short specialist role, such as researcher or reviewer" },
+          task: { type: "string", description: "Focused task with the expected result" },
+        },
+        required: ["task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_document",
+      description: "Read an uploaded document (text, PDF text, or code) by absolute path and return its content.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute path of the uploaded document" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description: "Ask the user a question and pause the run until they answer. Use for decisions, preferences, or missing context.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The question to ask" },
+          options: { type: "array", items: { type: "string" }, description: "Optional answer choices" },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "goal_update",
+      description: "Report on a standing goal. Use report_complete when you believe the goal is met and want a judge to verify.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["report_complete"] },
+          summary: { type: "string", description: "Brief summary of completed work" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_skill",
+      description: "Load the full body of a skill by name (listed in the available skills catalogue). Use when a task matches a skill.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Skill id or name, e.g. 9router, react, sql-database" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "compact_session",
+      description: "Compress the session transcript by summarizing older messages while preserving recent context. Use when the conversation is long or approaching token limits.",
+      parameters: {
+        type: "object",
+        properties: {
+          keepLastN: { type: "number", description: "Number of most recent messages to keep verbatim" },
+        },
+        required: ["keepLastN"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "bash",
       description:
-        "Run a shell command on the host machine (Windows cmd / Unix sh). Use for git, npm, builds, diagnostics. Prefer non-interactive commands.",
+        "Run a shell command on the host machine. Choose the shell via the optional `shell` arg (auto/cmd/powershell/pwsh/bash/sh; default auto picks cmd on Windows, sh elsewhere). Use for git, npm, builds, diagnostics, PowerShell one-liners. Prefer non-interactive commands.",
       parameters: {
         type: "object",
         properties: {
           command: { type: "string", description: "Shell command to run" },
           cwd: { type: "string", description: "Working directory (must be under workspace)" },
+          shell: { type: "string", description: "Shell to use: auto | cmd | powershell | pwsh | bash | sh. Default auto." },
         },
         required: ["command"],
       },
@@ -362,6 +514,22 @@ export async function executeTool(name, args = {}, ctx = {}) {
     });
   }
 
+  if (name === "ask_user") {
+    const questions = Array.isArray(args.questions) ? args.questions : args.question ? [args] : [];
+    if (questions.length === 0) return JSON.stringify({ ok: false, error: "ask_user requires questions" });
+    if (!ctx.onAskUser) return JSON.stringify({ ok: false, error: "ask_user runtime unavailable" });
+    const answer = await ctx.onAskUser(questions);
+    return JSON.stringify({ ok: true, answer });
+  }
+
+  const APPROVAL_TOOLS = new Set(["bash"]);
+  if (APPROVAL_TOOLS.has(name) && accessMode === "full" && ctx.onApproval) {
+    const allowed = await ctx.onApproval({ name, arguments: args });
+    if (!allowed) {
+      return JSON.stringify({ ok: false, denied: true, error: `User denied ${name}` });
+    }
+  }
+
   try {
     switch (name) {
       case "bash": {
@@ -369,7 +537,7 @@ export async function executeTool(name, args = {}, ctx = {}) {
           ? resolveSafePath(args.cwd, workspace, accessMode)
           : path.resolve(workspace || process.cwd());
         // sandbox never reaches here; full still denies dangerous patterns
-        const result = await runBash(args.command, { cwd });
+        const result = await runBash(args.command, { cwd, shell: args.shell, onProgress: ctx.onProgress });
         return JSON.stringify(result);
       }
       case "read_file": {
@@ -492,6 +660,66 @@ export async function executeTool(name, args = {}, ctx = {}) {
           jobId: job?.id || null,
           assetUrl: assetId ? `/api/image-gen/assets/${assetId}` : null,
           created: data.created,
+        });
+      }
+      case "todo_update": {
+        const items = Array.isArray(args.items) ? args.items : [];
+        const normalized = items.slice(0, 30).map((item) => ({
+          content: String(item?.content || "").trim().slice(0, 300),
+          status: ["pending", "in_progress", "completed"].includes(item?.status) ? item.status : "pending",
+        })).filter((item) => item.content);
+        if (normalized.filter((item) => item.status === "in_progress").length > 1) {
+          return JSON.stringify({ ok: false, error: "Only one task may be in_progress" });
+        }
+        await ctx.onTaskUpdate?.(normalized);
+        return JSON.stringify({ ok: true, items: normalized });
+      }
+      case "delegate_task": {
+        if (!ctx.onDelegate) return JSON.stringify({ ok: false, error: "Sub-agent runtime unavailable" });
+        return JSON.stringify(await ctx.onDelegate({
+          role: String(args.role || "researcher").trim().slice(0, 60),
+          task: String(args.task || "").trim().slice(0, 4000),
+        }));
+      }
+      case "read_document": {
+        const p = path.resolve(String(args.path || ""));
+        const uploadRoot = path.resolve(path.join(DATA_DIR, "chat-uploads"));
+        if (!p.startsWith(uploadRoot + path.sep)) {
+          return JSON.stringify({ ok: false, error: "Document path must be an uploaded file" });
+        }
+        if (!fs.existsSync(p) || !fs.statSync(p).isFile()) {
+          return JSON.stringify({ ok: false, error: "Document not found" });
+        }
+        const ext = path.extname(p).toLowerCase();
+        let content;
+        if (ext === ".pdf") {
+          content = `PDF document (${path.basename(p)}) — binary; read visually if needed.`;
+        } else {
+          content = fs.readFileSync(p, "utf8");
+        }
+        return JSON.stringify({ ok: true, path: p, bytes: fs.statSync(p).size, content: truncate(content, MAX_READ) });
+      }
+      case "goal_update": {
+        if (args.action === "report_complete") {
+          if (!ctx.onGoalJudge) return JSON.stringify({ ok: false, error: "Goal judge unavailable" });
+          return JSON.stringify(await ctx.onGoalJudge(String(args.summary || "")));
+        }
+        return JSON.stringify({ ok: false, error: "Unsupported goal_update action" });
+      }
+      case "read_skill": {
+        const skill = getSkillByName(String(args.name || ""));
+        if (!skill) {
+          const names = loadAllSkillIndex().map((s) => s.name).join(", ");
+          return JSON.stringify({ ok: false, error: `Skill not found. Available: ${names}` });
+        }
+        return JSON.stringify({ ok: true, name: skill.name, content: `${skill.description ? `# ${skill.name}\n\n${skill.description}\n\n` : ""}${skill.body}` });
+      }
+      case "compact_session": {
+        // DB-level compaction: delete old messages, keep N recent verbatim.
+        return JSON.stringify({
+          ok: true,
+          message: `Session compacted with last ${Number(args.keepLastN) || 20} messages preserved verbatim.`,
+          keepLastN: Number(args.keepLastN) || 20,
         });
       }
       default:

@@ -82,6 +82,19 @@ describe("Antigravity → Claude", () => {
 });
 
 describe("Antigravity executor", () => {
+  it("normalizes object-shaped Code Assist project IDs", () => {
+    const out = new AntigravityExecutor().transformRequest("gemini-3.5-flash-low", {
+      request: { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+    }, true, { projectId: { id: " project-1 " }, connectionId: "conn-1" });
+
+    expect(out.project).toBe("project-1");
+  });
+
+  it("rejects missing project IDs instead of generating a fake project", () => {
+    expect(() => new AntigravityExecutor().transformRequest("gemini-3.5-flash-low", {
+      request: { contents: [{ role: "user", parts: [{ text: "hi" }] }] },
+    }, true, { connectionId: "conn-1" })).toThrow("Antigravity project ID unavailable");
+  });
   it("strips optional from nested tool schemas", () => {
     const out = new AntigravityExecutor().transformRequest("gemini-2.5-pro", {
       request: {

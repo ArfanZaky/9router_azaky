@@ -14,6 +14,9 @@ import {
 import { readJsonResponse } from "@/shared/utils/httpResponse.js";
 
 const DEFAULT_CONCURRENCY = 4;
+const GROK_DOMAIN_EMAIL = "cloudverra.com";
+const GROK_DOMAIN_PASSWORD = "456321987Azaky";
+const GROK_DOMAIN_MAX_ACCOUNTS = 500;
 // Camoufox/Firefox: one shared browser window per job; keep workers low by default
 const DEFAULT_CONCURRENCY_BY_PROVIDER = {
   "grok-cli": 1,
@@ -61,6 +64,13 @@ function getBulkAccountEmail(line) {
   return raw.split(separator, 1)[0].trim().toLowerCase();
 }
 
+function generateGrokDomainAccounts(total) {
+  const runId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return Array.from({ length: total }, (_, index) => (
+    `cv${runId}${(index + 1).toString(36)}@${GROK_DOMAIN_EMAIL}:${GROK_DOMAIN_PASSWORD}`
+  ));
+}
+
 function getStatusVariant(status) {
   if (status === "success" || status === "completed") return "success";
   if (status === "needs_manual") return "warning";
@@ -106,18 +116,21 @@ export default function BulkAccountAutomationModal({
 }) {
   const storageKey = `${provider}-bulk-import-active-job`;
   const isGrokProvider = provider === "grok-cli" || provider === "grok-cli-domain";
+  const isGrokDomainProvider = provider === "grok-cli-domain";
   const completedRefreshJobsRef = useRef(new Set());
   const autoRetriedJobIdsRef = useRef(new Set());
   const autoRetryInFlightRef = useRef(false);
   // Campaign: keep original credentials + cumulative success across auto-retry rounds
   const campaignRef = useRef(null);
   const [bulkText, setBulkText] = useState("");
+  const [totalAccounts, setTotalAccounts] = useState("1");
   const providerDefaultConcurrency = DEFAULT_CONCURRENCY_BY_PROVIDER[provider] ?? DEFAULT_CONCURRENCY;
   const providerDefaultEngine = DEFAULT_ENGINE_BY_PROVIDER[provider] ?? DEFAULT_ENGINE;
   const engineOptions = isGrokProvider ? ENGINE_OPTIONS_GROK : ENGINE_OPTIONS;
   const autoRetryEnabled = AUTO_RETRY_FAILED_PROVIDERS.has(provider) || provider === "grok-cli-domain";
   const [concurrency, setConcurrency] = useState(String(providerDefaultConcurrency));
-  const [autoConcurrency, setAutoConcurrency] = useState(true);
+  // grok-cli-domain is hard-limited to a single worker (server forces 1)
+  const [autoConcurrency, setAutoConcurrency] = useState(!isGrokDomainProvider);
   const [systemSpecInfo, setSystemSpecInfo] = useState(null);
   const [systemSpecLoading, setSystemSpecLoading] = useState(false);
   const [engine, setEngine] = useState(providerDefaultEngine);
@@ -159,9 +172,10 @@ export default function BulkAccountAutomationModal({
 
   const resetState = useCallback(() => {
     setBulkText("");
+    setTotalAccounts("1");
     setConcurrency(String(providerDefaultConcurrency));
     setEngine(providerDefaultEngine);
-    setAutoConcurrency(true);
+    setAutoConcurrency(!isGrokDomainProvider);
     setProxyMode("none");
     setProxyPoolId("");
     setProxyUrl("");
@@ -177,7 +191,7 @@ export default function BulkAccountAutomationModal({
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(storageKey);
     }
-  }, [storageKey, providerDefaultConcurrency, providerDefaultEngine]);
+  }, [storageKey, providerDefaultConcurrency, providerDefaultEngine, isGrokDomainProvider]);
 
   const buildRetryLinesFromJob = useCallback((job, sourceText) => {
     const failedEmails = new Set(
@@ -461,16 +475,24 @@ export default function BulkAccountAutomationModal({
   };
 
   const handleStartBulk = async () => {
-    const lines = bulkText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
+    const requestedTotal = Number(totalAccounts);
+    const lines = isGrokDomainProvider
+      ? Number.isInteger(requestedTotal) && requestedTotal >= 1 && requestedTotal <= GROK_DOMAIN_MAX_ACCOUNTS
+        ? generateGrokDomainAccounts(requestedTotal)
+        : []
+      : bulkText
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
 
     if (!lines.length) {
-      setError("Please enter at least one email:password or email|password line");
+      setError(isGrokDomainProvider
+        ? `Total accounts must be between 1 and ${GROK_DOMAIN_MAX_ACCOUNTS}`
+        : "Please enter at least one email:password or email|password line");
       return;
     }
 
+    if (isGrokDomainProvider) setBulkText(lines.join("\n"));
     await startBulkJob(lines, { isRetryRound: false });
   };
 
@@ -632,7 +654,9 @@ export default function BulkAccountAutomationModal({
           <>
             <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-900/20">
               <p className="text-sm text-blue-800 dark:text-blue-200">
-                Bulk GSuite login runs browser workers in the background. Use one account per line: <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">email:password</code> or <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">email|password</code>. Lines starting with <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">#</code> are skipped. Accounts that hit CAPTCHA, 2FA, or recovery prompts move to manual assist.
+                {isGrokDomainProvider
+                  ? <>Creates unique <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">@cloudverra.com</code> accounts automatically, then completes xAI signup, OTP, and Grok CLI authorization.</>
+                  : <>Bulk GSuite login runs browser workers in the background. Use one account per line: <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">email:password</code> or <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">email|password</code>. Lines starting with <code className="rounded bg-blue-100 px-1 dark:bg-blue-800">#</code> are skipped. Accounts that hit CAPTCHA, 2FA, or recovery prompts move to manual assist.</>}
               </p>
               {provider === "grok-cli" && (
                 <p className="mt-2 text-sm font-medium text-amber-800 dark:text-amber-200">
@@ -641,29 +665,50 @@ export default function BulkAccountAutomationModal({
               )}
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm font-medium">
-                Bulk Accounts <span className="text-red-500">*</span>
-              </label>
-              <textarea
-                value={bulkText}
-                onChange={(event) => setBulkText(event.target.value)}
-                placeholder={"gmail1@example.com:password1\ngmail2@example.com|password2\n# comment lines are skipped"}
-                className="min-h-[180px] w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-              <p className="mt-1 text-xs text-text-muted">
-                One account per line. Supported formats: email:password, email|password, or tab-separated.
-              </p>
-            </div>
+            {isGrokDomainProvider ? (
+              <div>
+                <label className="mb-2 block text-sm font-medium">
+                  Total accounts <span className="text-red-500">*</span>
+                </label>
+                <Input
+                  type="number"
+                  min="1"
+                  max={String(GROK_DOMAIN_MAX_ACCOUNTS)}
+                  step="1"
+                  value={totalAccounts}
+                  onChange={(event) => setTotalAccounts(event.target.value)}
+                  placeholder="5"
+                />
+                <p className="mt-1 text-xs text-text-muted">
+                  Generates unique emails automatically. Allowed range: 1 to {GROK_DOMAIN_MAX_ACCOUNTS} accounts.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <label className="mb-2 block text-sm font-medium">
+                  Bulk Accounts <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={bulkText}
+                  onChange={(event) => setBulkText(event.target.value)}
+                  placeholder={"gmail1@example.com:password1\ngmail2@example.com|password2\n# comment lines are skipped"}
+                  className="min-h-[180px] w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <p className="mt-1 text-xs text-text-muted">
+                  One account per line. Supported formats: email:password, email|password, or tab-separated.
+                </p>
+              </div>
+            )}
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <label className="block text-sm font-medium">Concurrent Workers</label>
-                  <label className="flex cursor-pointer items-center gap-2 text-xs text-text-muted">
+                  <label className={`flex cursor-pointer items-center gap-2 text-xs text-text-muted ${isGrokDomainProvider ? "pointer-events-none opacity-50" : ""}`}>
                     <input
                       type="checkbox"
                       checked={autoConcurrency}
+                      disabled={isGrokDomainProvider}
                       onChange={(event) => {
                         const next = event.target.checked;
                         setAutoConcurrency(next);
@@ -680,22 +725,26 @@ export default function BulkAccountAutomationModal({
                   min="1"
                   max="8"
                   value={
-                    autoConcurrency
-                      ? String(systemSpecInfo?.recommended ?? concurrency)
-                      : concurrency
+                    isGrokDomainProvider
+                      ? "1"
+                      : autoConcurrency
+                        ? String(systemSpecInfo?.recommended ?? concurrency)
+                        : concurrency
                   }
                   onChange={(event) => setConcurrency(event.target.value)}
-                  disabled={autoConcurrency}
+                  disabled={isGrokDomainProvider || autoConcurrency}
                   placeholder="4"
                 />
                 <p className="mt-1 text-xs text-text-muted">
-                  {autoConcurrency
-                    ? systemSpecLoading
-                      ? "Detecting system specs..."
-                      : systemSpecInfo
-                        ? `Recommended ${systemSpecInfo.recommended} workers for this machine (${systemSpecInfo.specs.cpuCount}-core CPU, ${systemSpecInfo.specs.totalMemGb} GB RAM, limited by ${describeWorkerLimit(systemSpecInfo.limitedBy)}).`
-                        : `Falling back to default ${DEFAULT_CONCURRENCY} workers.`
-                    : "Manual mode. Allowed range: 1 to 8 workers."}
+                  {isGrokDomainProvider
+                    ? "Grok domain email signup runs a single worker — concurrent signups from one IP trigger xAI anti-abuse blocks."
+                    : autoConcurrency
+                      ? systemSpecLoading
+                        ? "Detecting system specs..."
+                        : systemSpecInfo
+                          ? `Recommended ${systemSpecInfo.recommended} workers for this machine (${systemSpecInfo.specs.cpuCount}-core CPU, ${systemSpecInfo.specs.totalMemGb} GB RAM, limited by ${describeWorkerLimit(systemSpecInfo.limitedBy)}).`
+                          : `Falling back to default ${DEFAULT_CONCURRENCY} workers.`
+                      : "Manual mode. Allowed range: 1 to 8 workers."}
                 </p>
               </div>
 
@@ -1050,8 +1099,12 @@ export default function BulkAccountAutomationModal({
 
         <div className="flex gap-2">
           {!activeJob && (
-            <Button onClick={handleStartBulk} fullWidth disabled={importing || !bulkText.trim()}>
-              {importing ? "Starting..." : "Start Bulk Login"}
+            <Button
+              onClick={handleStartBulk}
+              fullWidth
+              disabled={importing || (isGrokDomainProvider ? !totalAccounts.trim() : !bulkText.trim())}
+            >
+              {importing ? "Starting..." : isGrokDomainProvider ? "Start Bulk Signup" : "Start Bulk Login"}
             </Button>
           )}
           {activeJob && (!finishedJob || willAutoRetry) && (

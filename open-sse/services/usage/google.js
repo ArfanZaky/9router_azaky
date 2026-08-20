@@ -120,7 +120,9 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
   try {
     // Fetch subscription info once — reuse for both projectId and plan
     const subscriptionInfo = await getAntigravitySubscriptionInfo(accessToken, proxyOptions);
-    const projectId = subscriptionInfo?.cloudaicompanionProject || null;
+    const projectId = normalizeCloudCodeProjectId(subscriptionInfo?.cloudaicompanionProject);
+    const currentTierId = subscriptionInfo?.currentTier?.id || null;
+    const paidTierName = subscriptionInfo?.paidTier?.name || null;
 
     const response = await fetchWithTimeout(ANTIGRAVITY_CONFIG.quotaApiUrl, {
       method: "POST",
@@ -161,7 +163,12 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
     if (data.models) {
       // Filter only recommended/important models (must match PROVIDER_MODELS ag ids)
       const importantModels = [
-        'gemini-3-flash-agent',
+        'gemini-3.7-flash-high',
+        'gemini-3.7-flash-medium',
+        'gemini-3.7-flash-low',
+        'gemini-3.6-flash-high',
+        'gemini-3.6-flash-medium',
+        'gemini-3.6-flash-low',
         'gemini-3.5-flash-low',
         'gemini-3.5-flash-extra-low',
         'gemini-pro-agent',
@@ -169,10 +176,8 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
         'claude-sonnet-4-6',
         'claude-opus-4-6-thinking',
         'gpt-oss-120b-medium',
-        'gemini-3-flash',
         // Image generation models
         'gemini-3.1-flash-image',
-        'gemini-3-pro-image',
       ];
 
       for (const [modelKey, info] of Object.entries(data.models)) {
@@ -207,7 +212,7 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
     }
 
     return {
-      plan: subscriptionInfo?.currentTier?.name || "Unknown",
+      plan: paidTierName || (currentTierId === "free-tier" ? "Free" : (subscriptionInfo?.currentTier?.name || "Unknown")),
       quotas,
       subscriptionInfo,
     };

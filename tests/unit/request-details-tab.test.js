@@ -169,6 +169,12 @@ describe("getDistinctProviders — providers route (no full-row parse)", () => {
     const sorted = [...list].sort();
     expect(list).toEqual(sorted);
   });
+
+  it("returns provider request counts for the filter UI", async () => {
+    const counts = await db.getProviderRequestCounts();
+    const openai = counts.find((entry) => entry.provider === "openai");
+    expect(openai?.count).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("token helpers — render-time crash safety", () => {

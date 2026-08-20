@@ -26,6 +26,14 @@ export async function getChatRunRecord(id) {
   return toRun(db.get(`SELECT * FROM chatRuns WHERE id = ?`, [id]));
 }
 
+export async function getActiveChatRunForSession(sessionId) {
+  const db = await getAdapter();
+  return toRun(db.get(
+    `SELECT * FROM chatRuns WHERE sessionId = ? AND status IN ('queued', 'running') ORDER BY createdAt DESC LIMIT 1`,
+    [sessionId]
+  ));
+}
+
 export async function updateChatRunRecord(id, patch = {}) {
   const db = await getAdapter();
   const previous = toRun(db.get(`SELECT * FROM chatRuns WHERE id = ?`, [id]));

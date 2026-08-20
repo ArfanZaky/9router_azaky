@@ -80,4 +80,20 @@ describe("provider test-models route kind routing", () => {
       })
     );
   });
+
+  it("limits concurrent model probes", async () => {
+    const { mapWithConcurrency } = await import("../../src/app/api/providers/[id]/test-models/route.js");
+    let active = 0;
+    let maxActive = 0;
+    const values = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7], 3, async (value) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return value * 2;
+    });
+
+    expect(maxActive).toBe(3);
+    expect(values).toEqual([2, 4, 6, 8, 10, 12, 14]);
+  });
 });

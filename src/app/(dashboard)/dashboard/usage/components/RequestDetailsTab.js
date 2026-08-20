@@ -199,7 +199,7 @@ export default function RequestDetailsTab() {
               <option value="">All Providers</option>
               {providers.map((provider) => (
                 <option key={provider.id} value={provider.id}>
-                  {provider.name}
+                  {provider.name}{Number.isFinite(provider.count) ? ` (${provider.count})` : ""}
                 </option>
               ))}
             </select>

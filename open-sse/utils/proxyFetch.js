@@ -99,6 +99,7 @@ async function tryGotScrapingFetch(url, options) {
 
 // DNS cache — use Map to avoid prototype pollution via malformed hostnames
 const DNS_CACHE = new Map();
+const SYSTEM_DNS_CACHE = new Map();
 const MITM_BYPASS_HOSTS = [
   "cloudcode-pa.googleapis.com",
   "daily-cloudcode-pa.googleapis.com",
@@ -148,6 +149,35 @@ function shouldBypassMitmDns(url) {
     return MITM_BYPASS_HOSTS.some(host => hostname.includes(host));
   } catch { return false; }
 }
+
+function isLoopbackAddress(address) {
+  return address === "127.0.0.1" || address === "::1" || address?.startsWith("127.") || address?.startsWith("::ffff:127.");
+}
+
+async function isMitmDnsRedirectActive(targetUrl) {
+  let hostname;
+  try { hostname = new URL(targetUrl).hostname; } catch { return false; }
+  const cached = SYSTEM_DNS_CACHE.get(hostname);
+  if (cached && cached.expiry > Date.now()) return cached.redirected;
+  try {
+    const dns = await import("node:dns/promises");
+    const result = await Promise.race([
+      dns.lookup(hostname),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("system DNS timeout")), 1000)),
+    ]);
+    const redirected = isLoopbackAddress(result?.address);
+    SYSTEM_DNS_CACHE.set(hostname, { redirected, expiry: Date.now() + 30_000 });
+    return redirected;
+  } catch {
+    // If system DNS cannot be checked quickly, native fetch retains its own
+    // resolution/fallback behavior instead of blocking on public DNS servers.
+    return false;
+  }
+}
+
+export const __test__ = {
+  isLoopbackAddress,
+};
 
 function shouldBypassByNoProxy(targetUrl, noProxyValue) {
   const noProxy = normalizeString(noProxyValue);
@@ -310,7 +340,7 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   const proxyUrl = connectionProxyUrl || envProxyUrl;
 
   // MITM DNS bypass: for known MITM-intercepted hosts, resolve real IP to avoid DNS spoof
-  if (shouldBypassMitmDns(targetUrl)) {
+  if (shouldBypassMitmDns(targetUrl) && await isMitmDnsRedirectActive(targetUrl)) {
     if (proxyUrl) {
       // Proxy resolves DNS externally (not affected by /etc/hosts) — use proxy directly
       try {

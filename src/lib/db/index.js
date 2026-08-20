@@ -64,18 +64,27 @@ export {
 
 // Request details
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders, getProviderRequestCounts,
 } from "./repos/requestDetailsRepo.js";
 
 // Chat playground
 export {
   listChatSessions, getChatSession, createChatSession, updateChatSession, deleteChatSession,
   listChatMessages, createChatMessage, updateChatMessage, deleteChatMessage, replaceChatMessages,
+  clearChatSession, undoChatExchange, editChatFromMessage, forkChatSession,
 } from "./repos/chatRepo.js";
 export {
-  createChatRun, getChatRunRecord, updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
+  createChatRun, getChatRunRecord, getActiveChatRunForSession,
+  updateChatRunRecord, appendChatRunEvent, listChatRunEvents,
 } from "./repos/chatRunRepo.js";
-
+export {
+  getActiveChatGoal, setChatGoal, pauseChatGoal, resumeChatGoal,
+  clearChatGoal, bumpChatGoalIteration, completeChatGoal,
+} from "./repos/chatGoalRepo.js";
+export {
+  listChatMcpServers, getChatMcpServer, createChatMcpServer,
+  updateChatMcpServer, deleteChatMcpServer,
+} from "./repos/chatMcpServerRepo.js";
 // Image generation playground
 export {
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,

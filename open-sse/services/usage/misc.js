@@ -1,5 +1,5 @@
 /**
- * Misc usage handlers (Qwen, iFlow, Ollama, GLM, Vercel AI Gateway, Qoder)
+ * Misc usage handlers (iFlow, Ollama, GLM, Vercel AI Gateway, Qoder)
  */
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
@@ -16,23 +16,6 @@ const GLM_QUOTA_URLS = {
 const VERCEL_AI_GATEWAY_CREDITS_URL = U("vercel-ai-gateway").url;
 
 /**
- * Qwen Usage
- */
-export async function getQwenUsage(accessToken, providerSpecificData) {
-  try {
-    const resourceUrl = providerSpecificData?.resourceUrl;
-    if (!resourceUrl) {
-      return { message: "Qwen connected. No resource URL available." };
-    }
-
-    // Qwen may have usage endpoint at resource URL
-    return { message: "Qwen connected. Usage tracked per request." };
-  } catch (error) {
-    return { message: "Unable to fetch Qwen usage." };
-  }
-}
-
-/**
  * iFlow Usage
  */
 export async function getIflowUsage(accessToken) {
@@ -46,23 +29,86 @@ export async function getIflowUsage(accessToken) {
 
 /**
  * Ollama Cloud Usage
- * Ollama Cloud uses an API key from ollama.com/settings/keys
- * and has no public usage API — free tier has light usage limits (resets every 5h & 7d).
- * This returns an informational message with the plan details.
+ * GET https://ollama.com/api/usage — session (5h) + weekly (7d) `usage` is a 0..1
+ *   ratio (1.0 = limit reached, e.g. weekly 100% used). No reset timestamp exposed.
+ * POST https://ollama.com/api/me — plan label (fail-open).
+ * Auth: Authorization: Bearer <apiKey>
  */
-export async function getOllamaUsage(accessToken, providerSpecificData) {
+export async function getOllamaUsage(apiKey, providerSpecificData, proxyOptions = null) {
+  if (!apiKey) {
+    return { message: "Ollama Cloud API key not available." };
+  }
+
   try {
-    // Ollama Cloud does not expose a public quota/usage API.
-    // The provider is configured as noAuth with a notice explaining limits.
-    // We return a graceful message so the UI shows a friendly state instead of an error.
-    const plan = providerSpecificData?.plan || "Free";
-    return {
-      plan,
-      message: "Ollama Cloud uses a free tier with light usage limits (resets every 5h & 7d). For detailed usage tracking, visit ollama.com/settings/keys.",
-      quotas: [],
-    };
+    const response = await proxyAwareFetch("https://ollama.com/api/usage", {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    }, proxyOptions);
+
+    if (response.status === 401 || response.status === 403) {
+      return { message: "Ollama Cloud API key invalid or expired." };
+    }
+
+    if (!response.ok) {
+      return { message: `Ollama Cloud usage API error (${response.status}).` };
+    }
+
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      return { message: "Ollama Cloud usage response was not JSON." };
+    }
+
+    // Best-effort plan label from /api/me
+    const me = await proxyAwareFetch("https://ollama.com/api/me", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        "Content-Length": "0",
+      },
+    }, proxyOptions).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+
+    const planRaw = typeof me?.Plan === "string" ? me.Plan : "";
+    const plan = planRaw
+      ? planRaw.charAt(0).toUpperCase() + planRaw.slice(1).toLowerCase()
+      : "Ollama Cloud";
+
+    const limits = data?.limits && typeof data.limits === "object" ? data.limits : {};
+
+    // Ollama `usage` is a 0..1 ratio (1.0 = limit reached). Convert to a 0..100
+    // bar. Do NOT set absolute `remaining` — QuotaTable reads remainingPercentage.
+    function ratioQuota(usageRatio, resetAt = null) {
+      const ratio = Math.max(0, Math.min(1, Number(usageRatio) || 0));
+      const usedPct = Math.round(ratio * 100);
+      return { used: usedPct, total: 100, remainingPercentage: 100 - usedPct, resetAt, unlimited: false };
+    }
+
+    const sessionRaw = limits.session?.usage;
+    const weeklyRaw = limits.weekly?.usage;
+    const sessionNum = Number(sessionRaw);
+    const weeklyNum = Number(weeklyRaw);
+    const hasSession = sessionRaw !== undefined && sessionRaw !== null && !Number.isNaN(sessionNum);
+    const hasWeekly = weeklyRaw !== undefined && weeklyRaw !== null && !Number.isNaN(weeklyNum);
+
+    if (!hasSession && !hasWeekly) {
+      return {
+        plan,
+        message: "Ollama Cloud connected. No usage limits reported.",
+        quotas: {},
+      };
+    }
+
+    const quotas = {};
+    if (hasSession) quotas["Session (5h)"] = ratioQuota(sessionNum);
+    if (hasWeekly) quotas["Weekly (7d)"] = ratioQuota(weeklyNum);
+
+    return { plan, quotas };
   } catch (error) {
-    return { message: "Unable to fetch Ollama Cloud usage." };
+    return { message: `Ollama Cloud error: ${error.message}` };
   }
 }
 
@@ -206,6 +252,16 @@ export async function getVercelAiGatewayUsage(apiKey, proxyOptions = null) {
   }
 }
 
+const QODER_ELIGIBILITY_URL = "https://openapi.qoder.sh/api/v2/activity/claim/eligibility";
+const QODER_ACTIVITY_IDS = {
+  qwen38_800_invoke: "Qwen38 800 calls",
+  qwen38_2000_invoke: "Qwen38 2000 calls",
+};
+const QODER_ACTIVITY_DEFAULT_CALLS = {
+  qwen38_800_invoke: 800,
+  qwen38_2000_invoke: 2000,
+};
+
 export async function getQoderUsage(accessToken, proxyOptions = null) {
   if (!accessToken) {
     return { message: "Qoder usage unavailable: no access token" };
@@ -257,13 +313,70 @@ export async function getQoderUsage(accessToken, proxyOptions = null) {
         resetAt,
       },
     };
+
+    // Qwen38-Max event free-call grants (qwen38_800_invoke / qwen38_2000_invoke)
+    // are NOT part of the main quota payload — they live behind the activity
+    // claim eligibility endpoint. Surface their claim state as quota rows so
+    // the dashboard shows whether the free-call grant is available/claimed.
+    const activities = await fetchQoderActivityEligibility(accessToken, proxyOptions);
+
     return {
       quotas,
+      activityQuotas: activities,
       totalUsagePercentage: Number(body.totalUsagePercentage) || 0,
       isQuotaExceeded: !!body.isQuotaExceeded,
       expiresAt: expiresAtMs,
     };
   } catch (error) {
     return { message: `Qoder connected. Unable to fetch usage: ${error.message}` };
+  }
+}
+
+async function fetchQoderActivityEligibility(accessToken, proxyOptions = null) {
+  try {
+    const response = await proxyAwareFetch(
+      QODER_ELIGIBILITY_URL,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "Cosy-ClientType": "5",
+          "Cosy-Version": "2.0.0",
+          "Cosy-MachineOS": "x86_64_windows",
+        },
+      },
+      proxyOptions,
+    );
+    if (!response.ok) return [];
+    const body = await response.json().catch(() => null);
+    const activities = Array.isArray(body?.data) ? body.data : [];
+    return activities
+      .filter((act) => act?.activityId && QODER_ACTIVITY_IDS[act.activityId])
+      .map((act) => {
+        const activityId = act.activityId;
+        const calls = QODER_ACTIVITY_DEFAULT_CALLS[activityId] || 0;
+        const claimed = act.claimed === true;
+        const canClaim = act.canClaim === true;
+        const reason = act.reason || "";
+        // One-shot event grant: recurring:false so the table renders the
+        // resetAt as a hard expiry instead of a refresh time.
+        return {
+          name: QODER_ACTIVITY_IDS[activityId],
+          unit: "calls",
+          total: claimed ? calls : 0,
+          used: 0,
+          remaining: claimed ? calls : 0,
+          resetAt: null,
+          recurring: false,
+          activityId,
+          claimed,
+          canClaim,
+          reason,
+        };
+      });
+  } catch {
+    return [];
   }
 }

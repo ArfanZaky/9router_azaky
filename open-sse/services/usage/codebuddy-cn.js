@@ -53,17 +53,17 @@ function refillCadence(acc) {
   return "Monthly";
 }
 
-export async function getCodeBuddyCnUsage(accessToken, apiKey, providerSpecificData, proxyOptions = null) {
+async function getCodeBuddyUsage(providerId, accessToken, apiKey, providerSpecificData, proxyOptions = null) {
   const token = accessToken || apiKey;
   if (!token) {
-    return { message: "CodeBuddy CN credential not available." };
+    return { message: `CodeBuddy (${providerId}) credential not available.` };
   }
 
   try {
-    const response = await proxyAwareFetch(U(PROVIDER_ID).url, {
+    const response = await proxyAwareFetch(U(providerId).url, {
       method: "POST",
       headers: {
-        ...(PROVIDERS[PROVIDER_ID]?.headers || {}),
+        ...(PROVIDERS[providerId]?.headers || {}),
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -143,6 +143,14 @@ export async function getCodeBuddyCnUsage(accessToken, apiKey, providerSpecificD
 
     return { plan, quotas };
   } catch (error) {
-    return { message: `CodeBuddy CN error: ${error.message}` };
+    return { message: `CodeBuddy (${providerId}) error: ${error.message}` };
   }
+}
+
+export async function getCodeBuddyCnUsage(accessToken, apiKey, providerSpecificData, proxyOptions = null) {
+  return getCodeBuddyUsage(PROVIDER_ID, accessToken, apiKey, providerSpecificData, proxyOptions);
+}
+
+export async function getCodeBuddyIntlUsage(accessToken, apiKey, providerSpecificData, proxyOptions = null) {
+  return getCodeBuddyUsage("codebuddy-intl", accessToken, apiKey, providerSpecificData, proxyOptions);
 }

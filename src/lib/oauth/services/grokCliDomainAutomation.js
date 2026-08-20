@@ -19,6 +19,7 @@ const SIGN_UP_SELECTORS = [
 ];
 const EMAIL_LOGIN_SELECTORS = [
   'button:has-text("Login with email")',
+  '[role="button"]:has-text("Login with email")',
   'button:has-text("Sign in with email")',
   'button:has-text("Continue with email")',
   'a:has-text("Login with email")',
@@ -441,6 +442,11 @@ const SIGN_IN_NEXT_SELECTORS = [
   'button:has-text("Continue")',
 ];
 
+function isEmailLoginChooser(pageText) {
+  return /log into your account|log in to your account/i.test(pageText)
+    && /login with email|sign in with email|continue with email/i.test(pageText);
+}
+
 /**
  * One incremental step of domain email login (email-only → Next → password → submit).
  * Safe to call repeatedly from PKCE poll loop; no-ops when nothing to do.
@@ -464,6 +470,17 @@ async function progressDomainEmailLogin(page, email, password, reportStep) {
     }
     await page.waitForTimeout(800);
     return true;
+  }
+
+  // The PKCE method chooser also uses /sign-in, so select email before
+  // treating that URL as the email-entry form.
+  if (isEmailLoginChooser(pageText)) {
+    const loginClicked = await waitAndClick(page, EMAIL_LOGIN_SELECTORS, 1_500);
+    if (loginClicked) {
+      reportStep("existing_account_login", "Selecting Login with email");
+      await page.waitForTimeout(500);
+      return true;
+    }
   }
 
   // Prefer email field when already on "Log in with your email" (do NOT re-click Login).
@@ -944,6 +961,7 @@ export const __test__ = {
   otpInputsReady,
   tryClickTurnstile,
   isXaiSignInPage,
+  isEmailLoginChooser,
   progressDomainEmailLogin,
   callbackCode: pkceTest.callbackCode,
   createPkce: pkceTest.createPkce,

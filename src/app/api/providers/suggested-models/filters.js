@@ -23,4 +23,10 @@ export const FILTERS = {
     (Array.isArray(models) ? models : [])
       .filter((m) => m.id?.startsWith("mimo") || m.name?.toLowerCase().includes("mimo"))
       .map((m) => ({ id: m.id, name: m.name || m.id })),
+
+  // Standard OpenAI /v1/models list (e.g. freebuff2api gateway)
+  "openai": (models) =>
+    (Array.isArray(models) ? models : [])
+      .map((m) => ({ id: m.id, name: m.name || m.id, contextLength: m.context_length }))
+      .filter((m) => typeof m.id === "string" && m.id.length > 0),
 };

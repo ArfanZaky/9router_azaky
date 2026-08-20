@@ -1,6 +1,6 @@
 // Ensure camoufox-js (optional stealth Firefox engine) is installed AND its
 // browser binary is downloaded. The package is in optionalDependencies, so
-// `npm install -g wyxrouter` may legitimately ship without it (e.g. when npm
+// `npm install -g 9router` may legitimately ship without it (e.g. when npm
 // skipped optional install on a constrained network). When the user picks
 // Camoufox in the bulk-import modal we install lazily — same shape as the
 // sqlite/playwright runtime helpers — instead of failing the worker.

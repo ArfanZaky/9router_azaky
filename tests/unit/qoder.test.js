@@ -406,16 +406,33 @@ describe("normalizeMessages", () => {
     expect(result.systemText).toBe("");
   });
 
-  it("flattens assistant tool calls and tool results into supported roles", () => {
+  // Regression: Qoder mirrored our old flattened "[assistant requested tools]"
+  // text back in its output, leaking the marker as content and stopping
+  // opencode early. Now we send native tool_calls + role:"tool" messages
+  // (verified live: Qoder accepts both and returns native delta.tool_calls).
+  it("passes assistant tool calls and tool results through natively", () => {
     const result = normalizeMessages([
-      { role: "assistant", content: "", tool_calls: [{ function: { name: "read_file", arguments: '{"path":"a"}' } }] },
+      { role: "assistant", content: "", tool_calls: [{ id: "call-1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' } }] },
       { role: "tool", tool_call_id: "call-1", content: "file body" },
     ]);
-    expect(result.messages.map((message) => message.role)).toEqual(["assistant", "user"]);
-    expect(result.messages[0].content).toContain("[assistant requested tools]");
-    expect(result.messages[0].content).toContain('read_file({"path":"a"})');
-    expect(result.messages[1].content).toBe("[tool result call-1]\nfile body");
-    expect(result.messages[1].contents[0].text).toBe(result.messages[1].content);
+    expect(result.messages.map((message) => message.role)).toEqual(["assistant", "tool"]);
+    expect(result.messages[0].content).toBe("");
+    expect(result.messages[0].tool_calls).toHaveLength(1);
+    expect(result.messages[0].tool_calls[0].function.name).toBe("read_file");
+    expect(result.messages[0].tool_calls[0].function.arguments).toBe('{"path":"a"}');
+    expect(result.messages[0].tool_calls[0].id).toBe("call-1");
+    expect(result.messages[0].content).not.toContain("[assistant requested tools]");
+    expect(result.messages[1].role).toBe("tool");
+    expect(result.messages[1].tool_call_id).toBe("call-1");
+    expect(result.messages[1].content).toBe("file body");
+  });
+
+  it("normalizes missing tool call ids and object-form arguments", () => {
+    const result = normalizeMessages([
+      { role: "assistant", content: "x", tool_calls: [{ function: { name: "grep", arguments: { pattern: "a", path: "b" } } }] },
+    ]);
+    expect(result.messages[0].tool_calls[0].id).toMatch(/^call_qoder_0$/);
+    expect(result.messages[0].tool_calls[0].function.arguments).toBe(JSON.stringify({ pattern: "a", path: "b" }));
   });
 
   it("hoists developer messages and normalizes function messages", () => {
@@ -523,6 +540,59 @@ describe("Qoder flattened response tool recovery", () => {
     expect(output).not.toContain('"tool_calls"');
     expect(output).toContain("data: [DONE]");
   });
+
+  // Regression: qoder emits the flattened tool block AND finish_reason:"stop"
+  // together in one final chunk. The old finish-first ordering forwarded the
+  // raw "[assistant requested tools]" text as content, so opencode treated the
+  // tool request as the final answer and stopped (user-reported "suka putus",
+  // "assistant requested tools" leaking into the answer).
+  it("recovers flattened tool calls bundled with finish_reason stop in a single chunk", async () => {
+    const args = { path: "F:\\project\\php\\konimex\\stock\\app\\Models\\Product.php" };
+    const content = `[assistant requested tools]\nread_file(${JSON.stringify(args)})`;
+    const source = `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+    const response = recoverQoderToolCallStream(
+      new Response(source, { headers: { "Content-Type": "text/event-stream" } }),
+      "qoder/qmodel_latest",
+      [{ type: "function", function: { name: "read_file" } }],
+    );
+    const output = await response.text();
+    const events = output
+      .split("\n\n")
+      .filter((l) => l.startsWith("data: ") && !l.includes("[DONE]"))
+      .map((l) => JSON.parse(l.slice("data: ".length)));
+    const toolChunk = events.find((e) => e.choices?.[0]?.delta?.tool_calls);
+    expect(toolChunk).toBeDefined();
+    expect(toolChunk.choices[0].delta.tool_calls[0].function.name).toBe("read_file");
+    expect(JSON.parse(toolChunk.choices[0].delta.tool_calls[0].function.arguments)).toEqual(args);
+    expect(output).toContain('"finish_reason":"tool_calls"');
+    expect(output).not.toContain("[assistant requested tools]");
+    // Exactly one non-null terminal signal reaches the client (the tool_calls
+    // chunk also carries "finish_reason":null, which is harmless).
+    expect((output.match(/"finish_reason":"tool_calls"/g) || []).length).toBe(1);
+    expect(output).not.toContain('"finish_reason":"stop"');
+    expect((output.match(/data: \[DONE\]/g) || []).length).toBe(1);
+  });
+
+  // Regression: marker text split across multiple deltas with the terminal
+  // finish_reason arriving later — recovery must still work and the terminal
+  // must not be dropped.
+  it("recovers flattened tool calls across multiple deltas before finish_reason", async () => {
+    const source = [
+      { choices: [{ delta: { content: "assistant requested tools\n" }, finish_reason: null }] },
+      { choices: [{ delta: { content: 'edit({"filePath":"a.js","oldString":"x","newString":"y"})\n' }, finish_reason: null }] },
+      { choices: [{ delta: { content: "" }, finish_reason: "stop" }] },
+    ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n";
+    const response = recoverQoderToolCallStream(
+      new Response(source, { headers: { "Content-Type": "text/event-stream" } }),
+      "qoder/qmodel_latest",
+      [{ type: "function", function: { name: "edit" } }],
+    );
+    const output = await response.text();
+    expect(output).toContain('"name":"edit"');
+    expect(output).toContain('"finish_reason":"tool_calls"');
+    expect(output).not.toContain("assistant requested tools");
+    expect((output.match(/data: \[DONE\]/g) || []).length).toBe(1);
+  });
 });
 
 describe("Qoder transport", () => {
@@ -564,7 +634,7 @@ describe("wrapQoderSSE", () => {
   it("forwards an OpenAI envelope chunk and emits [DONE] in flush", async () => {
     const inner = JSON.stringify({ choices: [{ delta: { content: "hi" } }] });
     const upstream = `data: ${JSON.stringify({ statusCodeValue: 200, body: inner })}\n\n`;
-    const wrapped = wrapQoderSSE(makeResponse([upstream]), "qoder/auto");
+    const wrapped = await wrapQoderSSE(makeResponse([upstream]), "qoder/auto");
     const out = await drain(wrapped);
     expect(out).toContain(`data: ${inner}\n\n`);
     expect(out).toContain("data: [DONE]\n\n");
@@ -576,7 +646,7 @@ describe("wrapQoderSSE", () => {
     const inner = JSON.stringify({ choices: [{ delta: { content: "tail" } }], finish_reason: "stop" });
     // Note: NO trailing \n on the final line.
     const upstream = `data: ${JSON.stringify({ statusCodeValue: 200, body: inner })}`;
-    const wrapped = wrapQoderSSE(makeResponse([upstream]), "qoder/auto");
+    const wrapped = await wrapQoderSSE(makeResponse([upstream]), "qoder/auto");
     const out = await drain(wrapped);
     expect(out).toContain(`data: ${inner}\n\n`);
   });
@@ -589,7 +659,7 @@ describe("wrapQoderSSE", () => {
     const errorEnv = JSON.stringify({ statusCodeValue: 500, body: "boom" });
     const validInner = JSON.stringify({ choices: [{ delta: { content: "leak" } }] });
     const validEnv = JSON.stringify({ statusCodeValue: 200, body: validInner });
-    const wrapped = wrapQoderSSE(
+    const wrapped = await wrapQoderSSE(
       makeResponse([`data: ${errorEnv}\n\ndata: ${validEnv}\n\n`]),
       "qoder/auto",
     );
@@ -606,7 +676,7 @@ describe("wrapQoderSSE", () => {
   it("strips embedded newlines from inner body before forwarding", async () => {
     const innerWithNewlines = '{"choices":[{"delta":{"content":"a\nb"}}]}';
     const env = JSON.stringify({ statusCodeValue: 200, body: innerWithNewlines });
-    const wrapped = wrapQoderSSE(makeResponse([`data: ${env}\n\n`]), "qoder/auto");
+    const wrapped = await wrapQoderSSE(makeResponse([`data: ${env}\n\n`]), "qoder/auto");
     const out = await drain(wrapped);
     // The forwarded data: line should be a single event terminated by \n\n
     // and contain no internal \n other than the trailing pair.
@@ -618,15 +688,15 @@ describe("wrapQoderSSE", () => {
 
   it("upstream error envelope produces an error chunk + [DONE]", async () => {
     const env = JSON.stringify({ statusCodeValue: 503, body: "service unavailable" });
-    const wrapped = wrapQoderSSE(makeResponse([`data: ${env}\n\n`]), "qoder/lite");
+    const wrapped = await wrapQoderSSE(makeResponse([`data: ${env}\n\n`]), "qoder/lite");
     const out = await drain(wrapped);
     expect(out).toContain("[qoder error 503");
     expect(out).toContain("data: [DONE]\n\n");
   });
 
-  it("non-ok responses are returned unchanged (no transform)", () => {
+  it("non-ok responses are returned unchanged (no transform)", async () => {
     const r = new Response("not ok", { status: 500 });
-    const wrapped = wrapQoderSSE(r, "qoder/auto");
+    const wrapped = await wrapQoderSSE(r, "qoder/auto");
     expect(wrapped).toBe(r);
   });
 });
@@ -699,5 +769,55 @@ describe("buildQoderRequestBody plan gate", () => {
     expect(result.payload.model_config.enable).toBe(true);
     expect(result.payload.messages).toHaveLength(1);
     expect(result.payload.messages[0].content).toBe("hello world");
+  });
+});
+
+describe("qoder image extraction", () => {
+  const { extractImages, extractText } = qoderExecutorInternals;
+
+  it("extracts OpenAI image_url blocks", () => {
+    const urls = extractImages([
+      { type: "text", text: "describe this" },
+      { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+      { type: "image_url", image_url: "data:image/png;base64,AAAA" },
+    ]);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe("https://example.com/a.png");
+    expect(urls[1]).toBe("data:image/png;base64,AAAA");
+  });
+
+  it("extracts Anthropic image source blocks", () => {
+    const urls = extractImages([
+      { type: "image", source: { type: "url", url: "https://example.com/b.png" } },
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "Zm9v" } },
+    ]);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe("https://example.com/b.png");
+    expect(urls[1]).toBe("data:image/jpeg;base64,Zm9v");
+  });
+
+  it("ignores non-image blocks and returns empty", () => {
+    expect(extractImages([{ type: "text", text: "hello" }])).toEqual([]);
+    expect(extractImages("plain string")).toEqual([]);
+    expect(extractImages(null)).toEqual([]);
+  });
+
+  it("normalizeMessages collects images into the images field", () => {
+    const { normalizeMessages } = qoderExecutorInternals;
+    const res = normalizeMessages([
+      { role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: "https://example.com/x.png" } }] },
+    ]);
+    expect(res.images).toEqual(["https://example.com/x.png"]);
+    expect(res.messages[0].content).toBe("what is this?");
+    // images should not leak into text content
+    expect(res.messages[0].content).not.toContain("https://example.com/x.png");
+  });
+
+  it("extractText drops image blocks but keeps text", () => {
+    const text = extractText([
+      { type: "text", text: "keep me" },
+      { type: "image_url", image_url: { url: "https://example.com/x.png" } },
+    ]);
+    expect(text).toBe("keep me");
   });
 });

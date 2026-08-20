@@ -1,4 +1,4 @@
-# 9Router WYx0 Design System
+# 9Router Design System
 
 ## 1. Atmosphere & Identity
 

@@ -133,7 +133,7 @@ describe("installPlaywrightOnly", () => {
   });
 
   it("loads Playwright from the 9router runtime node_modules", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "wyxrouter-playwright-runtime-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "9router-playwright-runtime-"));
     const nodeModules = path.join(root, "node_modules");
     const playwrightDir = path.join(nodeModules, "playwright");
     fs.mkdirSync(playwrightDir, { recursive: true });
