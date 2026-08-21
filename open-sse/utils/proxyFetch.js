@@ -1,6 +1,7 @@
 import { Readable } from "stream";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
+import { publicProxyManager } from "../../src/lib/network/publicProxyManager.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -221,7 +222,6 @@ function normalizeProxyUrl(proxyUrl) {
   if (!normalizedInput) return null;
 
   try {
-
     new URL(normalizedInput);
     return normalizedInput;
   } catch {
@@ -347,6 +347,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
         const dispatcher = await getDispatcher(proxyUrl);
         return await originalFetch(url, { ...options, dispatcher });
       } catch (proxyError) {
+        if (proxyOptions?.isPublicProxy && proxyUrl) {
+          publicProxyManager.reportFailure(proxyUrl);
+        }
         if (proxyOptions?.strictProxy === true) {
           throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
         }
@@ -368,6 +371,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       const dispatcher = await getDispatcher(proxyUrl);
       return await originalFetch(url, { ...options, dispatcher });
     } catch (proxyError) {
+      if (proxyOptions?.isPublicProxy && proxyUrl) {
+        publicProxyManager.reportFailure(proxyUrl);
+      }
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
         throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);

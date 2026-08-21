@@ -14,6 +14,7 @@ import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { PUBLIC_PROXY_POOL_ID } from "@/shared/constants/proxy";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -465,22 +466,6 @@ export default function ProviderDetailPage() {
   const handleThinkingModeChange = (mode) => {
     setThinkingMode(mode);
     saveThinkingConfig(mode);
-  };
-
-  const saveAutoPing = async (next) => {
-    const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
-    if (!autoPingSettingsKey) return;
-
-    setAutoPing(next);
-    try {
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [autoPingSettingsKey]: next }),
-      });
-    } catch (error) {
-      console.log("Error saving auto-ping config:", error);
-    }
   };
 
   const handleAutoPingConnection = (connectionId, on) => {
@@ -1004,6 +989,7 @@ export default function ProviderDetailPage() {
     if (poolIds.size === 1) {
       const onlyId = [...poolIds][0];
       if (onlyId === "__none__") return "All selected currently unbound";
+      if (onlyId === PUBLIC_PROXY_POOL_ID) return "All selected currently bound to Public Proxy (Round Robin)";
       const pool = proxyPools.find((p) => p.id === onlyId);
       return `All selected currently bound to ${pool?.name || onlyId}`;
     }
@@ -1160,12 +1146,20 @@ export default function ProviderDetailPage() {
       <div className="flex flex-col gap-3">
         <div className="flex flex-col">
           <button
+            onClick={() => handleApplySinglePool(PUBLIC_PROXY_POOL_ID)}
+            disabled={bulkUpdatingProxy}
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-primary text-[18px]">public</span>
+            <span className="text-sm font-medium text-text-main">🌐 Public Proxy (Round Robin)</span>
+          </button>
+          <button
             onClick={handleApplyOneToOne}
             disabled={bulkUpdatingProxy || activePools.length === 0}
             className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <span className="material-symbols-outlined text-text-muted text-[18px]">sync_alt</span>
-            <span className="text-sm text-text-main">One-to-one (rotate)</span>
+            <span className="text-sm text-text-main">One-to-one (rotate custom pools)</span>
           </button>
           <button
             onClick={() => handleApplySinglePool(null)}
@@ -1611,7 +1605,7 @@ export default function ProviderDetailPage() {
               >
                 Import
               </Button>
-              {connections.length > 0 && proxyPools.length > 0 && (
+              {connections.length > 0 && (
                 <Button
                   size="sm"
                   variant="secondary"

@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { planBulkAdd } from "@/shared/utils/bulkAdd";
+import { PUBLIC_PROXY_POOL_ID } from "@/shared/constants/proxy";
 
 const BULK_PLACEHOLDER = `name1|sk-key1\nname2|sk-key2\nsk-key-only-auto-named`;
 
@@ -324,7 +325,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             <Input
               label="Account ID"
               value={cloudflareData.accountId}
-              onChange={(e) => setCloudflareData({ ...cloudflareData, accountId: e.target.value })}
+              onChange={(e) => setcloudflareData({ ...cloudflareData, accountId: e.target.value })}
               placeholder="abc123def456..."
             />
             <p className="text-xs text-text-muted mt-2">
@@ -377,6 +378,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           onChange={(e) => setFormData({ ...formData, proxyPoolId: e.target.value })}
           options={[
             { value: NONE_PROXY_POOL_VALUE, label: "None" },
+            { value: PUBLIC_PROXY_POOL_ID, label: "🌐 Public Proxy (Round Robin)" },
             ...(proxyPools || []).map((pool) => ({ value: pool.id, label: pool.name })),
           ]}
           placeholder="None"
@@ -384,7 +386,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
 
         {(proxyPools || []).length === 0 && (
           <p className="text-xs text-text-muted">
-            No active proxy pools available. Create one in Proxy Pools page first.
+            You can select Public Proxy (Round Robin) or add custom pools in the Proxy Pools page.
           </p>
         )}
 

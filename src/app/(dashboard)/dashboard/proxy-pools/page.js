@@ -31,6 +31,9 @@ const PROXY_POOL_DEFAULT_PAGE_SIZE = 20;
 
 export default function ProxyPoolsPage() {
   const [proxyPools, setProxyPools] = useState([]);
+  const [publicProxyStats, setPublicProxyStats] = useState({ total: 0, maxLatencyMs: 3000, isScanning: false, proxies: [] });
+  const [publicProxyLoading, setPublicProxyLoading] = useState(false);
+  const [maxLatencyInput, setMaxLatencyInput] = useState("3000");
   const [loading, setLoading] = useState(true);
   const [showFormModal, setShowFormModal] = useState(false);
   const [showBatchImportModal, setShowBatchImportModal] = useState(false);
@@ -84,9 +87,49 @@ export default function ProxyPoolsPage() {
     }
   }, []);
 
+  const fetchPublicProxyStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/proxy-pools/public", { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok) {
+        setPublicProxyStats(data);
+        if (data.maxLatencyMs) setMaxLatencyInput(String(data.maxLatencyMs));
+      }
+    } catch (e) {
+      console.log("Error fetching public proxy stats:", e);
+    }
+  }, []);
+
   useEffect(() => {
     fetchProxyPools();
-  }, [fetchProxyPools]);
+    fetchPublicProxyStats();
+    const interval = setInterval(fetchPublicProxyStats, 15000);
+    return () => clearInterval(interval);
+  }, [fetchProxyPools, fetchPublicProxyStats]);
+
+  const triggerPublicScan = async () => {
+    setPublicProxyLoading(true);
+    try {
+      const res = await fetch("/api/proxy-pools/public", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "scan",
+          maxLatencyMs: Number(maxLatencyInput) || 3000,
+        }),
+      });
+      if (res.ok) {
+        notify.success("Public proxy screening started in background");
+        await fetchPublicProxyStats();
+      } else {
+        notify.error("Failed to trigger scan");
+      }
+    } catch (e) {
+      notify.error("Error triggering scan");
+    } finally {
+      setPublicProxyLoading(false);
+    }
+  };
 
   const resetForm = () => {
     setEditingProxyPool(null);
@@ -653,6 +696,67 @@ export default function ProxyPoolsPage() {
         </div>
       </div>
 
+      {/* Public Proxy Auto-Screening Card */}
+      <Card>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="inline-flex size-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <span className="material-symbols-outlined text-[22px]">public</span>
+            </div>
+            <div>
+              <h2 className="text-base font-semibold">🌐 Public Proxy Auto-Screening</h2>
+              <p className="text-xs text-text-muted">
+                Background auto-screens public HTTP/HTTPS proxies every 10 minutes. Proxies are routed round-robin and auto-ejected on error or timeout.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant={publicProxyStats.isScanning ? "primary" : "success"} size="sm" dot>
+              {publicProxyStats.isScanning ? "Scanning..." : `Alive: ${publicProxyStats.total || 0}`}
+            </Badge>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 bg-sidebar/50 p-3 rounded-lg border border-accent/20">
+          <div className="flex items-center gap-2 flex-1">
+            <span className="text-xs font-medium text-text-main shrink-0">Max Latency Filter:</span>
+            <input
+              type="number"
+              value={maxLatencyInput}
+              onChange={(e) => setMaxLatencyInput(e.target.value)}
+              className="w-24 px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
+              placeholder="3000"
+            />
+            <span className="text-xs text-text-muted">ms</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={publicProxyStats.isScanning || publicProxyLoading ? "progress_activity" : "refresh"}
+              onClick={triggerPublicScan}
+              disabled={publicProxyStats.isScanning || publicProxyLoading}
+            >
+              {publicProxyStats.isScanning || publicProxyLoading ? "Screening..." : "Scan Public Proxies Now"}
+            </Button>
+          </div>
+        </div>
+
+        {publicProxyStats.proxies && publicProxyStats.proxies.length > 0 ? (
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+            {publicProxyStats.proxies.slice(0, 6).map((p, idx) => (
+              <div key={idx} className="flex items-center justify-between p-2 rounded bg-black/[0.02] dark:bg-white/[0.02] border border-black/5 dark:border-white/5 text-xs">
+                <span className="font-mono truncate max-w-[140px] text-text-main">{p.url.replace(/^https?:\/\//, "")}</span>
+                <span className={`font-mono text-[11px] ${p.latency < 1000 ? "text-green-500" : p.latency < 2000 ? "text-yellow-500" : "text-orange-500"}`}>
+                  {p.latency}ms
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </Card>
+
       <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">
           {proxyPools.length > 0 && (
@@ -666,7 +770,7 @@ export default function ProxyPoolsPage() {
               {allSelected ? "Unselect visible" : "Select visible"}
             </label>
           )}
-          <Badge variant="default">Total: {proxyPools.length}</Badge>
+          <Badge variant="default">Total Custom Pools: {proxyPools.length}</Badge>
           <Badge variant="success">Active: {activeCount}</Badge>
         </div>
 
@@ -707,9 +811,9 @@ export default function ProxyPoolsPage() {
 
         {proxyPools.length === 0 ? (
           <div className="text-center py-10">
-            <p className="text-text-main font-medium mb-1">No proxy pool entries yet</p>
+            <p className="text-text-main font-medium mb-1">No custom proxy pool entries yet</p>
             <p className="text-sm text-text-muted mb-4">
-              Create a proxy pool entry, then assign it to connections.
+              Create a custom proxy pool entry or use Public Proxy (Round Robin) directly in connections.
             </p>
             <Button icon="add" onClick={openCreateModal}>Add Proxy Pool</Button>
           </div>

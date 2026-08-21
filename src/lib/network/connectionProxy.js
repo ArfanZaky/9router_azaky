@@ -1,4 +1,8 @@
 import { getProxyPoolById } from "@/models";
+import { publicProxyManager } from "./publicProxyManager.js";
+import { PUBLIC_PROXY_POOL_ID } from "@/shared/constants/proxy";
+
+export { PUBLIC_PROXY_POOL_ID };
 
 // Safely normalize any value into a trimmed string.
 function normalizeString(value) {
@@ -59,9 +63,10 @@ function normalizeLegacyProxy(providerSpecificData = {}) {
  * Resolve final proxy configuration.
  *
  * Priority:
- * 1. Proxy Pool
- * 2. Legacy Proxy
- * 3. No Proxy
+ * 1. Public Proxy (Round Robin)
+ * 2. Proxy Pool
+ * 3. Legacy Proxy
+ * 4. No Proxy
  */
 export async function resolveConnectionProxyConfig(
   providerSpecificData = {}
@@ -71,9 +76,31 @@ export async function resolveConnectionProxyConfig(
       providerSpecificData?.proxyPoolId
     );
 
+    // Public Proxy Mode (Round-robin dynamically chosen from screened public proxies)
+    if (proxyPoolIdRaw === PUBLIC_PROXY_POOL_ID) {
+      const publicUrl = publicProxyManager.getNextProxy();
+      if (publicUrl) {
+        return {
+          source: "public",
+          proxyPoolId: PUBLIC_PROXY_POOL_ID,
+          proxyPool: {
+            id: PUBLIC_PROXY_POOL_ID,
+            name: "Public Proxy (Round Robin)",
+            proxyUrl: publicUrl,
+            isActive: true,
+          },
+          connectionProxyEnabled: true,
+          connectionProxyUrl: publicUrl,
+          connectionNoProxy: normalizeString(providerSpecificData?.connectionNoProxy),
+          strictProxy: false,
+          isPublicProxy: true,
+        };
+      }
+    }
+
     // "__none__" means explicitly disabled
     const proxyPoolId =
-      proxyPoolIdRaw === "__none__" ? "" : proxyPoolIdRaw;
+      proxyPoolIdRaw === "__none__" || proxyPoolIdRaw === PUBLIC_PROXY_POOL_ID ? "" : proxyPoolIdRaw;
 
     const legacy = normalizeLegacyProxy(providerSpecificData);
 
@@ -111,7 +138,7 @@ export async function resolveConnectionProxyConfig(
 
             strictProxy: proxyPool.strictProxy === true,
 
-            vercelRelayUrl: proxyUrl, // Still mapped to vercelRelayUrl in the unified payload since they use the exact same header spec
+            vercelRelayUrl: proxyUrl,
           };
         }
 

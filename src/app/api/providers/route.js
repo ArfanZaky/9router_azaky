@@ -9,6 +9,7 @@ import {
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
+import { PUBLIC_PROXY_POOL_ID } from "@/shared/constants/proxy";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,10 @@ function normalizeProxyConfig(body = {}) {
 async function normalizeProxyPoolId(proxyPoolId) {
   if (proxyPoolId === undefined || proxyPoolId === null || proxyPoolId === "" || proxyPoolId === "__none__") {
     return { proxyPoolId: null };
+  }
+
+  if (proxyPoolId === PUBLIC_PROXY_POOL_ID) {
+    return { proxyPoolId: PUBLIC_PROXY_POOL_ID };
   }
 
   const normalizedId = String(proxyPoolId).trim();

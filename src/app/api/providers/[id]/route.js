@@ -5,6 +5,7 @@ import {
   updateProviderConnection,
   deleteProviderConnection,
 } from "@/models";
+import { PUBLIC_PROXY_POOL_ID } from "@/shared/constants/proxy";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -40,6 +41,10 @@ async function normalizeProxyPoolUpdate(proxyPoolIdInput) {
 
   if (proxyPoolIdInput === null || proxyPoolIdInput === "" || proxyPoolIdInput === "__none__") {
     return { hasProxyPoolField: true, proxyPoolId: null };
+  }
+
+  if (proxyPoolIdInput === PUBLIC_PROXY_POOL_ID) {
+    return { hasProxyPoolField: true, proxyPoolId: PUBLIC_PROXY_POOL_ID };
   }
 
   const proxyPoolId = String(proxyPoolIdInput).trim();
