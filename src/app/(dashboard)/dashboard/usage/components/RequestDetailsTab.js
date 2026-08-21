@@ -92,9 +92,6 @@ function getCacheCreationTokens(tokens) {
 
 function getInputTokens(tokens) {
   const prompt = tokens?.prompt_tokens || tokens?.input_tokens || 0;
-  // Canonical storage keeps prompt cache-inclusive. Legacy Claude rows may have
-  // stored prompt cache-exclusive; fall back to cache when it's larger so old
-  // rows don't under-report input.
   const cache = getCachedTokens(tokens);
   return prompt < cache ? cache : prompt;
 }
@@ -249,12 +246,13 @@ export default function RequestDetailsTab() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[880px]">
+          <table className="w-full min-w-[960px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Model</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Provider</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">Proxy</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Input Tokens</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cached</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cache Creation</th>
@@ -266,7 +264,7 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="10" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -275,7 +273,7 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="10" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
@@ -288,14 +286,34 @@ export default function RequestDetailsTab() {
                     <td className="whitespace-nowrap p-4 text-sm text-text-main">
                       {new Date(detail.timestamp).toLocaleString()}
                     </td>
-                    <td className="max-w-[260px] truncate p-4 font-mono text-sm text-text-main">
+                    <td className="max-w-[220px] truncate p-4 font-mono text-sm text-text-main">
                       {detail.model}
                     </td>
-                    <td className="max-w-[180px] truncate p-4 text-sm text-text-main">
+                    <td className="max-w-[160px] truncate p-4 text-sm text-text-main">
                        <span className="font-medium">
                          {getProviderName(detail.provider, providerNameCache)}
                        </span>
                      </td>
+                    <td className="p-4 text-sm text-text-main">
+                      {detail.proxy?.enabled ? (
+                        <span className={cn(
+                          "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium",
+                          detail.proxy.isPublicPool
+                            ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                            : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                        )}>
+                          <span className="material-symbols-outlined text-[14px]">
+                            {detail.proxy.isPublicPool ? "public" : "lan"}
+                          </span>
+                          {detail.proxy.isPublicPool ? "Public Proxy" : "Proxy"}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs text-text-muted">
+                          <span className="material-symbols-outlined text-[14px]">cloud_sync</span>
+                          Direct
+                        </span>
+                      )}
+                    </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">
                       {getInputTokens(detail.tokens).toLocaleString()}
                     </td>
@@ -367,6 +385,24 @@ export default function RequestDetailsTab() {
               <div>
                 <span className="text-text-muted">Model:</span>{" "}
                 <span className="text-text-main font-mono">{selectedDetail.model}</span>
+              </div>
+              <div>
+                <span className="text-text-muted">Proxy:</span>{" "}
+                {selectedDetail.proxy?.enabled ? (
+                  <span className={cn(
+                    "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ml-1",
+                    selectedDetail.proxy.isPublicPool
+                      ? "bg-purple-500/10 text-purple-600 dark:text-purple-400"
+                      : "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                  )}>
+                    <span className="material-symbols-outlined text-[14px]">
+                      {selectedDetail.proxy.isPublicPool ? "public" : "lan"}
+                    </span>
+                    {selectedDetail.proxy.isPublicPool ? "Public Proxy (Round Robin)" : "Custom Proxy"}
+                  </span>
+                ) : (
+                  <span className="text-text-muted font-medium ml-1">Direct (No Proxy)</span>
+                )}
               </div>
               <div>
                 <span className="text-text-muted">Status:</span>{" "}

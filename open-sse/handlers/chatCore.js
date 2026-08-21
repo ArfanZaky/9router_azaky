@@ -328,6 +328,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
   };
 
+  const proxyInfo = proxyOptions.connectionProxyEnabled || proxyOptions.vercelRelayUrl ? {
+    enabled: true,
+    url: proxyOptions.connectionProxyUrl || proxyOptions.vercelRelayUrl,
+    poolId: credentials?.providerSpecificData?.connectionProxyPoolId || null,
+    isPublicPool: credentials?.providerSpecificData?.connectionProxyPoolId === "__public_proxy__" || credentials?.providerSpecificData?.connectionProxyUrl === "__public_proxy__"
+  } : { enabled: false };
+
   if (proxyOptions.vercelRelayUrl) {
     const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
     const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
@@ -372,6 +379,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
+      proxy: proxyInfo,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -436,6 +444,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
+      proxy: proxyInfo,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
@@ -454,7 +463,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, proxy: proxyInfo, reqTag, log };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 
