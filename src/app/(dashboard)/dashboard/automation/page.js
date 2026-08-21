@@ -15,6 +15,7 @@ import {
   QoderGrantModal,
   QoderSignupAutomationModal,
   Freebuff2ApiGatewayModal,
+  ZarkLabAutomationModal,
 } from "@/shared/components";
 import { FREE_PROVIDERS } from "@/shared/constants/providers";
 
@@ -168,13 +169,11 @@ function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
     }
   };
 
-  // Build detailed success message with format breakdown
   let successMsg = null;
   if (result?.success) {
     const parts = [`Imported ${result.imported}/${result.total} tokens.`];
     if (result.failed) parts.push(`${result.failed} failed.`);
 
-    // Show format breakdown if available
     if (result.formatCounts) {
       const { "access-only": ao, "with-refresh": wr, "with-api-key": wa } = result.formatCounts;
       const breakdown = [];
@@ -638,6 +637,35 @@ function BlackboxAutomationPanel({ onRefresh }) {
   );
 }
 
+function ZarkLabAutomationPanel({ onRefresh }) {
+  const [isSignupOpen, setIsSignupOpen] = useState(false);
+
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setIsSignupOpen(true)}
+          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+        >
+          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[20px] text-primary">movie_filter</span>
+            Bulk Signup + Auto Harvest Session
+          </span>
+          <span className="text-xs leading-relaxed text-text-muted">
+            Create ZarkLab AI accounts with disposable temp mail, extract session credentials, and add them to provider media pool for Video, Image, and Audio generations.
+          </span>
+        </button>
+      </div>
+      <ZarkLabAutomationModal
+        isOpen={isSignupOpen}
+        onSuccess={onRefresh}
+        onClose={() => setIsSignupOpen(false)}
+      />
+    </>
+  );
+}
+
 function FreebuffAutomationPanel({ onRefresh }) {
   const [isBulkOpen, setIsBulkOpen] = useState(false);
 
@@ -669,7 +697,6 @@ function FreebuffAutomationPanel({ onRefresh }) {
     </>
   );
 }
-
 
 function Freebuff2ApiAutomationPanel({ onRefresh }) {
   const [isGatewayOpen, setIsGatewayOpen] = useState(false);
@@ -764,6 +791,14 @@ const AUTOMATION_PROVIDERS = [
     description: "Bulk signup with disposable temp mail, OTP verify, and API key harvest.",
     supportedModes: ["bulk-account"],
     component: BlackboxAutomationPanel,
+  },
+  {
+    id: "zarklab",
+    label: "ZarkLab AI",
+    icon: "movie_filter",
+    description: "Bulk signup with disposable mail and auto session harvest for Video/Image/Audio generation.",
+    supportedModes: ["bulk-account"],
+    component: ZarkLabAutomationPanel,
   },
   {
     id: "freebuff2api",
