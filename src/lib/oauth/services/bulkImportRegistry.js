@@ -119,26 +119,6 @@ export const BULK_IMPORT_PROVIDERS = Object.freeze({
       proxySource: resolvedProxy.proxySource,
     }),
   },
-  zarklab: {
-    label: "ZarkLab AI",
-    errorLabel: "ZarkLab AI import job",
-    staleOnLatest404: true,
-    parseAccounts: (accounts) =>
-      import("@/lib/oauth/services/kiroBulkImportManager").then((m) => m.parseKiroBulkAccounts(accounts)),
-    getManager: () =>
-      import("@/lib/oauth/services/zarklabBulkImportManager").then((m) => m.getZarkLabBulkImportManager()),
-    normalizeStartArgs: (body, resolvedProxy) => ({
-      count: body?.count,
-      concurrency: body?.concurrency,
-      engine: body?.engine,
-      domain: body?.domain,
-      proxyUrl: resolvedProxy.proxyUrl,
-      proxyUrls: resolvedProxy.proxyUrls,
-      proxyMode: resolvedProxy.proxyMode,
-      proxyPoolId: resolvedProxy.proxyPoolId,
-      proxySource: resolvedProxy.proxySource,
-    }),
-  },
 });
 
 export function isValidBulkImportProvider(providerId) {
