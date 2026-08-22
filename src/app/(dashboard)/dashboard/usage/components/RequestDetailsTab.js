@@ -105,6 +105,7 @@ export default function RequestDetailsTab() {
     totalPages: 0
   });
   const [loading, setLoading] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [providers, setProviders] = useState([]);
@@ -129,8 +130,8 @@ export default function RequestDetailsTab() {
     }
   }, []);
 
-  const fetchDetails = useCallback(async () => {
-    setLoading(true);
+  const fetchDetails = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
     try {
       const params = new URLSearchParams({
         page: pagination.page.toString(),
@@ -149,7 +150,7 @@ export default function RequestDetailsTab() {
     } catch (error) {
       console.error("Failed to fetch request details:", error);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }, [pagination.page, pagination.pageSize, filters]);
 
@@ -160,6 +161,17 @@ export default function RequestDetailsTab() {
   useEffect(() => {
     fetchDetails();
   }, [fetchDetails]);
+
+  // Auto-refresh timer when enabled
+  useEffect(() => {
+    let interval;
+    if (autoRefresh) {
+      interval = setInterval(() => {
+        fetchDetails(false);
+      }, 3000);
+    }
+    return () => clearInterval(interval);
+  }, [autoRefresh, fetchDetails]);
 
   const handleViewDetail = (detail) => {
     setSelectedDetail(detail);
@@ -181,82 +193,120 @@ export default function RequestDetailsTab() {
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <Card padding="md">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <div className="flex min-w-0 flex-col gap-2">
-            <label htmlFor="provider-filter" className="text-sm font-medium text-text-main">Provider</label>
-            <select
-              id="provider-filter"
-              value={filters.provider}
-              onChange={(e) => setFilters({ ...filters, provider: e.target.value })}
-              className={cn(
-                "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
-                "text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20",
-                "w-full min-w-0 cursor-pointer"
-              )}
-              style={{ colorScheme: 'auto' }}
-            >
-              <option value="">All Providers</option>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name}{Number.isFinite(provider.count) ? ` (${provider.count})` : ""}
-                </option>
-              ))}
-            </select>
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-text-main flex items-center gap-2">
+              <span className="material-symbols-outlined text-[20px] text-text-muted">tune</span>
+              Filter & Refresh
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => fetchDetails(true)}
+                disabled={loading}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs font-medium text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
+              >
+                <span className={cn("material-symbols-outlined text-[16px]", loading && "animate-spin")}>
+                  refresh
+                </span>
+                Refresh
+              </button>
+              <label className="text-xs font-medium text-text-muted flex items-center gap-2 cursor-pointer select-none">
+                <span>Auto Refresh (3s)</span>
+                <div
+                  onClick={() => setAutoRefresh(!autoRefresh)}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                    autoRefresh ? "bg-primary" : "bg-black/20 dark:bg-white/20"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "inline-block h-3 w-3 transform rounded-full bg-white transition-transform",
+                      autoRefresh ? "translate-x-5" : "translate-x-1"
+                    )}
+                  />
+                </div>
+              </label>
+            </div>
           </div>
 
-          <div className="flex min-w-0 flex-col gap-2">
-            <label htmlFor="model-filter" className="text-sm font-medium text-text-main">Model Filter</label>
-            <input
-              id="model-filter"
-              type="text"
-              placeholder="e.g. gemini, gpt, flash..."
-              value={filters.model}
-              onChange={(e) => setFilters({ ...filters, model: e.target.value })}
-              className={cn(
-                "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
-                "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
-              )}
-            />
-          </div>
-          
-          <div className="flex min-w-0 flex-col gap-2">
-            <label htmlFor="start-date-filter" className="text-sm font-medium text-text-main">Start Date</label>
-            <input
-              id="start-date-filter"
-              type="datetime-local"
-              value={filters.startDate}
-              onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
-              className={cn(
-                "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
-                "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
-              )}
-            />
-          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5 pt-2 border-t border-black/5 dark:border-white/5">
+            <div className="flex min-w-0 flex-col gap-2">
+              <label htmlFor="provider-filter" className="text-xs font-medium text-text-muted">Provider</label>
+              <select
+                id="provider-filter"
+                value={filters.provider}
+                onChange={(e) => setFilters({ ...filters, provider: e.target.value })}
+                className={cn(
+                  "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
+                  "text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20",
+                  "w-full min-w-0 cursor-pointer"
+                )}
+                style={{ colorScheme: 'auto' }}
+              >
+                <option value="">All Providers</option>
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.name}{Number.isFinite(provider.count) ? ` (${provider.count})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div className="flex min-w-0 flex-col gap-2">
-            <label htmlFor="end-date-filter" className="text-sm font-medium text-text-main">End Date</label>
-            <input
-              id="end-date-filter"
-              type="datetime-local"
-              value={filters.endDate}
-              onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
-              className={cn(
-                "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
-                "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
-              )}
-            />
-          </div>
-          
-          <div className="flex min-w-0 flex-col gap-2 sm:col-span-2 lg:col-span-1">
-            <span className="hidden text-sm font-medium text-text-main opacity-0 lg:block" aria-hidden="true">Clear</span>
-            <Button 
-              variant="ghost" 
-              onClick={handleClearFilters}
-              disabled={!filters.provider && !filters.model && !filters.startDate && !filters.endDate}
-              className="w-full"
-            >
-              Clear Filters
-            </Button>
+            <div className="flex min-w-0 flex-col gap-2">
+              <label htmlFor="model-filter" className="text-xs font-medium text-text-muted">Model Filter</label>
+              <input
+                id="model-filter"
+                type="text"
+                placeholder="e.g. gemini, gpt, flash..."
+                value={filters.model}
+                onChange={(e) => setFilters({ ...filters, model: e.target.value })}
+                className={cn(
+                  "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
+                  "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+                )}
+              />
+            </div>
+            
+            <div className="flex min-w-0 flex-col gap-2">
+              <label htmlFor="start-date-filter" className="text-xs font-medium text-text-muted">Start Date</label>
+              <input
+                id="start-date-filter"
+                type="datetime-local"
+                value={filters.startDate}
+                onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
+                className={cn(
+                  "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
+                  "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+                )}
+              />
+            </div>
+
+            <div className="flex min-w-0 flex-col gap-2">
+              <label htmlFor="end-date-filter" className="text-xs font-medium text-text-muted">End Date</label>
+              <input
+                id="end-date-filter"
+                type="datetime-local"
+                value={filters.endDate}
+                onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
+                className={cn(
+                  "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
+                  "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
+                )}
+              />
+            </div>
+            
+            <div className="flex min-w-0 flex-col gap-2 justify-end">
+              <Button 
+                variant="ghost" 
+                onClick={handleClearFilters}
+                disabled={!filters.provider && !filters.model && !filters.startDate && !filters.endDate}
+                className="w-full h-9"
+              >
+                Clear Filters
+              </Button>
+            </div>
           </div>
         </div>
       </Card>
@@ -279,7 +329,7 @@ export default function RequestDetailsTab() {
               </tr>
             </thead>
             <tbody>
-              {loading ? (
+              {loading && details.length === 0 ? (
                 <tr>
                   <td colSpan="10" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
@@ -365,7 +415,7 @@ export default function RequestDetailsTab() {
           </table>
         </div>
 
-        {!loading && details.length > 0 && (
+        {details.length > 0 && (
           <div className="border-t border-black/5 dark:border-white/5">
             <Pagination
               currentPage={pagination.page}
