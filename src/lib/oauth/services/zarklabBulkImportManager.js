@@ -1,49 +1,47 @@
 import {
-  KIRO_BULK_IMPORT_DEFAULT_CONCURRENCY,
-  KIRO_BULK_IMPORT_MAX_CONCURRENCY,
-  KIRO_BULK_IMPORT_MIN_CONCURRENCY,
   KiroBulkImportManager,
-  buildLookupResponse,
+  parseKiroBulkAccounts,
   createFreshContext,
 } from "./kiroBulkImportManager.js";
-import { generateEmail, waitForOtp } from "./catchmailClient.js";
-import { generatePassword, runZarkLabAccount } from "./zarklabAutomation.js";
+import {
+  runZarkLabGoogleAutomation,
+  createZarkLabTokenMonitor,
+} from "./zarklabAutomation.js";
 
 const ZARKLAB_PROVIDER_ID = "zarklab";
-const DEFAULT_COUNT = 1;
-const MAX_COUNT = 8;
-const ZARKLAB_OTP_TIMEOUT_MS = 60_000;
-const ZARKLAB_OTP_POLL_INTERVAL_MS = 3_000;
-
-function clampCount(value) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_COUNT;
-  return Math.min(MAX_COUNT, Math.max(1, parsed));
-}
+const ZARKLAB_BULK_CONFIG = {
+  shortTimeoutMs: 60_000,
+  tokenTimeoutMs: 120_000,
+};
 
 async function defaultZarkLabBrowserLauncher(job) {
   const { launchBulkImportBrowser } = await import("./bulkImportBrowserEngine.js");
   return launchBulkImportBrowser({
-    engine: job?.engine || "chromium",
+    engine: job?.engine || "camoufox",
     proxyUrl: job?.proxyUrl || undefined,
     headless: false,
     args: ["--start-maximized"],
   });
 }
 
-async function defaultSaveZarkLabConnection({ apiKey, email }) {
+async function defaultSaveZarkLabConnection({ tokens, email }) {
   const { createProviderConnection } = await import("../../../models/index.js");
-  const providerSpecificData = {
-    automation: "signup-bulk",
-    baseUrl: "https://www.zarklab.ai/api/v1",
-  };
+  const token = tokens?.token || tokens?.apiKey || tokens?.accessToken;
+  if (!token) throw new Error("No ZarkLab auth token extracted");
+
   const connection = await createProviderConnection({
     provider: ZARKLAB_PROVIDER_ID,
     authType: "apikey",
-    name: email.split("@")[0] || "zarklab",
-    ...(apiKey ? { apiKey } : {}),
-    email,
-    providerSpecificData,
+    apiKey: token,
+    name: email ? email.split("@")[0] : "zarklab",
+    email: email || tokens?.email || null,
+    providerSpecificData: {
+      automation: "gsuite-bulk",
+      loginEmail: email,
+      refreshToken: tokens?.refreshToken || null,
+      uid: tokens?.uid || null,
+      baseUrl: "https://www.zarklab.ai/api/v1",
+    },
     testStatus: "active",
   });
   return { connection };
@@ -52,109 +50,133 @@ async function defaultSaveZarkLabConnection({ apiKey, email }) {
 export class ZarkLabBulkImportManager extends KiroBulkImportManager {
   constructor({
     browserLauncher = defaultZarkLabBrowserLauncher,
+    googleAutomation = runZarkLabGoogleAutomation,
     saveConnection = defaultSaveZarkLabConnection,
     storageName = "zarklab-bulk-import",
   } = {}) {
     super({
       browserLauncher,
-      googleAutomation: null,
+      googleAutomation,
       socialExchange: null,
       storageName,
     });
     this.saveConnection = saveConnection;
-  }
-
-  async startJob({
-    count,
-    concurrency,
-    engine,
-    proxyUrl,
-    proxyUrls,
-    proxyMode,
-    proxyPoolId,
-    proxySource,
-    domain,
-  }) {
-    const total = clampCount(count);
-    const generated = Array.from({ length: total }, () => {
-      const email = generateEmail(domain || "random");
-      const password = generatePassword();
-      return `${email}|${password}`;
-    });
-
-    const job = await super.startJob({
-      accounts: generated,
-      concurrency,
-      engine,
-      proxyUrl,
-      proxyUrls,
-      proxyMode,
-      proxyPoolId,
-      proxySource,
-      jobFields: {
-        zarklab: {
-          domain: domain || "random",
-        },
-      },
-    });
-    return job;
+    this.config = ZARKLAB_BULK_CONFIG;
   }
 
   async processAccount(job, account, workerId, browser = job.browser) {
-    if (job.cancelRequested || !browser) {
-      this.finalizeAccount(account, "cancelled", { error: "Job cancelled" });
+    if (job.cancelRequested || job.status === "cancelled" || !browser) {
+      this.finalizeAccount(account, "cancelled", {
+        error: "Job cancelled",
+        step: "cancelled",
+        message: "Job cancelled",
+      });
       return;
     }
 
-    const { context, page } = await createFreshContext(browser);
-    const workerProxyUrl = browser.__ninerouterProxyUrl || job.proxyUrl || null;
-    account.runtimeSession = { context, page, proxyUrl: workerProxyUrl };
+    account.workerId = workerId;
+    this.setAccountStep(account, "starting", "Starting ZarkLab account automation");
+
+    let context = null;
+    let page = null;
 
     try {
-      const email = account.email;
+      const { context: newContext, page: newPage } = await createFreshContext(browser);
+      context = newContext;
+      page = newPage;
 
-      this.setAccountStep(account, "preparing_worker", `Worker ${workerId} preparing ZarkLab browser context`);
-      await this.persistJobSnapshot(job, { forcePreview: true });
-
-      this.setAccountStep(account, "generating_temp_email", `Using temporary mailbox ${email}`);
-      await this.persistJobSnapshot(job, { forcePreview: true });
-
-      const apiKey = await runZarkLabAccount({
+      account.runtimeSession = {
+        context,
         page,
-        email,
+        workerId,
+      };
+
+      const tokenPromise = createZarkLabTokenMonitor(context, this.config.tokenTimeoutMs);
+
+      this.setAccountStep(account, "starting_automation", "Starting ZarkLab Google SSO automation");
+      const automationResult = await this.googleAutomation({
+        page,
+        email: account.email,
         password: account.password,
-        waitForOtp: () => waitForOtp(email, {
-          timeoutMs: ZARKLAB_OTP_TIMEOUT_MS,
-          intervalMs: ZARKLAB_OTP_POLL_INTERVAL_MS,
-        }),
+        callbackPromise: tokenPromise,
+        shortTimeoutMs: this.config.shortTimeoutMs,
         onStep: (step, message) => {
           this.setAccountStep(account, step, message);
           void this.persistJobSnapshot(job, { forcePreview: false });
         },
       });
 
-      this.setAccountStep(account, "saving_connection", "Saving ZarkLab connection");
+      if (automationResult?.status === "failed_invalid_credentials") {
+        this.finalizeAccount(account, "failed_invalid_credentials", {
+          error: automationResult.error || "Invalid Google credentials",
+          step: "invalid_credentials",
+          message: "Google rejected the email or password",
+        });
+        return;
+      }
+
+      if (automationResult?.status === "failed_restricted") {
+        this.finalizeAccount(account, "failed_restricted", {
+          error: automationResult.error || "Account is restricted",
+          step: "account_restricted",
+          message: "Account is restricted, suspended, or banned",
+        });
+        return;
+      }
+
+      if (automationResult?.status === "failed") {
+        this.finalizeAccount(account, "failed", {
+          error: automationResult.error || "Automation failed",
+          step: "automation_failed",
+          message: automationResult.error || "ZarkLab browser automation failed",
+        });
+        return;
+      }
+
+      // Wait or retrieve token
+      this.setAccountStep(account, "extracting_token", "Extracting ZarkLab Firebase authentication session");
+      const sessionData = await tokenPromise;
+      if (!sessionData?.token) {
+        throw new Error("Failed to extract ZarkLab session token");
+      }
+
+      account.tokens = sessionData;
+      this.setAccountStep(account, "token_received", "ZarkLab session token extracted");
+
+      // Save connection
+      this.setAccountStep(account, "saving_connection", "Saving ZarkLab connection to database");
       const { connection } = await this.saveConnection({
-        apiKey,
-        email,
+        tokens: sessionData,
+        email: account.email,
       });
 
+      account.connectionId = connection.id;
       this.finalizeAccount(account, "success", {
         connectionId: connection.id,
-        step: "connection_saved",
-        message: "ZarkLab connection saved successfully",
+        step: "completed",
+        message: "ZarkLab account imported successfully",
       });
+
     } catch (error) {
-      const terminalStatus = typeof error.status === "string" ? error.status : "failed";
-      this.finalizeAccount(account, terminalStatus, {
-        error: error.message || "ZarkLab automation failed",
-        step: error.step || "failed",
-        message: error.message || "ZarkLab automation failed",
-      });
+      if (job.cancelRequested || /cancelled|closed/i.test(error?.message || "")) {
+        this.finalizeAccount(account, "cancelled", {
+          error: "Job cancelled",
+          step: "cancelled",
+          message: error.message || "Job cancelled",
+        });
+      } else {
+        this.finalizeAccount(account, "failed", {
+          error: error.message || "Unknown error",
+          step: "exception",
+          message: error.message || "An unexpected error occurred",
+        });
+      }
     } finally {
-      account.password = undefined;
+      if (context) {
+        await context.close().catch(() => null);
+      }
       account.runtimeSession = null;
-      await context.close().catch(() => null);
+      account.workerId = null;
       await this.persistJobSnapshot(job, { forcePreview: true });
     }
   }
@@ -173,9 +195,4 @@ export function getZarkLabBulkImportManager() {
   return getSingletonStore().manager;
 }
 
-export {
-  buildLookupResponse,
-  KIRO_BULK_IMPORT_DEFAULT_CONCURRENCY as ZARKLAB_BULK_IMPORT_DEFAULT_CONCURRENCY,
-  KIRO_BULK_IMPORT_MAX_CONCURRENCY as ZARKLAB_BULK_IMPORT_MAX_CONCURRENCY,
-  KIRO_BULK_IMPORT_MIN_CONCURRENCY as ZARKLAB_BULK_IMPORT_MIN_CONCURRENCY,
-};
+export { parseKiroBulkAccounts as parseZarkLabBulkAccounts };

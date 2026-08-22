@@ -22,19 +22,6 @@ function formatStep(value) {
   return String(value || "waiting").replaceAll("_", " ");
 }
 
-function formatClock(value) {
-  if (!value) return "--";
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).format(new Date(value));
-  } catch {
-    return "--";
-  }
-}
-
 function statusVariant(status) {
   if (status === "success" || status === "completed") return "success";
   if (status === "needs_manual") return "warning";
@@ -57,6 +44,8 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
   const storageKey = "qoder-signup-active-job";
   const [count, setCount] = useState("1");
   const [domain, setDomain] = useState("random");
+  const [otpMode, setOtpMode] = useState("manual"); // "manual" or "auto"
+  const [accountsInput, setAccountsInput] = useState("");
   const [proxyPoolId, setProxyPoolId] = useState("");
   const [proxyUrl, setProxyUrl] = useState("");
   const [proxyPools, setProxyPools] = useState([]);
@@ -67,6 +56,8 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
+  const [otpInputs, setOtpInputs] = useState({});
+  const [submittingOtp, setSubmittingOtp] = useState({});
 
   const active = job && ACTIVE_STATUSES.has(job.status);
   const terminal = job && TERMINAL_STATUSES.has(job.status);
@@ -76,6 +67,8 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
   const reset = useCallback(() => {
     setJob(null);
     setError("");
+    setOtpInputs({});
+    setSubmittingOtp({});
     if (typeof window !== "undefined") window.localStorage.removeItem(storageKey);
   }, [storageKey]);
 
@@ -169,11 +162,21 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
     setStarting(true);
     setError("");
     try {
+      const explicitAccounts = accountsInput
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
       const body = {
-        count,
-        concurrency: Math.min(Number.parseInt(count, 10) || 1, 4),
+        count: explicitAccounts.length > 0 ? explicitAccounts.length : count,
+        concurrency: 1, // sequential if manual OTP
         engine: DEFAULT_ENGINE,
+        otpMode,
       };
+
+      if (explicitAccounts.length > 0) {
+        body.accountsList = explicitAccounts;
+      }
       if (domain.trim()) body.domain = domain === "random" ? "random" : domain.trim();
       if (proxyPoolId) {
         body.proxyPoolId = proxyPoolId;
@@ -201,6 +204,28 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
       setError(err.message);
     } finally {
       setStarting(false);
+    }
+  };
+
+  const submitOtp = async (email) => {
+    if (!job?.jobId || !email) return;
+    const otpCode = (otpInputs[email] || "").trim();
+    if (!otpCode) return;
+
+    setSubmittingOtp((prev) => ({ ...prev, [email]: true }));
+    try {
+      const res = await fetch(`/api/oauth/${PROVIDER}/signup/${job.jobId}/otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, otp: otpCode }),
+      });
+      const data = await readJsonResponse(res, "Failed to submit OTP");
+      if (!res.ok || data.error) throw new Error(data.error || "Failed to submit OTP");
+      setOtpInputs((prev) => ({ ...prev, [email]: "" }));
+    } catch (err) {
+      alert(err.message || "Failed to submit OTP");
+    } finally {
+      setSubmittingOtp((prev) => ({ ...prev, [email]: false }));
     }
   };
 
@@ -238,36 +263,75 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
         {!job && (
           <>
             <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
-              Creates new Qoder accounts with disposable catchmail.io temp mail, solves the Aliyun captcha via the warm solver sidecar, verifies the email OTP, then saves each PAT as a Qoder connection.
+              Registers new Qoder accounts, verifies email OTP, and saves each PAT as a Qoder connection.
             </div>
 
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-              <p className="font-medium">Requirements</p>
-              <p className="mt-1">
-                A running <code className="rounded bg-amber-100 px-1 dark:bg-amber-800">qoder-solver</code> captcha sidecar
-                (SOLVER_HTTP, :8878). Emails come from catchmail.io — no mail-gen worker needed.
-              </p>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-2 block text-sm font-medium">Number of Accounts</label>
-                <Input type="number" min="1" max="20" value={count} onChange={(event) => setCount(event.target.value)} />
-                <p className="mt-1 text-xs text-text-muted">One account = one temp email + one signup + one PAT.</p>
+            {/* OTP Mode Selection */}
+            <div>
+              <label className="mb-2 block text-sm font-medium">OTP Verification Mode</label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setOtpMode("manual")}
+                  className={`flex flex-col items-start rounded-lg border p-3 text-left transition-colors ${
+                    otpMode === "manual"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border bg-background/50 hover:bg-background/80"
+                  }`}
+                >
+                  <span className="font-semibold text-sm">✍️ Manual OTP</span>
+                  <span className="mt-1 text-xs text-text-muted">Enter OTP manually from your own email inbox.</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOtpMode("auto")}
+                  className={`flex flex-col items-start rounded-lg border p-3 text-left transition-colors ${
+                    otpMode === "auto"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border bg-background/50 hover:bg-background/80"
+                  }`}
+                >
+                  <span className="font-semibold text-sm">🤖 Auto OTP (Catchmail.io)</span>
+                  <span className="mt-1 text-xs text-text-muted">Auto-generate disposable temp mail & poll OTP automatically.</span>
+                </button>
               </div>
+            </div>
+
+            {otpMode === "manual" ? (
               <div>
-                <label className="mb-2 block text-sm font-medium">Temp Email Domain</label>
-                <Input
-                  type="text"
-                  value={domain}
-                  onChange={(event) => setDomain(event.target.value)}
-                  placeholder="random"
+                <label className="mb-2 block text-sm font-medium">Email List (One per line)</label>
+                <textarea
+                  value={accountsInput}
+                  onChange={(event) => setAccountsInput(event.target.value)}
+                  placeholder="your-email@domain.com or email:password"
+                  rows={4}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-primary"
                 />
                 <p className="mt-1 text-xs text-text-muted">
-                  <code className="rounded bg-background px-1">random</code> picks catchmail.io / mailistry.com / zeppost.com.
+                  Leave empty to auto-generate emails with domain below.
                 </p>
               </div>
-            </div>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium">Number of Accounts</label>
+                  <Input type="number" min="1" max="20" value={count} onChange={(event) => setCount(event.target.value)} />
+                  <p className="mt-1 text-xs text-text-muted">One account = one temp email + one signup + one PAT.</p>
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium">Temp Email Domain</label>
+                  <Input
+                    type="text"
+                    value={domain}
+                    onChange={(event) => setDomain(event.target.value)}
+                    placeholder="random"
+                  />
+                  <p className="mt-1 text-xs text-text-muted">
+                    <code className="rounded bg-background px-1">random</code> picks catchmail.io / mailistry.com / zeppost.com.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div>
               <label className="mb-2 block text-sm font-medium">Network Proxy (optional)</label>
@@ -302,7 +366,7 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
                 </div>
               </div>
               <p className="mt-1 text-xs text-text-muted">
-                Used for the baxia harvest browser and captcha solver requests.
+                Used for the baxia harvest browser and captcha requests.
               </p>
             </div>
 
@@ -339,9 +403,6 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
                   />
                 </div>
               </div>
-              <p className="mt-2">
-                Leave empty to skip auto-solve (fall back to slider solver + manual retry).
-              </p>
               <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-text-main">
                 <input
                   type="checkbox"
@@ -351,10 +412,6 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
                 />
                 Show browser for manual TMD solve
               </label>
-              <p className="mt-1 text-xs">
-                When the captcha can&apos;t be auto-solved, opens a visible browser window so you can
-                solve it manually (like Grok/Antigravity manual assist). Recommended if vision fails.
-              </p>
             </div>
           </>
         )}
@@ -369,7 +426,7 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
                     <span className="text-sm font-semibold">Job {job.jobId}</span>
                   </div>
                   <p className="mt-2 text-xs text-text-muted">
-                    Success {job.summary?.success || 0}/{job.summary?.total || 0}; failed {job.summary?.failed || 0}; manual {job.summary?.needs_manual || 0}.
+                    Success {job.summary?.success || 0}/{job.summary?.total || 0}; failed {job.summary?.failed || 0}; waiting {job.summary?.needs_manual || 0}.
                   </p>
                   <p className="mt-1 text-xs text-text-muted">
                     Proxy: {job.proxyMode === "round-robin" ? `round-robin (${job.proxyCount || 0})` : (job.proxyMode || "none")}
@@ -396,15 +453,41 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
               </div>
             )}
 
-            <div className="space-y-2">
+            <div className="space-y-3">
               {(job.accounts || []).map((account) => (
                 <div key={`${account.line}-${account.email}`} className="rounded-lg border border-border p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-mono text-xs">{account.email}</span>
+                    <span className="font-mono text-xs font-medium">{account.email}</span>
                     <Badge variant={statusVariant(account.status)} size="sm">{formatStep(account.status)}</Badge>
                   </div>
                   <p className="mt-1 text-xs text-text-muted">{formatStep(account.currentStep)}</p>
                   {account.error && <p className="mt-1 text-xs text-red-400">{account.error}</p>}
+
+                  {/* Manual OTP Input Form if waiting */}
+                  {(account.status === "needs_manual" || account.currentStep === "waiting_manual_otp" || account.waitingForOtp) && (
+                    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-500/10 p-3">
+                      <label className="block text-xs font-semibold text-amber-500">
+                        Enter 6-digit OTP code sent to {account.email}:
+                      </label>
+                      <div className="mt-2 flex gap-2">
+                        <Input
+                          type="text"
+                          maxLength={6}
+                          placeholder="e.g. 123456"
+                          value={otpInputs[account.email] || ""}
+                          onChange={(e) => setOtpInputs({ ...otpInputs, [account.email]: e.target.value })}
+                          className="font-mono text-center tracking-widest text-sm uppercase"
+                        />
+                        <Button
+                          size="sm"
+                          disabled={submittingOtp[account.email] || !(otpInputs[account.email] || "").trim()}
+                          onClick={() => submitOtp(account.email)}
+                        >
+                          {submittingOtp[account.email] ? "Submitting..." : "Submit OTP"}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -416,8 +499,8 @@ export default function QoderSignupAutomationModal({ isOpen, onClose, onSuccess 
         {!job && (
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={onClose}>Close</Button>
-            <Button onClick={startJob} disabled={startDisabled || !domain.trim()}>
-              {starting ? "Starting..." : `Sign Up ${requestedCount} Qoder Account${requestedCount === 1 ? "" : "s"}`}
+            <Button onClick={startJob} disabled={startDisabled}>
+              {starting ? "Starting..." : `Sign Up Qoder Account`}
             </Button>
           </div>
         )}

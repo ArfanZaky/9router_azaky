@@ -55,6 +55,18 @@ function extractMessageText(message) {
   return "";
 }
 
+function isTruncatedText(content, finish) {
+  if (finish === "length" || finish === "max_tokens") return true;
+  if (!content) return false;
+  const trimmed = content.trimEnd();
+  if (trimmed.endsWith(":")) return true;
+  if (trimmed.endsWith("...")) return true;
+  if (trimmed.endsWith("->")) return true;
+  const codeBlockMatches = content.match(/```/g);
+  if (codeBlockMatches && codeBlockMatches.length % 2 !== 0) return true;
+  return false;
+}
+
 async function callChatCompletions({ model, messages, tools, apiKey, temperature, max_tokens, top_p, signal, reasoning_effort }) {
   await ensureTranslators();
   const body = {
@@ -350,11 +362,9 @@ export async function runAgentLoop({
 
     endedWithToolCalls = toolCalls.length > 0;
     if (!toolCalls.length) {
-      const incomplete = finish === "length" || content.trimEnd().endsWith(":");
+      const incomplete = isTruncatedText(content, finish);
       if (incomplete) {
-        // Keep going (unlimited): push a continue turn instead of giving up.
-        // `continue` on every truncated reply, no one-shot cap, so long outputs
-        // are never cut short by an arbitrary "too truncated" heuristic.
+        // Keep going: push a continue turn instead of stopping mid-sentence/mid-task
         working.push({
           role: "user",
           content: "Your previous response was cut off. Continue from where it stopped and finish the task. Use tools if needed.",

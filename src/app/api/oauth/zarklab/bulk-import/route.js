@@ -7,6 +7,8 @@ export const dynamic = "force-dynamic";
 export async function POST(request) {
   try {
     const body = await request.json();
+    const accounts = Array.isArray(body?.accounts) ? body.accounts : [];
+
     const { proxyUrl, proxyUrls, proxyMode, proxyPoolId, proxySource, error: proxyError } = await resolveBulkImportProxy({
       proxyPoolId: body?.proxyPoolId,
       proxyUrl: body?.proxyUrl,
@@ -17,7 +19,7 @@ export async function POST(request) {
 
     const manager = getZarkLabBulkImportManager();
     const job = await manager.startJob({
-      count: body?.count,
+      accounts,
       concurrency: body?.concurrency,
       engine: body?.engine,
       proxyUrl,
@@ -25,7 +27,6 @@ export async function POST(request) {
       proxyMode,
       proxyPoolId,
       proxySource,
-      domain: body?.domain,
     });
 
     return NextResponse.json({

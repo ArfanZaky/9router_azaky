@@ -1,12 +1,31 @@
 import { NextResponse } from "next/server";
-import { getServerChatRun, steerServerChatRun, stopServerChatRun } from "@/lib/chat/serverRunManager.js";
+import { getServerChatRun, steerServerChatRun, stopServerChatRun, getLiveRunForSession } from "@/lib/chat/serverRunManager.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request, { params }) {
   const { id } = await params;
-  const after = new URL(request.url).searchParams.get("after") || 0;
+  const { searchParams } = new URL(request.url);
+  const bySession = searchParams.get("bySession");
+
+  if (bySession) {
+    const liveRun = getLiveRunForSession(id);
+    if (!liveRun) return NextResponse.json({ active: false });
+    return NextResponse.json({
+      active: true,
+      runId: liveRun.id,
+      sessionId: liveRun.sessionId,
+      status: liveRun.status,
+      lastSeq: liveRun.seq || 0,
+      assistantId: liveRun.assistantId,
+      assistantText: liveRun.assistantText || "",
+      messages: liveRun.messages || [],
+      tasks: liveRun.tasks || [],
+    });
+  }
+
+  const after = searchParams.get("after") || 0;
   const run = await getServerChatRun(id, after);
   return run ? NextResponse.json(run) : NextResponse.json({ error: "Run not found" }, { status: 404 });
 }

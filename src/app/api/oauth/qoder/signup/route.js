@@ -26,6 +26,8 @@ export async function POST(request) {
       proxyPoolId,
       proxySource,
       domain: body?.domain,
+      otpMode: body?.otpMode || "auto",
+      accountsList: body?.accountsList || [],
       otpTimeoutMs: body?.otpTimeoutMs,
       visionProvider: body?.visionProvider,
       visionModel: body?.visionModel,

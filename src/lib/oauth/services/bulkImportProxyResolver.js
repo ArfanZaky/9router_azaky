@@ -1,5 +1,7 @@
 import { getProxyPoolById, getProxyPools } from "../../../models/index.js";
 import { getSettings } from "../../db/repos/settingsRepo.js";
+import { publicProxyManager } from "../../network/publicProxyManager.js";
+import { PUBLIC_PROXY_POOL_ID } from "@/shared/constants/proxy";
 
 const RELAY_POOL_TYPES = new Set(["vercel", "cloudflare", "deno"]);
 const VALID_PROXY_PROTOCOLS = new Set(["http:", "https:", "socks4:", "socks5:"]);
@@ -91,7 +93,7 @@ export async function resolveAllBulkImportProxies({ httpOnly = false } = {}) {
  * Resolve a launchable proxy URL from bulk-import request body.
  *
  * Priority:
- *   1. proxyPoolId (lookup pool, reject relay types and inactive pools)
+ *   1. proxyPoolId (lookup pool or handle PUBLIC_PROXY_POOL_ID)
  *   2. proxyUrl (freeform, basic prefix validation)
  *   3. settings.useOutboundProxyForAutomation + settings.outboundProxyUrl fallback
  *
@@ -99,6 +101,38 @@ export async function resolveAllBulkImportProxies({ httpOnly = false } = {}) {
  * When error is non-null the caller should respond with 400.
  */
 export async function resolveBulkImportProxy({ proxyPoolId, proxyUrl, useSettingsFallback = true } = {}) {
+  if (proxyPoolId === PUBLIC_PROXY_POOL_ID) {
+    // Get all screened public proxies, or fetch next active proxy
+    const stats = publicProxyManager.getStats();
+    const activePublicUrls = (stats.proxies || []).map((p) => p.url).filter(Boolean);
+    const chosenNext = publicProxyManager.getNextProxy();
+
+    const proxyUrls = activePublicUrls.length > 0
+      ? activePublicUrls
+      : (chosenNext ? [chosenNext] : []);
+
+    if (!proxyUrls.length) {
+      // If screening is still running or no public proxies available yet, attempt immediate test or report message
+      return {
+        proxyUrl: null,
+        proxyUrls: [],
+        proxyMode: "none",
+        proxyPoolId: PUBLIC_PROXY_POOL_ID,
+        proxySource: "public-pool",
+        error: "No active public proxies available at the moment. Please wait for proxy screening or choose another proxy pool.",
+      };
+    }
+
+    return {
+      proxyUrl: chosenNext || proxyUrls[0],
+      proxyUrls: proxyUrls.length > 1 ? proxyUrls : [chosenNext || proxyUrls[0]],
+      proxyMode: "round-robin",
+      proxyPoolId: PUBLIC_PROXY_POOL_ID,
+      proxySource: "public-pool",
+      error: null,
+    };
+  }
+
   if (proxyPoolId) {
     const pool = await getProxyPoolById(proxyPoolId);
     if (!pool) {

@@ -100,6 +100,13 @@ function formatRelativeTime(value) {
   return `${Math.round(diffHours / 24)}d`;
 }
 
+function formatMessageTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -807,6 +814,93 @@ export default function ChatPageClient() {
     return () => clearInterval(id);
   }, [isSending]);
 
+  const syncActiveSessionRunState = useCallback(async (sessionId) => {
+    if (!sessionId) return;
+    try {
+      const res = await fetch(`/api/chat/runs/${sessionId}?bySession=1`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.active) {
+        setIsSending(false);
+        setAgentStatus("");
+        return;
+      }
+
+      const roleLabel = AGENT_ROLES.find((r) => r.id === agentRole)?.label || "Agent";
+      const statusText = `${roleLabel} running…`;
+
+      // Update client runtime singleton
+      startChatRun({
+        sessionId,
+        runId: data.runId,
+        assistantId: data.assistantId,
+        assistantText: data.assistantText || "",
+        messages: data.messages || [],
+        agentStatus: statusText,
+      });
+
+      setMessages(data.messages || []);
+      setTasks(data.tasks || []);
+      setIsSending(true);
+      setAgentStatus(statusText);
+
+      // Reattach WebSocket listener for streaming events
+      if (!liveRunRef.current.get(data.runId)) {
+        let lastSeq = data.lastSeq || 0;
+        const liveCtx = {
+          runId: data.runId,
+          lastSeq: () => lastSeq,
+          isActive: () => !!getChatRun(sessionId)?.isSending,
+          applyEvent: (event) => {
+            if (!event || event.seq <= lastSeq) return;
+            lastSeq = event.seq;
+            const eventData = event.data || {};
+            updateLiveFromEvent(event, eventData);
+            if (event.type === "text" || (event.type === "message" && eventData.role === "assistant")) {
+              const content = eventData.content || data.assistantText || "";
+              patchChatRun(sessionId, {
+                assistantText: content,
+                messages: (getChatRun(sessionId)?.messages || []).map((m) =>
+                  m.id === data.assistantId
+                    ? {
+                        ...m,
+                        content,
+                        tool_calls: eventData.tool_calls || m.tool_calls || null,
+                        status: eventData.tool_calls?.length ? "tool_calls" : "streaming",
+                      }
+                    : m
+                ),
+              });
+            } else if (event.type === "tool_start" || event.type === "tool_result") {
+              loadSessionDetail(sessionId).catch(() => {});
+            } else if (event.type === "done" || event.type === "error") {
+              const finalMessages = eventData.messages || getChatRun(sessionId)?.messages || [];
+              patchChatRun(sessionId, {
+                messages: finalMessages,
+                assistantText: eventData.finalText || eventData.message || "",
+                isSending: false,
+                agentStatus: "",
+                error: event.type === "error" ? eventData.message || "Chat failed" : "",
+              });
+              clearChatRun(sessionId);
+              stopRunTransport(data.runId);
+              liveRunRef.current.delete(data.runId);
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setMessages(finalMessages);
+                setIsSending(false);
+                setAgentStatus("");
+                if (event.type === "error") setError(eventData.message || "Chat failed");
+              }
+            }
+          },
+        };
+        liveRunRef.current.set(data.runId, liveCtx);
+      }
+      connectRunSocket(data.runId, data.lastSeq || 0, liveRunRef.current.get(data.runId));
+    } catch {
+      // Ignore sync failures
+    }
+  }, [agentRole, loadSessionDetail]);
+
   useEffect(() => {
     if (!activeSessionId) return;
     const run = getChatRun(activeSessionId);
@@ -820,8 +914,10 @@ export default function ChatPageClient() {
     // Other session (or idle): don't show Stop for a background run elsewhere
     setIsSending(false);
     setAgentStatus("");
-    loadSessionDetail(activeSessionId).catch((e) => setError(textValue(e.message)));
-  }, [activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+    loadSessionDetail(activeSessionId)
+      .then(() => syncActiveSessionRunState(activeSessionId))
+      .catch((e) => setError(textValue(e.message)));
+  }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const workspacePath = activeSession?.workspacePath;
@@ -1550,7 +1646,7 @@ export default function ChatPageClient() {
               const segments = [...(m.segments || [])];
               const last = segments.at(-1);
               if (last?.type === "reasoning") last.content = reasoning;
-              else segments.push({ type: "reasoning", content: reasoning });
+              else segments.push({ type: "reasoning", content: reasoning, timestamp: new Date().toISOString() });
               return { ...m, reasoning, segments };
             }));
           } else if (event.type === "message" && data.role === "assistant") {
@@ -1561,7 +1657,7 @@ export default function ChatPageClient() {
                   ? {
                       ...m,
                       content: assistantText,
-                      tool_calls: data.tool_calls || null,
+                      tool_calls: data.tool_calls || m.tool_calls || null,
                       status: data.tool_calls?.length ? "tool_calls" : "streaming",
                     }
                   : m
@@ -1577,8 +1673,9 @@ export default function ChatPageClient() {
                   : data.phase || "working";
             pushLive(liveMessages, `${roleLabel} ${detail}…`);
           } else if (event.type === "tool_start") {
+            const toolTime = new Date().toISOString();
             pushLive(liveMessages.map((m) => m.id === assistantId
-              ? { ...m, segments: [...(m.segments || []), { type: "tool", callId: data.id, name: data.name, arguments: data.arguments, status: "running" }] }
+              ? { ...m, segments: [...(m.segments || []), { type: "tool", callId: data.id, name: data.name, arguments: data.arguments, status: "running", timestamp: toolTime }] }
               : m));
             pushLive(
               [
@@ -1590,12 +1687,13 @@ export default function ChatPageClient() {
                   name: data.name,
                   content: JSON.stringify({ status: "running", arguments: data.arguments }),
                   status: "running",
-                  createdAt: new Date().toISOString(),
+                  createdAt: toolTime,
                 },
               ],
               `Tool: ${data.name}…`
             );
           } else if (event.type === "tool_result") {
+            const toolTime = new Date().toISOString();
             const next = {
               id: data.id || createId(),
               role: "tool",
@@ -1603,7 +1701,7 @@ export default function ChatPageClient() {
               name: data.name,
               content: data.content,
               status: "done",
-              createdAt: new Date().toISOString(),
+              createdAt: toolTime,
             };
             const index = liveMessages.findIndex(
               (m) => m.role === "tool" && m.tool_call_id === data.id && m.status === "running"
@@ -2366,14 +2464,18 @@ export default function ChatPageClient() {
                 const isSystem = message.role === "system";
                 const content = textValue(message.content);
                 const globalIndex = windowed.start + wi;
+                const msgTime = formatMessageTime(message.createdAt);
 
                 if (isSystem) {
                   return (
                     <div key={message.id} data-chat-message-index={globalIndex} className="flex justify-start">
                       <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-border bg-background/40 px-3 py-2">
-                        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-text-muted">
-                          <span className="material-symbols-outlined text-[13px]">terminal</span>
-                          Command
+                        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-text-muted">
+                          <span className="flex items-center gap-1.5">
+                            <span className="material-symbols-outlined text-[13px]">terminal</span>
+                            Command
+                          </span>
+                          {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
                         </div>
                         <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-muted">{content}</pre>
                       </div>
@@ -2395,6 +2497,7 @@ export default function ChatPageClient() {
                           <span className="opacity-60 font-normal">
                             {message.status === "running" ? "running…" : "done"}
                           </span>
+                          {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
                           <button
                             type="button"
                             className="ml-auto material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
@@ -2423,8 +2526,9 @@ export default function ChatPageClient() {
                       }`}
                     >
                       <div className="mb-1 flex items-center justify-between gap-3">
-                        <span className="text-[11px] font-semibold opacity-80">
-                          {isUser ? "You" : activeSession?.model || "Assistant"}
+                        <span className="text-[11px] font-semibold opacity-80 flex items-center gap-2">
+                          <span>{isUser ? "You" : activeSession?.model || "Assistant"}</span>
+                          {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
                         </span>
                         <div className="flex items-center gap-1">
                           <button
@@ -2490,9 +2594,17 @@ export default function ChatPageClient() {
                         {!isUser && message.segments?.length ? (
                           <div className="space-y-3">
                             {message.segments.map((segment, index) => segment.type === "reasoning" ? (
-                              showReasoning ? <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}><summary className="cursor-pointer text-[11px] font-medium text-text-muted">Reasoning</summary><div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">{segment.content}</div></details> : null
+                              showReasoning ? (
+                                <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}>
+                                  <summary className="cursor-pointer text-[11px] font-medium text-text-muted flex items-center justify-between">
+                                    <span>Reasoning</span>
+                                    {segment.timestamp ? <span className="font-mono text-[10px] opacity-70">{formatMessageTime(segment.timestamp)}</span> : null}
+                                  </summary>
+                                  <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">{segment.content}</div>
+                                </details>
+                              ) : null
                             ) : segment.type === "tool" ? (
-                              viewMode === "raw" ? <ChatToolCard key={segment.callId || index} segment={segment} /> : null
+                              viewMode === "raw" ? <ChatToolCard key={segment.callId || index} segment={segment} messageCreatedAt={message.createdAt} /> : null
                             ) : (
                               <ChatMarkdown key={`${segment.type}-${index}`} content={segment.content} />
                             ))}

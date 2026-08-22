@@ -7,8 +7,8 @@
 
 import { spawn } from "node:child_process";
 
-const PROTOCOL_VERSION = "2025-06-18";
-const TIMEOUT_MS = 30_000;
+const PROTOCOL_VERSION = "2024-11-05";
+const TIMEOUT_MS = 60_000;
 const MAX_RESULT_CHARS = 50_000;
 
 let seq = 0;
@@ -88,10 +88,12 @@ function parseSseJsonRpc(text) {
 // ── stdio transport ─────────────────────────────────────────────────────
 function stdioRpc(command, args, method, params, env = {}) {
   return new Promise((resolve) => {
+    const isWindows = process.platform === "win32";
     const child = spawn(command, args || [], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...env },
       windowsHide: true,
+      shell: isWindows,
     });
     const id = nextId();
     let buffer = "";
@@ -117,7 +119,7 @@ function stdioRpc(command, args, method, params, env = {}) {
             return;
           }
         } catch {
-          // ignore non-JSON
+          // ignore non-JSON (like startup banners on stdout)
         }
       }
     });
@@ -140,7 +142,11 @@ function stdioRpc(command, args, method, params, env = {}) {
 export async function listTools(server) {
   if (server.transport === "stdio") {
     const msg = await stdioRpc(server.command, server.args, "tools/list", {}, server.env || {});
-    return (msg?.result?.tools || []).map((t) => ({ name: t.name, description: t.description || "" }));
+    return (msg?.result?.tools || []).map((t) => ({
+      name: t.name,
+      description: t.description || "",
+      inputSchema: t.inputSchema || { type: "object", properties: {}, additionalProperties: true },
+    }));
   }
   const { data, sessionId } = await httpJsonRpc(server.url, "initialize", {
     protocolVersion: PROTOCOL_VERSION,
@@ -151,12 +157,24 @@ export async function listTools(server) {
   await httpJsonRpc(server.url, "notifications/initialized", {}, { sessionId }).catch(() => {});
   const list = await httpJsonRpc(server.url, "tools/list", {}, { sessionId });
   if (list?.data?.error) throw new Error(list.data.error.message || "tools/list failed");
-  return (list?.data?.result?.tools || []).map((t) => ({ name: t.name, description: t.description || "" }));
+  return (list?.data?.result?.tools || []).map((t) => ({
+    name: t.name,
+    description: t.description || "",
+    inputSchema: t.inputSchema || { type: "object", properties: {}, additionalProperties: true },
+  }));
 }
 
 export async function callTool(server, name, args = {}) {
+  // Clean empty reason/metadata parameters if server doesn't support them
+  const cleanedArgs = { ...args };
+  if (name === "go_to_url" || name === "open_tab") {
+    if (!cleanedArgs.url && cleanedArgs.reason) {
+      const match = typeof cleanedArgs.reason === "string" && cleanedArgs.reason.match(/https?:\/\/[^\s]+/);
+      if (match) cleanedArgs.url = match[0];
+    }
+  }
   if (server.transport === "stdio") {
-    const msg = await stdioRpc(server.command, server.args, "tools/call", { name, arguments: args || {} }, server.env || {});
+    const msg = await stdioRpc(server.command, server.args, "tools/call", { name, arguments: cleanedArgs }, server.env || {});
     return normalizeToolResult(msg);
   }
   const { data, sessionId } = await httpJsonRpc(server.url, "initialize", {
@@ -166,6 +184,6 @@ export async function callTool(server, name, args = {}) {
   });
   if (data?.error) throw new Error(data.error.message || "MCP initialize failed");
   await httpJsonRpc(server.url, "notifications/initialized", {}, { sessionId }).catch(() => {});
-  const res = await httpJsonRpc(server.url, "tools/call", { name, arguments: args || {} }, { sessionId });
+  const res = await httpJsonRpc(server.url, "tools/call", { name, arguments: cleanedArgs }, { sessionId });
   return normalizeToolResult(res?.data);
 }

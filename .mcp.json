@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "browser-use": {
+      "transport": "stdio",
+      "enabled": true,
+      "command": "uvx",
+      "args": [
+        "--with",
+        "browser-use==0.1.43",
+        "mcp-browser-use"
+      ]
+    }
+  }
+}

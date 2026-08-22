@@ -35,20 +35,34 @@ export async function POST(request) {
       );
     }
 
-    const requestedProxyMode = body?.proxyMode === "round-robin" ? "round-robin" : "none";
-    const resolvedProxy = requestedProxyMode === "round-robin"
-      ? await resolveAllBulkImportProxies({ httpOnly: true })
-      : await resolveBulkImportProxy({ useSettingsFallback: false });
+    let resolvedProxy;
+    if (body?.proxyPoolId || body?.proxyUrl) {
+      resolvedProxy = await resolveBulkImportProxy({
+        proxyPoolId: body.proxyPoolId,
+        proxyUrl: body.proxyUrl,
+        useSettingsFallback: false,
+      });
+    } else if (body?.proxyMode === "round-robin") {
+      resolvedProxy = await resolveAllBulkImportProxies({ httpOnly: true });
+    } else {
+      resolvedProxy = await resolveBulkImportProxy({ useSettingsFallback: false });
+    }
+
     const { proxyUrl, proxyUrls, proxyMode, proxyPoolId, proxySource, error: proxyError } = resolvedProxy;
     if (proxyError) {
       return NextResponse.json({ error: proxyError }, { status: 400 });
     }
-    if (requestedProxyMode === "round-robin" && proxyUrls.length < 2) {
+    if (body?.proxyMode === "round-robin" && !body?.proxyPoolId && proxyUrls.length < 2) {
       return NextResponse.json(
         { error: "Round Robin Proxy requires at least 2 browser-compatible proxy URLs" },
         { status: 400 }
       );
     }
+
+    const requestedProxyMode = body?.proxyPoolId
+      ? (resolvedProxy.proxyUrls.length > 1 ? "round-robin" : (resolvedProxy.proxyUrl ? "single" : "none"))
+      : (body?.proxyMode === "round-robin" ? "round-robin" : "none");
+
     const manager = getGrokCliBulkImportManager();
     // Camoufox handles authorization; Node issue/redeem stays on the same account proxy session.
     const job = await manager.startJob({
@@ -57,7 +71,7 @@ export async function POST(request) {
       engine: "camoufox",
       proxyUrl,
       proxyUrls,
-      proxyMode: requestedProxyMode === "round-robin" ? proxyMode : "none",
+      proxyMode: requestedProxyMode,
       proxyPoolId,
       proxySource,
       jobFields: {

@@ -1,3 +1,5 @@
+import { PUBLIC_PROXY_POOL_ID } from "@/shared/constants/proxy";
+
 const RELAY_POOL_TYPES = new Set(["vercel", "cloudflare", "deno"]);
 
 function splitProxyUrls(value) {
@@ -14,16 +16,29 @@ export function getBrowserProxyPools(payload = {}) {
     || payload.data?.pools
     || [];
 
-  return pools
+  const standardPools = pools
     .filter((pool) => pool?.isActive !== false && splitProxyUrls(pool?.proxyUrl).length > 0)
     .map((pool) => ({
       ...pool,
       proxyCount: splitProxyUrls(pool?.proxyUrl).length,
       browserCompatible: !RELAY_POOL_TYPES.has(pool?.type),
     }));
+
+  return [
+    {
+      id: PUBLIC_PROXY_POOL_ID,
+      name: "🌐 Public Proxy (Round Robin)",
+      browserCompatible: true,
+      isPublic: true,
+    },
+    ...standardPools,
+  ];
 }
 
 export function formatBrowserProxyPoolOption(pool) {
+  if (pool?.id === PUBLIC_PROXY_POOL_ID || pool?.isPublic) {
+    return "🌐 Public Proxy (Round Robin)";
+  }
   const label = pool?.name || pool?.proxyUrl || pool?.id || "Proxy pool";
   if (pool?.browserCompatible === false) return `${label} (relay - unavailable for browser)`;
   const count = splitProxyUrls(pool?.proxyUrl).length;

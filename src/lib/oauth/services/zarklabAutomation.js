@@ -1,229 +1,225 @@
-/**
- * ZarkLab AI signup & session extraction automation for 9Router bulk-import.
- *
- * Flow:
- *   1. Navigate to https://www.zarklab.ai/signup or /login
- *   2. Fill email + password (or magic link / OTP)
- *   3. Wait for OTP / confirmation, extract via catchmailClient
- *   4. Capture Bearer token / session cookie / API Key from browser localStorage / cookies / API responses
- *   5. Return harvested credentials to store in 9Router DB
- */
+import { runGoogleAccountAutomation } from "./kiroGoogleAutomation.js";
 
 const ZARKLAB_APP_URL = "https://www.zarklab.ai";
-const SIGNUP_URL = `${ZARKLAB_APP_URL}/signup`;
 const LOGIN_URL = `${ZARKLAB_APP_URL}/login`;
 
-const EMAIL_INPUT_SELECTORS = [
-  'input[type="email"]',
-  'input[name="email"]',
-  'input[autocomplete="email"]',
-  'input[placeholder*="email" i]',
-  'input[id*="email" i]',
-  'input[aria-label*="email" i]',
+const DEFAULT_SHORT_TIMEOUT_MS = 90_000;
+const DEFAULT_MANUAL_TIMEOUT_MS = 15 * 60_000;
+
+const ZARKLAB_LOGIN_TRIGGER_SELECTORS = [
+  'button:has-text("Continue with Google")',
+  'button:has-text("Sign in")',
+  'button:has-text("Log in")',
+  'a:has-text("Sign in")',
+  'a:has-text("Log in")',
 ];
 
-const PASSWORD_INPUT_SELECTORS = [
-  'input[type="password"]',
-  'input[name="password"]',
-  'input[autocomplete="new-password"]',
-  'input[autocomplete="current-password"]',
-  'input[placeholder*="password" i]',
-  'input[id*="password" i]',
-];
+/**
+ * Poll all browser context pages for ZarkLab Firebase authentication session.
+ *
+ * ZarkLab uses Firebase Auth (auth.zarklab.ai) with Google SSO Popup.
+ * When authentication finishes, Firebase stores the user token in:
+ *   1. IndexedDB ("firebaseLocalStorageDb" -> "firebaseLocalStorage")
+ *   2. LocalStorage (keys matching firebase:authUser)
+ *   3. Network API headers / tokens
+ */
+export function createZarkLabTokenMonitor(context, timeoutMs = DEFAULT_MANUAL_TIMEOUT_MS) {
+  let resolveOuter;
+  let rejectOuter;
+  const promise = new Promise((resolve, reject) => {
+    resolveOuter = resolve;
+    rejectOuter = reject;
+  });
 
-const OTP_INPUT_SELECTORS = [
-  'input[placeholder*="code" i]',
-  'input[placeholder*="6-digit" i]',
-  'input[maxlength="6"]',
-  'input[autocomplete="one-time-code"]',
-  'input[name="code"]',
-  'input[inputmode="numeric"]',
-];
+  let settled = false;
+  let intervalHandle = null;
+  const timeoutHandle = setTimeout(() => {
+    if (intervalHandle) clearInterval(intervalHandle);
+    settle(null, new Error("Timed out waiting for ZarkLab Firebase auth session"));
+  }, timeoutMs);
 
-const SUBMIT_BUTTON_SELECTORS = [
-  'button[type="submit"]',
-  'button:has-text("Sign up")',
-  'button:has-text("Continue")',
-  'button:has-text("Create Account")',
-  'button:has-text("Sign In")',
-  'button:has-text("Log In")',
-];
-
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-const LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const DIGITS = "0123456789";
-const SPECIAL_CHARS = "!@#$%^&*()-_=+[]{}";
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export function generatePassword(length = 16) {
-  const pool = LETTERS + DIGITS + SPECIAL_CHARS;
-  const bytes = globalThis.crypto?.getRandomValues?.(new Uint8Array(length)) || null;
-  const chars = [];
-  for (let i = 0; i < length; i += 1) {
-    if (bytes) {
-      chars.push(pool[bytes[i] % pool.length]);
-    } else {
-      chars.push(pool[Math.floor(Math.random() * pool.length)]);
-    }
+  function settle(result, error = null) {
+    if (settled) return;
+    settled = true;
+    if (intervalHandle) clearInterval(intervalHandle);
+    clearTimeout(timeoutHandle);
+    if (error) rejectOuter(error);
+    else resolveOuter(result);
   }
-  return chars.join("");
-}
 
-async function waitForVisible(page, selector, timeoutMs) {
-  try {
-    await page.locator(selector).first().waitFor({ state: "visible", timeout: timeoutMs });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function fillFirst(page, selectors, value, { waitForVisibleMs = 3_000 } = {}) {
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
+  async function checkPage(page) {
     try {
-      if (!(await waitForVisible(page, selector, waitForVisibleMs))) continue;
-      try {
-        await locator.fill(String(value), { timeout: 3_000 });
-      } catch {
-        await locator.click({ timeout: 2_000 });
-        await locator.press("Control+A").catch(() => null);
-        if (typeof locator.pressSequentially === "function") {
-          await locator.pressSequentially(String(value), { timeout: 5_000 });
-        } else {
-          await locator.type(String(value), { timeout: 5_000 });
+      const url = page.url();
+      if (!url.includes("zarklab.ai")) return false;
+
+      const data = await page.evaluate(async () => {
+        try {
+          // 1. Check IndexedDB firebaseLocalStorageDb
+          if (window.indexedDB) {
+            const dbData = await new Promise((res) => {
+              try {
+                const req = indexedDB.open("firebaseLocalStorageDb");
+                req.onsuccess = (e) => {
+                  const db = e.target.result;
+                  if (!db.objectStoreNames.contains("firebaseLocalStorage")) {
+                    return res(null);
+                  }
+                  const tx = db.transaction("firebaseLocalStorage", "readonly");
+                  const store = tx.objectStore("firebaseLocalStorage");
+                  const getAllReq = store.getAll();
+                  getAllReq.onsuccess = () => {
+                    const entries = getAllReq.result || [];
+                    for (const item of entries) {
+                      const val = item?.value || item;
+                      if (val?.stsTokenManager?.accessToken) {
+                        return res({
+                          token: val.stsTokenManager.accessToken,
+                          apiKey: val.stsTokenManager.accessToken,
+                          refreshToken: val.stsTokenManager.refreshToken,
+                          email: val.email,
+                          uid: val.uid,
+                        });
+                      }
+                    }
+                    res(null);
+                  };
+                  getAllReq.onerror = () => res(null);
+                };
+                req.onerror = () => res(null);
+              } catch {
+                res(null);
+              }
+            });
+            if (dbData) return dbData;
+          }
+
+          // 2. Check localStorage for Firebase Auth keys
+          for (const key of Object.keys(localStorage)) {
+            if (key.includes("firebase:authUser")) {
+              const valStr = localStorage.getItem(key);
+              if (valStr) {
+                const parsed = JSON.parse(valStr);
+                const token = parsed?.stsTokenManager?.accessToken || parsed?.accessToken;
+                if (token) {
+                  return {
+                    token,
+                    apiKey: token,
+                    refreshToken: parsed?.stsTokenManager?.refreshToken,
+                    email: parsed?.email,
+                    uid: parsed?.uid,
+                  };
+                }
+              }
+            }
+          }
+          return null;
+        } catch {
+          return null;
         }
-      }
-      return true;
-    } catch {
-      continue;
-    }
-  }
-  return false;
-}
+      });
 
-async function clickFirst(page, selectors, { timeoutMs = 3_000, waitForVisibleMs = 3_000 } = {}) {
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    try {
-      if (!(await waitForVisible(page, selector, waitForVisibleMs))) continue;
-      await locator.click({ timeout: timeoutMs });
+      if (!data?.token) return false;
+
+      settle({
+        token: data.token,
+        apiKey: data.apiKey || data.token,
+        refreshToken: data.refreshToken || "",
+        email: data.email || "",
+        uid: data.uid || "",
+      });
       return true;
     } catch {
-      continue;
+      return false;
     }
   }
-  return false;
+
+  intervalHandle = setInterval(async () => {
+    if (settled) return;
+    const pages = context.pages();
+    for (const p of pages) {
+      if (await checkPage(p)) return;
+    }
+  }, 500);
+
+  return promise;
 }
 
 /**
- * Capture authentication token or session from ZarkLab
+ * Sign up or log into ZarkLab using Google SSO automation and extract Firebase API token.
  */
-export async function extractZarkLabToken(page) {
-  // Check localStorage for tokens
-  const storageToken = await page.evaluate(() => {
-    try {
-      for (const key of Object.keys(localStorage)) {
-        if (/token|auth|session|zark|jwt/i.test(key)) {
-          const val = localStorage.getItem(key);
-          if (val && val.length > 20) return val;
-        }
-      }
-    } catch {}
-    return null;
-  }).catch(() => null);
-
-  if (storageToken) return storageToken;
-
-  // Check cookies
-  try {
-    const cookies = await page.context().cookies();
-    const authCookie = cookies.find((c) => /session|token|auth|__session|sb-token/i.test(c.name));
-    if (authCookie) return authCookie.value;
-  } catch {}
-
-  return null;
-}
-
-/**
- * Sign up or log into ZarkLab and extract API credentials
- */
-export async function runZarkLabAccount({
+export async function runZarkLabGoogleAutomation({
   page,
   email,
   password,
-  waitForOtp,
-  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  callbackPromise,
+  shortTimeoutMs = DEFAULT_SHORT_TIMEOUT_MS,
   onStep,
 }) {
-  let capturedToken = "";
+  const reportStep = (step, message) => onStep?.(step, message);
 
-  // Listen for auth API responses
-  const onResponse = async (response) => {
+  reportStep("opening_zarklab_login", "Opening ZarkLab login page");
+  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  await page.waitForTimeout(2000 + Math.floor(Math.random() * 1000));
+
+  // Find Google login button or click login gate trigger
+  reportStep("clicking_zarklab_google", "Clicking Continue with Google on ZarkLab");
+  const context = page.context();
+
+  let popup = null;
+  let isPopup = false;
+
+  // Listen for popup event before clicking
+  const popupPromise = context.waitForEvent("page", { timeout: 15_000 }).catch(() => null);
+
+  const clicked = await clickFirstVisible(page, ZARKLAB_LOGIN_TRIGGER_SELECTORS);
+  if (!clicked) {
+    return {
+      status: "failed",
+      error: "Could not find 'Continue with Google' button on ZarkLab.",
+    };
+  }
+
+  popup = await popupPromise;
+  if (popup) {
+    await popup.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => null);
+    isPopup = true;
+    reportStep("zarklab_google_popup_opened", "Google sign-in popup opened");
+  } else {
+    reportStep("zarklab_google_same_tab", "No separate popup tab — continuing on active page");
+    popup = page;
+  }
+
+  const result = await runGoogleAccountAutomation({
+    page: popup,
+    skipNavigation: true,
+    email,
+    password,
+    successPromise: callbackPromise,
+    shortTimeoutMs,
+    serviceLabel: "ZarkLab AI",
+    openingStep: "starting_google_login",
+    openingMessage: "Authenticating Google account for ZarkLab",
+    successStep: "zarklab_token_extracted",
+    successMessage: "ZarkLab session token extracted successfully",
+    onStep,
+  });
+
+  if (isPopup && popup !== page) {
+    await popup.close().catch(() => null);
+  }
+
+  return result;
+}
+
+async function clickFirstVisible(page, selectors) {
+  for (const sel of selectors) {
     try {
-      const url = response.url();
-      if (!/auth|session|login|signup|user/i.test(url)) return;
-      const headers = response.headers();
-      const authHeader = headers["authorization"] || headers["x-auth-token"];
-      if (authHeader && authHeader.startsWith("Bearer ")) {
-        capturedToken = authHeader.replace(/^Bearer\s+/i, "");
-      }
-      if (!capturedToken && response.request?.method?.() === "POST") {
-        const text = await response.text().catch(() => "");
-        const match = /"(?:token|access_token|apiKey|session_token)"\s*:\s*"([^"]+)"/.exec(text || "");
-        if (match) {
-          capturedToken = match[1];
-        }
+      const loc = page.locator(sel).first();
+      if (await loc.isVisible({ timeout: 2000 })) {
+        await loc.click({ timeout: 5000 });
+        return true;
       }
     } catch {}
-  };
-
-  page.on("response", onResponse);
-
-  try {
-    onStep?.("opening_zarklab_signup", "Opening ZarkLab registration page");
-    await page.goto(SIGNUP_URL, { waitUntil: "domcontentloaded", timeout: requestTimeoutMs }).catch(async () => {
-      await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: requestTimeoutMs });
-    });
-
-    onStep?.("filling_zarklab_credentials", "Entering email and credentials");
-    const emailFilled = await fillFirst(page, EMAIL_INPUT_SELECTORS, email);
-    if (!emailFilled) {
-      // If direct signup page redirected to main home, click login/signup button
-      await clickFirst(page, ['button:has-text("Sign in")', 'a:has-text("Sign in")', 'button:has-text("Log in")', 'a:has-text("Log in")']);
-      await sleep(1000);
-      await fillFirst(page, EMAIL_INPUT_SELECTORS, email);
-    }
-
-    await fillFirst(page, PASSWORD_INPUT_SELECTORS, password);
-    await clickFirst(page, SUBMIT_BUTTON_SELECTORS);
-
-    onStep?.("checking_zarklab_otp", "Waiting for OTP or verification if required");
-    // Check if OTP screen appears
-    const hasOtpInput = await waitForVisible(page, OTP_INPUT_SELECTORS[0], 5000);
-    if (hasOtpInput && waitForOtp) {
-      onStep?.("waiting_zarklab_otp", "Polling disposable mailbox for ZarkLab OTP");
-      const code = await waitForOtp();
-      if (code) {
-        onStep?.("submitting_zarklab_otp", "Entering ZarkLab OTP code");
-        await fillFirst(page, OTP_INPUT_SELECTORS, code);
-        await clickFirst(page, SUBMIT_BUTTON_SELECTORS);
-      }
-    }
-
-    onStep?.("extracting_zarklab_token", "Extracting ZarkLab session authentication");
-    await sleep(3000);
-
-    const token = capturedToken || await extractZarkLabToken(page) || `zark_${Math.random().toString(36).slice(2, 12)}`;
-    onStep?.("zarklab_done", "ZarkLab account connected successfully");
-
-    return token;
-  } finally {
-    if (typeof page.off === "function") {
-      page.off("response", onResponse);
-    }
   }
+  return false;
 }

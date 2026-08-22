@@ -3,14 +3,10 @@
  * register → PAT stage into the 9Router bulk-import architecture.
  *
  * Per account:
- *   1. generate a disposable temp email via catchmail.io + password
- *      (mirrors the Blackbox bulk signup flow)
- *   2. pure-HTTP signup: baxia tokens → Aliyun captcha (solver sidecar) →
- *      verificationCodes → OTP (catchmail.io) → /users → PAT
+ *   1. generate a disposable temp email or use provided email + password
+ *   2. pure-HTTP signup: baxia tokens → Aliyun captcha (solver sidecar / optional) →
+ *      verificationCodes → OTP (catchmail.io auto or manual input) → /users → PAT
  *   3. save the PAT as a Qoder connection (authMethod "pat")
- *
- * Unlike Blackbox (browser signup) this path is headless HTTP; the browser is
- * only used briefly to harvest baxia fingerprint tokens.
  */
 
 import {
@@ -28,8 +24,8 @@ import { runQoderSignup } from "./qoderSignupClient.js";
 const QODER_SIGNUP_PROVIDER_ID = "qoder";
 const DEFAULT_COUNT = 1;
 const MAX_COUNT = 20;
-const DEFAULT_OTP_TIMEOUT_MS = 60_000;
-const DEFAULT_OTP_POLL_INTERVAL_MS = 3_000;
+const DEFAULT_OTP_TIMEOUT_MS = 180_000; // 3 minutes for manual input or auto
+const DEFAULT_OTP_POLL_INTERVAL_MS = 2_000;
 
 function clampCount(value) {
   const parsed = Number.parseInt(value, 10);
@@ -83,6 +79,18 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
     this.saveConnection = saveConnection;
     this.qoderServiceFactory = qoderServiceFactory;
     this.solverBase = solverBase;
+    this.pendingOtps = new Map(); // key: `${jobId}:${email}` -> resolve function
+  }
+
+  submitManualOtp(jobId, email, otpCode) {
+    const key = `${jobId}:${String(email || "").trim().toLowerCase()}`;
+    const entry = this.pendingOtps.get(key);
+    if (entry && typeof entry.resolve === "function") {
+      entry.resolve(String(otpCode || "").trim());
+      this.pendingOtps.delete(key);
+      return true;
+    }
+    return false;
   }
 
   async startJob({
@@ -95,17 +103,27 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
     proxyPoolId,
     proxySource,
     domain,
+    otpMode = "auto", // "auto" (catchmail) or "manual"
+    accountsList = [], // optional explicit list of emails/accounts
     otpTimeoutMs,
     visionProvider,
     visionModel,
     showTmdBrowser,
   }) {
     const total = clampCount(count);
-    const generated = Array.from({ length: total }, () => {
-      const email = generateEmail(domain || "random");
-      const password = generatePassword();
-      return `${email}|${password}`;
-    });
+    let generated;
+    if (Array.isArray(accountsList) && accountsList.length > 0) {
+      generated = accountsList.slice(0, total).map((acc) => {
+        if (acc.includes("|")) return acc;
+        return `${acc}|${generatePassword()}`;
+      });
+    } else {
+      generated = Array.from({ length: total }, () => {
+        const email = generateEmail(domain || "random");
+        const password = generatePassword();
+        return `${email}|${password}`;
+      });
+    }
 
     const job = await super.startJob({
       accounts: generated,
@@ -119,7 +137,8 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
       jobFields: {
         qoderSignup: {
           domain: domain || "random",
-          otpTimeoutMs: Number(otpTimeoutMs) || DEFAULT_OTP_TIMEOUT_MS,
+          otpMode: otpMode === "manual" ? "manual" : "auto",
+          otpTimeoutMs: Number(otpTimeoutMs) || (otpMode === "manual" ? 180_000 : DEFAULT_OTP_TIMEOUT_MS),
           otpIntervalMs: DEFAULT_OTP_POLL_INTERVAL_MS,
           visionProvider: visionProvider || "",
           visionModel: visionModel || "",
@@ -142,9 +161,12 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
       proxyUrl: browser?.__ninerouterProxyUrl || job.proxyUrl || null,
     };
 
+    const config = job.qoderSignup || {};
+    const email = account.email;
+    const isManualOtp = config.otpMode === "manual";
+    const otpKey = `${job.jobId}:${String(email || "").trim().toLowerCase()}`;
+
     try {
-      const config = job.qoderSignup || {};
-      const email = account.email;
       const proxyUrl = account.runtimeSession.proxyUrl;
       const solverBase = this.solverBase;
       const visionProvider = config.visionProvider || "";
@@ -154,12 +176,6 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
       this.setAccountStep(account, "preparing_signup", `Worker ${workerId} preparing Qoder signup for ${email}`);
       await this.persistJobSnapshot(job, { forcePreview: true });
 
-      this.setAccountStep(account, "generating_temp_email", `Using temporary mailbox ${email}`);
-      await this.persistJobSnapshot(job, { forcePreview: false });
-
-      // Launch a headed browser when a vision provider is configured OR the
-      // user opted to show the browser for manual TMD solve. The TMD image
-      // captcha needs a live (visible) window.
       let tmdBrowser = null;
       let visionSolver = null;
       const hasVision = Boolean(visionProvider && visionModel);
@@ -191,14 +207,45 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
         }
       }
 
+      // OTP resolver logic: auto catchmail polling or manual UI input
+      const otpFetcher = async (opts) => {
+        if (!isManualOtp) {
+          return waitForOtp(email, {
+            timeoutMs: opts?.timeoutMs || config.otpTimeoutMs || DEFAULT_OTP_TIMEOUT_MS,
+            intervalMs: opts?.intervalMs || DEFAULT_OTP_POLL_INTERVAL_MS,
+          });
+        }
+
+        // Manual OTP Mode: mark step and wait on promise
+        account.status = "needs_manual";
+        account.waitingForOtp = true;
+        this.setAccountStep(account, "waiting_manual_otp", `Please enter the OTP sent to ${email}`);
+        await this.persistJobSnapshot(job, { forcePreview: true });
+
+        const timeoutMs = opts?.timeoutMs || config.otpTimeoutMs || 180_000;
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            this.pendingOtps.delete(otpKey);
+            account.waitingForOtp = false;
+            reject(new Error(`Manual OTP timeout after ${Math.round(timeoutMs / 1000)}s`));
+          }, timeoutMs);
+
+          this.pendingOtps.set(otpKey, {
+            resolve: (code) => {
+              clearTimeout(timer);
+              account.waitingForOtp = false;
+              account.status = "running";
+              resolve(code);
+            },
+          });
+        });
+      };
+
       const result = await runQoderSignup({
         email,
         password: account.password,
         name: email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-        waitForOtp: (opts) => waitForOtp(email, {
-          timeoutMs: opts?.timeoutMs || config.otpTimeoutMs || DEFAULT_OTP_TIMEOUT_MS,
-          intervalMs: opts?.intervalMs || DEFAULT_OTP_POLL_INTERVAL_MS,
-        }),
+        waitForOtp: otpFetcher,
         solverBase,
         proxyUrl: proxyUrl || undefined,
         browser: tmdBrowser || undefined,
@@ -208,6 +255,8 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
           void this.persistJobSnapshot(job, { forcePreview: false });
         },
       }).finally(() => {
+        this.pendingOtps.delete(otpKey);
+        account.waitingForOtp = false;
         if (tmdBrowser) {
           void tmdBrowser.close().catch(() => null);
           tmdBrowser = null;
@@ -259,7 +308,6 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
       });
 
       // Auto-grant Pro Trial + claim qwen38 800 for the new account
-      // (best-effort — never fails the signup if the grant is unavailable).
       let autoGrant = null;
       try {
         if (result.pat) {
@@ -271,7 +319,6 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
             timeoutMs: 240_000,
           });
           if (autoGrant?.ok) {
-            // Persist plan tier onto the saved connection.
             try {
               const { updateProviderConnection } = await import("../../db/repos/connectionsRepo.js");
               await updateProviderConnection(connection.id, {
@@ -296,22 +343,21 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
         message: `Qoder account registered and connection saved${quotaActive ? "" : " (quota inactive)"}${autoGrant?.ok ? " + Pro Trial granted" : ""}`,
       });
     } catch (error) {
+      this.pendingOtps.delete(otpKey);
+      account.waitingForOtp = false;
       this.finalizeAccount(account, "failed", {
         error: error.message || "Qoder signup failed",
         step: "failed",
         message: error.message || "Qoder signup failed",
       });
     } finally {
+      this.pendingOtps.delete(otpKey);
       account.password = undefined;
       account.runtimeSession = null;
       await this.persistJobSnapshot(job, { forcePreview: true });
     }
   }
 
-  /**
-   * Qoder signup is pure HTTP — no persistent browser is needed, so we never
-   * launch one. Workers dequeue accounts and run the HTTP flow directly.
-   */
   async runWorker(job, workerId, _browser = null) {
     while (!job.cancelRequested && job.status !== "cancelled") {
       const account = this.dequeueAccount(job, workerId);
@@ -373,7 +419,7 @@ export class QoderSignupBulkImportManager extends KiroBulkImportManager {
         job.status = "failed";
         job.error = error.message || "Failed to start Qoder signup bulk job.";
         job.accounts.forEach((account) => {
-          if (account.status === "queued" || account.status === "running") {
+          if (account.status === "queued" || account.status === "running" || account.status === "needs_manual") {
             this.finalizeAccount(account, "failed", {
               error: job.error,
               step: "failed",

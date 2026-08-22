@@ -20,16 +20,29 @@ export async function POST(request) {
       }, { status: 400 });
     }
 
-    const requestedProxyMode = body?.proxyMode === "round-robin" ? "round-robin" : "none";
-    const resolvedProxy = requestedProxyMode === "round-robin"
-      ? await resolveAllBulkImportProxies({ httpOnly: true })
-      : await resolveBulkImportProxy({ useSettingsFallback: false });
+    let resolvedProxy;
+    if (body?.proxyPoolId || body?.proxyUrl) {
+      resolvedProxy = await resolveBulkImportProxy({
+        proxyPoolId: body.proxyPoolId,
+        proxyUrl: body.proxyUrl,
+        useSettingsFallback: false,
+      });
+    } else if (body?.proxyMode === "round-robin") {
+      resolvedProxy = await resolveAllBulkImportProxies({ httpOnly: true });
+    } else {
+      resolvedProxy = await resolveBulkImportProxy({ useSettingsFallback: false });
+    }
+
     if (resolvedProxy.error) {
       return NextResponse.json({ error: resolvedProxy.error }, { status: 400 });
     }
-    if (requestedProxyMode === "round-robin" && resolvedProxy.proxyUrls.length < 2) {
+    if (body?.proxyMode === "round-robin" && !body?.proxyPoolId && resolvedProxy.proxyUrls.length < 2) {
       return NextResponse.json({ error: "Round Robin Proxy requires at least 2 active HTTP/HTTPS proxies" }, { status: 400 });
     }
+
+    const requestedProxyMode = body?.proxyPoolId
+      ? (resolvedProxy.proxyUrls.length > 1 ? "round-robin" : (resolvedProxy.proxyUrl ? "single" : "none"))
+      : (body?.proxyMode === "round-robin" ? "round-robin" : "none");
 
     const manager = getGrokCliDomainBulkImportManager();
     const job = await manager.startJob({
@@ -38,7 +51,7 @@ export async function POST(request) {
       engine: "camoufox",
       proxyUrl: resolvedProxy.proxyUrl,
       proxyUrls: resolvedProxy.proxyUrls,
-      proxyMode: requestedProxyMode === "round-robin" ? resolvedProxy.proxyMode : "none",
+      proxyMode: requestedProxyMode,
       proxyPoolId: resolvedProxy.proxyPoolId,
       proxySource: resolvedProxy.proxySource,
       jobFields: {

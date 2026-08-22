@@ -15,7 +15,6 @@ import {
   QoderGrantModal,
   QoderSignupAutomationModal,
   Freebuff2ApiGatewayModal,
-  ZarkLabAutomationModal,
 } from "@/shared/components";
 import { FREE_PROVIDERS } from "@/shared/constants/providers";
 
@@ -638,29 +637,33 @@ function BlackboxAutomationPanel({ onRefresh }) {
 }
 
 function ZarkLabAutomationPanel({ onRefresh }) {
-  const [isSignupOpen, setIsSignupOpen] = useState(false);
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
 
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <button
           type="button"
-          onClick={() => setIsSignupOpen(true)}
-          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+          onClick={() => setIsBulkOpen(true)}
+          className="text-left"
         >
-          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
-            <span className="material-symbols-outlined text-[20px] text-primary">movie_filter</span>
-            Bulk Signup + Auto Harvest Session
-          </span>
-          <span className="text-xs leading-relaxed text-text-muted">
-            Create ZarkLab AI accounts with disposable temp mail, extract session credentials, and add them to provider media pool for Video, Image, and Audio generations.
-          </span>
+          <Card
+            hover
+            padding="md"
+            icon="group_add"
+            title="Auto Login Bulk (Google SSO)"
+            subtitle="Run bulk Gmail:password or GSuite automation via Google SSO to authenticate ZarkLab AI and harvest API session tokens."
+          />
         </button>
       </div>
-      <ZarkLabAutomationModal
-        isOpen={isSignupOpen}
+
+      <BulkAccountAutomationModal
+        isOpen={isBulkOpen}
+        provider="zarklab"
+        title="ZarkLab AI Bulk GSuite Login"
+        serviceName="ZarkLab AI"
         onSuccess={onRefresh}
-        onClose={() => setIsSignupOpen(false)}
+        onClose={() => setIsBulkOpen(false)}
       />
     </>
   );
@@ -796,7 +799,7 @@ const AUTOMATION_PROVIDERS = [
     id: "zarklab",
     label: "ZarkLab AI",
     icon: "movie_filter",
-    description: "Bulk signup with disposable mail and auto session harvest for Video/Image/Audio generation.",
+    description: "Bulk GSuite automation via Google SSO and auto session harvest for Video/Image/Audio generation.",
     supportedModes: ["bulk-account"],
     component: ZarkLabAutomationPanel,
   },

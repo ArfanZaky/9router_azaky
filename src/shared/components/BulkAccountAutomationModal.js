@@ -12,6 +12,7 @@ import {
   getBrowserProxyPools,
 } from "@/lib/oauth/services/bulkImportProxyOptions.js";
 import { readJsonResponse } from "@/shared/utils/httpResponse.js";
+import { PUBLIC_PROXY_POOL_ID } from "@/shared/constants/proxy";
 
 const DEFAULT_CONCURRENCY = 4;
 const GROK_DOMAIN_EMAIL = "cloudverra.com";
@@ -433,19 +434,24 @@ export default function BulkAccountAutomationModal({
         // Grok must always use Camoufox (xAI Access denied on Chromium/Node poll)
         engine: isGrokProvider ? "camoufox" : engine,
       };
+
+      if (proxyPoolId) {
+        postBody.proxyPoolId = proxyPoolId;
+      } else if (proxyUrl.trim()) {
+        postBody.proxyUrl = proxyUrl.trim();
+      } else if (isGrokProvider && proxyMode === "round-robin") {
+        postBody.proxyMode = "round-robin";
+      }
+
       if (isGrokProvider) {
-        postBody.proxyMode = proxyMode;
         postBody.proxyOffset = isRetryRound ? Math.max(0, (campaignRef.current?.round || 1) - 1) : 0;
         postBody.proxyAccountIndexes = Object.fromEntries(
           (campaignRef.current?.originalLines || normalizedLines)
             .map((line, index) => [getBulkAccountEmail(line), index])
             .filter(([email]) => email)
         );
-      } else if (proxyPoolId) {
-        postBody.proxyPoolId = proxyPoolId;
-      } else if (proxyUrl.trim()) {
-        postBody.proxyUrl = proxyUrl.trim();
       }
+
       const res = await fetch(`/api/oauth/${provider}/bulk-import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -769,44 +775,7 @@ export default function BulkAccountAutomationModal({
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium">
-                {isGrokProvider ? "Proxy Mode" : "Network Proxy (optional)"}
-              </label>
-              {isGrokProvider && (
-                <div className="mb-3 grid grid-cols-2 gap-2">
-                  {[
-                    { value: "none", label: "No Proxy", hint: "Direct connection" },
-                    { value: "round-robin", label: "Round Robin Proxy", hint: "Different proxy per account" },
-                  ].map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => {
-                        setProxyMode(option.value);
-                        if (option.value === "none") {
-                          setProxyPoolId("");
-                          setProxyUrl("");
-                        }
-                      }}
-                      className={`rounded-lg border px-3 py-3 text-left transition-colors ${
-                        proxyMode === option.value
-                          ? "border-primary bg-primary/10 text-text-main"
-                          : "border-border bg-background text-text-muted hover:border-primary/40"
-                      }`}
-                    >
-                      <span className="block text-sm font-semibold">{option.label}</span>
-                      <span className="mt-1 block text-xs">{option.hint}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {isGrokProvider && proxyMode === "round-robin" && (
-                <p className="text-xs text-text-muted">
-                  Automatically uses every HTTP/HTTPS proxy from all active browser-compatible pools. Each account receives the next proxy in order.
-                </p>
-              )}
-              {!isGrokProvider && (
-                <>
+              <label className="mb-2 block text-sm font-medium">Network Proxy (optional)</label>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label className="mb-1 block text-xs text-text-muted">Proxy Pool</label>
@@ -818,7 +787,7 @@ export default function BulkAccountAutomationModal({
                     }}
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
                   >
-                    <option value="">None</option>
+                    <option value="">None (Direct Connection)</option>
                     {proxyPools.map((pool) => (
                       <option
                         key={pool.id}
@@ -842,10 +811,10 @@ export default function BulkAccountAutomationModal({
                 </div>
               </div>
               <p className="mt-1 text-xs text-text-muted">
-                Browsers will route login traffic through the chosen proxy. Multiple URLs in a pool or custom field rotate round-robin across workers. Relay-style pools (Vercel, Cloudflare, Deno) are excluded because they only rewrite API URLs.
+                {isGrokProvider
+                  ? "Select Public Proxy (Round Robin), your custom proxy pool, or enter a custom proxy URL to route Grok authorization traffic."
+                  : "Browsers will route login traffic through the chosen proxy. Multiple URLs in a pool or custom field rotate round-robin across workers. Relay-style pools (Vercel, Cloudflare, Deno) are excluded because they only rewrite API URLs."}
               </p>
-                </>
-              )}
             </div>
           </>
         )}

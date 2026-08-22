@@ -157,7 +157,7 @@ async function loadMcpTools() {
         function: {
           name,
           description: t.description || `MCP tool ${t.name} from ${server.name}`,
-          parameters: { type: "object", properties: {}, additionalProperties: true },
+          parameters: t.inputSchema || { type: "object", properties: {}, additionalProperties: true },
         },
       });
       registry.push({ name, server });
@@ -635,6 +635,16 @@ export async function getServerChatRun(id, after = 0) {
   return { ...record, events, live: !!live, lastSeq: live?.seq || events.at(-1)?.seq || 0 };
 }
 
+export function getLiveRunForSession(sessionId) {
+  for (const run of liveRuns.values()) {
+    if (run.sessionId !== sessionId) continue;
+    if (run.status === "stopped" || run.status === "completed" || run.status === "failed") continue;
+    if (run.abortController.signal.aborted) continue;
+    return run;
+  }
+  return null;
+}
+
 /**
  * True only when a run for this session is genuinely executing in THIS process.
  * A DB row stuck in 'queued'/'running' after a server restart is stale and must
@@ -642,13 +652,7 @@ export async function getServerChatRun(id, after = 0) {
  * A finished run (status stopped/completed/failed) no longer counts as live.
  */
 export function isRunLiveForSession(sessionId) {
-  for (const run of liveRuns.values()) {
-    if (run.sessionId !== sessionId) continue;
-    if (run.status === "stopped" || run.status === "completed" || run.status === "failed") continue;
-    if (run.abortController.signal.aborted) continue;
-    return true;
-  }
-  return false;
+  return !!getLiveRunForSession(sessionId);
 }
 
 /** Look up a sub-agent and its live events across all in-process runs. */

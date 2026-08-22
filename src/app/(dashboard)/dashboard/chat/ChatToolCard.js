@@ -2,6 +2,13 @@
 
 import { useMemo, useState } from "react";
 
+function formatTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 function summary(segment) {
   const args = segment.arguments || {};
   return args.path || args.command || args.pattern || args.query || args.url || args.task || "";
@@ -55,7 +62,7 @@ function lineDiff(oldText, newText) {
   return { rows, added, removed };
 }
 
-export default function ChatToolCard({ segment }) {
+export default function ChatToolCard({ segment, messageCreatedAt }) {
   const [open, setOpen] = useState(false);
   const running = segment.status === "running";
   const progress = segment.progress || "";
@@ -72,6 +79,7 @@ export default function ChatToolCard({ segment }) {
   }, [isEdit, isCreate, args.old_string, args.new_string, args.content]);
 
   const body = progress ? progress : (segment.content || JSON.stringify(args, null, 2));
+  const timeStr = formatTime(segment.timestamp || segment.createdAt || messageCreatedAt);
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-sidebar/35">
@@ -79,6 +87,7 @@ export default function ChatToolCard({ segment }) {
         <span className={`material-symbols-outlined text-[16px] ${running ? "animate-spin text-primary" : "text-emerald-500"}`}>{running ? "progress_activity" : "check_circle"}</span>
         <span className="font-mono text-[11px] font-medium">{segment.name || "tool"}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-text-muted">{summary(segment)}</span>
+        {timeStr ? <span className="font-mono text-[10px] text-text-muted opacity-70">{timeStr}</span> : null}
         {isDiff ? (
           <span className="flex items-center gap-1 text-[10px] font-semibold tabular-nums">
             {diff.added > 0 ? <span className="text-emerald-500">+{diff.added}</span> : null}

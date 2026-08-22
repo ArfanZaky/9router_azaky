@@ -233,7 +233,12 @@ class PublicProxyManager {
 // Global singleton instance
 if (!globalThis.__publicProxyManager) {
   globalThis.__publicProxyManager = new PublicProxyManager();
-  globalThis.__publicProxyManager.startPeriodicScreening();
+  if (process.env.NODE_ENV !== "production" || process.env.NEXT_PHASE !== "phase-production-build") {
+    // avoid running network timers during build phase
+    if (process.env.npm_lifecycle_event !== "build") {
+      globalThis.__publicProxyManager.startPeriodicScreening();
+    }
+  }
 }
 
 export const publicProxyManager = globalThis.__publicProxyManager;
