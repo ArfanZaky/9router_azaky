@@ -1,5 +1,15 @@
 import { NextResponse } from "next/server";
+import { handleChat } from "@/sse/handlers/chat.js";
+import { initTranslators } from "open-sse/translator/index.js";
 import { getApiKeys } from "@/lib/localDb";
+
+let translatorsReady = false;
+async function ensureTranslators() {
+  if (!translatorsReady) {
+    await initTranslators();
+    translatorsReady = true;
+  }
+}
 
 function cleanJsonText(raw) {
   let cleaned = String(raw || "").trim();
@@ -15,8 +25,38 @@ function cleanJsonText(raw) {
   return cleaned;
 }
 
+function extractTextFromChoices(data) {
+  const choice = data?.choices?.[0];
+  if (!choice) return "";
+  const msg = choice.message || choice.delta || {};
+  if (typeof msg.content === "string" && msg.content.trim()) {
+    return msg.content;
+  }
+  if (Array.isArray(msg.content)) {
+    const combined = msg.content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if ((!part?.type || part.type === "text" || part.type === "output_text") && typeof part?.text === "string") {
+          return part.text;
+        }
+        return "";
+      })
+      .join("")
+      .trim();
+    if (combined) return combined;
+  }
+  if (typeof msg.reasoning_content === "string" && msg.reasoning_content.trim()) {
+    return msg.reasoning_content;
+  }
+  if (typeof msg.reasoning === "string" && msg.reasoning.trim()) {
+    return msg.reasoning;
+  }
+  return "";
+}
+
 export async function POST(request) {
   try {
+    await ensureTranslators();
     const body = await request.json().catch(() => ({}));
     const {
       prompt,
@@ -91,24 +131,31 @@ Main Character Specs: ${characterDesc ? characterDesc : "Extract and make strict
       ];
     }
 
-    const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "127.0.0.1:3000";
-    const protocol = request.headers.get("x-forwarded-proto") || (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
-    const chatEndpoint = `${protocol}://${host}/api/v1/chat/completions`;
+    const payload = {
+      model,
+      stream: false,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.7,
+    };
 
-    const chatRes = await fetch(chatEndpoint, {
+    const headers = {
+      "Content-Type": "application/json",
+      ...(activeKey ? { Authorization: `Bearer ${activeKey}` } : {}),
+    };
+
+    const inProcessReq = new Request("http://9router.local/api/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(activeKey ? { Authorization: `Bearer ${activeKey}` } : {}),
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userContent },
-        ],
-        temperature: 0.7,
-      }),
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    const chatRes = await handleChat(inProcessReq, {
+      endpoint: "/api/v1/chat/completions",
+      body: payload,
+      headers,
     });
 
     const data = await chatRes.json().catch(() => ({}));
@@ -119,7 +166,7 @@ Main Character Specs: ${characterDesc ? characterDesc : "Extract and make strict
       );
     }
 
-    const content = data.choices?.[0]?.message?.content || "";
+    const content = extractTextFromChoices(data);
     if (!content) {
       return NextResponse.json({ error: "Empty response from LLM" }, { status: 500 });
     }
