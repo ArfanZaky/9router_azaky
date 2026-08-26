@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import { Button, ModelSelectModal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -29,6 +29,15 @@ const TARGET_ENGINES = [
 
 const ASPECT_RATIOS = ["16:9", "9:16", "1:1", "2.39:1 (Anamorphic)"];
 
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function VideoPromptPageClient() {
   const [apiKey, setApiKey] = useState("");
   const [activeProviders, setActiveProviders] = useState([]);
@@ -47,6 +56,12 @@ export default function VideoPromptPageClient() {
   const [targetEngine, setTargetEngine] = useState(TARGET_ENGINES[0]);
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [sceneCount, setSceneCount] = useState(4);
+
+  // Reference Image Upload (like /dashboard/image-gen)
+  const [refImage, setRefImage] = useState("");
+  const [refUrlDraft, setRefUrlDraft] = useState("");
+  const [refDragging, setRefDragging] = useState(false);
+  const refFileInputRef = useRef(null);
 
   // Generation state
   const [generating, setGenerating] = useState(false);
@@ -101,6 +116,51 @@ export default function VideoPromptPageClient() {
     }
   };
 
+  const setRefFromFile = async (file) => {
+    if (!file || !file.type?.startsWith("image/")) {
+      setError("Reference must be an image file");
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setError("Reference image too large (max 15MB)");
+      return;
+    }
+    const dataUrl = await fileToDataUrl(file);
+    setRefImage(dataUrl);
+    setRefUrlDraft("");
+    setError("");
+  };
+
+  const handleRefFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    await setRefFromFile(file);
+  };
+
+  const handleRefDrop = async (event) => {
+    event.preventDefault();
+    setRefDragging(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (file) await setRefFromFile(file);
+  };
+
+  const applyRefUrl = () => {
+    const url = refUrlDraft.trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url) && !url.startsWith("data:image/")) {
+      setError("Reference URL must start with http(s):// or data:image/");
+      return;
+    }
+    setRefImage(url);
+    setError("");
+  };
+
+  const clearRefImage = () => {
+    setRefImage("");
+    setRefUrlDraft("");
+  };
+
   const handleGenerateStoryboard = async () => {
     if (!prompt.trim()) {
       setError("Please enter a story prompt or concept");
@@ -125,6 +185,7 @@ export default function VideoPromptPageClient() {
           targetEngine,
           aspectRatio,
           characterDesc: characterDesc.trim(),
+          refImage: refImage || undefined,
         }),
       });
 
@@ -155,6 +216,7 @@ export default function VideoPromptPageClient() {
           style,
           targetEngine,
           characterDesc: characterDesc.trim(),
+          refImage: refImage || "",
           scenes: generatedScenes,
         }),
       });
@@ -187,16 +249,19 @@ export default function VideoPromptPageClient() {
     }));
 
     try {
-      // Determine reference image from previous scene if available
-      let refImage = "";
+      // Determine reference image: either from previous scene or user uploaded refImage
+      let imageRefToUse = "";
       if (sceneIndex > 0) {
         const prevScene = scenes[sceneIndex - 1];
         const prevAssetUrl = prevScene?.imageUrl || imageGenStates[prevScene?.sceneNumber]?.assetUrl;
         if (prevAssetUrl) {
-          refImage = prevAssetUrl.startsWith("http")
+          imageRefToUse = prevAssetUrl.startsWith("http")
             ? prevAssetUrl
             : `${window.location.origin}${prevAssetUrl}`;
         }
+      }
+      if (!imageRefToUse && refImage) {
+        imageRefToUse = refImage;
       }
 
       const imgPrompt = `${scene.imagePrompt}${
@@ -215,7 +280,7 @@ export default function VideoPromptPageClient() {
           n: 1,
           size: aspectRatio === "9:16" ? "1024x1792" : aspectRatio === "1:1" ? "1024x1024" : "1792x1024",
           response_format: "b64_json",
-          ...(refImage ? { image: refImage, images: [refImage] } : {}),
+          ...(imageRefToUse ? { image: imageRefToUse, images: [imageRefToUse] } : {}),
         }),
       });
 
@@ -307,6 +372,7 @@ export default function VideoPromptPageClient() {
     if (proj.style) setStyle(proj.style);
     if (proj.targetEngine) setTargetEngine(proj.targetEngine);
     if (proj.characterDesc) setCharacterDesc(proj.characterDesc);
+    if (proj.refImage) setRefImage(proj.refImage);
     setScenes(proj.scenes || []);
     setHistoryOpen(false);
   };
@@ -477,7 +543,110 @@ export default function VideoPromptPageClient() {
           />
         </label>
 
-        {/* Character Consistency Anchor */}
+        {/* Reference Image Upload (Visual Concept / Character Ref) */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-text-muted">Concept / Character Reference Image (Optional)</span>
+            {refImage ? (
+              <button type="button" onClick={clearRefImage} className="text-[11px] text-red-500 hover:underline">
+                Remove
+              </button>
+            ) : null}
+          </div>
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setRefDragging(true);
+            }}
+            onDragLeave={() => setRefDragging(false)}
+            onDrop={handleRefDrop}
+            className={`rounded-xl border border-dashed p-3 transition ${
+              refDragging
+                ? "border-primary bg-primary/10"
+                : refImage
+                  ? "border-border bg-sidebar/40"
+                  : "border-border hover:border-primary/50 hover:bg-sidebar/30"
+            }`}
+          >
+            {refImage ? (
+              <div className="flex items-start gap-3">
+                <img
+                  src={refImage}
+                  alt="Reference"
+                  className="h-20 w-20 shrink-0 rounded-lg border border-border object-cover bg-black/10"
+                />
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <p className="text-[11px] text-text-muted">
+                    Reference image attached for vision analysis & scene-1 visual anchor.
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => refFileInputRef.current?.click()}
+                      className="rounded-lg border border-border px-2.5 py-1 text-[10px] hover:bg-sidebar"
+                    >
+                      Replace
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearRefImage}
+                      className="rounded-lg border border-border px-2.5 py-1 text-[10px] text-red-500 hover:bg-sidebar"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => refFileInputRef.current?.click()}
+                className="w-full text-left"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="material-symbols-outlined text-[26px] text-primary">add_photo_alternate</span>
+                  <div>
+                    <p className="text-xs font-medium">Drop character/scene image or click to upload</p>
+                    <p className="text-[10px] text-text-muted mt-0.5">
+                      PNG/JPG/WebP · used as visual reference for storyboard & first still
+                    </p>
+                  </div>
+                </div>
+              </button>
+            )}
+            <input
+              ref={refFileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleRefFile}
+            />
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={refUrlDraft}
+              onChange={(e) => setRefUrlDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  applyRefUrl();
+                }
+              }}
+              placeholder="Or paste reference image URL…"
+              className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:border-primary"
+            />
+            <button
+              type="button"
+              onClick={applyRefUrl}
+              disabled={!refUrlDraft.trim()}
+              className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-sidebar disabled:opacity-40"
+            >
+              Use URL
+            </button>
+          </div>
+        </div>
+
+        {/* Character Consistency Anchor Text */}
         <label className="block space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-text-muted">Consistent Character Anchor (Optional)</span>
@@ -619,7 +788,7 @@ export default function VideoPromptPageClient() {
               </div>
               <h3 className="text-base font-semibold">No Storyboard Scenes Generated Yet</h3>
               <p className="text-xs text-text-muted max-w-md">
-                Enter your story concept on the left, select your Director LLM & Image Model, then click Generate to create consistent character storyboard scenes.
+                Enter your story concept on the left, optionally upload reference image, select your Director LLM & Image Model, then click Generate to create consistent character storyboard scenes.
               </p>
             </div>
           ) : (
@@ -688,11 +857,15 @@ export default function VideoPromptPageClient() {
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between text-xs font-medium text-text-muted">
                             <span>First-Frame Still</span>
-                            {idx > 0 && (
+                            {idx > 0 ? (
                               <span className="text-[10px] text-amber-500 font-normal">
                                 🔗 Ref: Scene {idx} Still
                               </span>
-                            )}
+                            ) : refImage ? (
+                              <span className="text-[10px] text-primary font-normal">
+                                🖼️ Ref: Concept Upload
+                              </span>
+                            ) : null}
                           </div>
 
                           <div className="relative aspect-video rounded-xl border border-border bg-black/20 overflow-hidden flex items-center justify-center group">
@@ -735,7 +908,7 @@ export default function VideoPromptPageClient() {
                           )}
                         </div>
 
-                        {/* 1-Text Unified Video Motion Prompt (The Core Requirement) */}
+                        {/* 1-Text Unified Video Motion Prompt */}
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-semibold text-primary flex items-center gap-1">

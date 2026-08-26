@@ -26,6 +26,7 @@ export async function POST(request) {
       targetEngine = "General AI Video (Runway / Kling / Sora / Luma)",
       aspectRatio = "16:9",
       characterDesc = "",
+      refImage = "",
     } = body;
 
     if (!prompt || !prompt.trim()) {
@@ -45,7 +46,7 @@ CRITICAL INSTRUCTIONS:
 1. CHARACTER & VISUAL CONSISTENCY:
    - Identify the main character(s) and their exact appearance (clothing, hair, face features, colors, age).
    - Maintain STRICT visual consistency across ALL scenes. Scene 2 and subsequent scenes must explicitly reference and maintain the same character details, environment lighting, and art style from Scene 1.
-   - If user provides specific character details: "${characterDesc || "Derive from prompt and keep strictly consistent"}", you MUST adhere to it.
+   - If user provides specific character details or an uploaded reference image: "${characterDesc || "Derive from prompt/image and keep strictly consistent"}", you MUST adhere to it.
 
 2. ONE SINGLE TEXT PROMPT FORMAT:
    - For every scene, "motionPrompt" MUST combine camera motion, subject action, environment lighting, audio soundscape, and dialogue/voiceover into ONE continuous, production-ready video generation prompt.
@@ -75,12 +76,20 @@ You MUST respond with valid JSON ONLY. No preamble, no explanation.
   ]
 }`;
 
-    const userMessage = `Story Concept: ${prompt.trim()}
+    const textPrompt = `Story Concept: ${prompt.trim()}
 Visual Style: ${style}
 Target AI Video Platform: ${targetEngine}
 Scene Count: ${sceneCount}
 Aspect Ratio: ${aspectRatio}
 Main Character Specs: ${characterDesc ? characterDesc : "Extract and make strictly consistent across scenes"}`;
+
+    let userContent = textPrompt;
+    if (refImage && (refImage.startsWith("data:image/") || refImage.startsWith("http"))) {
+      userContent = [
+        { type: "text", text: `${textPrompt}\n[Reference visual image attached above for character/scene styling]` },
+        { type: "image_url", image_url: { url: refImage } },
+      ];
+    }
 
     const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "127.0.0.1:3000";
     const protocol = request.headers.get("x-forwarded-proto") || (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
@@ -96,7 +105,7 @@ Main Character Specs: ${characterDesc ? characterDesc : "Extract and make strict
         model,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage },
+          { role: "user", content: userContent },
         ],
         temperature: 0.7,
       }),
