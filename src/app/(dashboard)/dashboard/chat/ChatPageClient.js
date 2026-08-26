@@ -29,6 +29,13 @@ const AGENT_ROLES = [
     prompt: "Act as the lead orchestrator. For multi-step work, publish a todo_update checklist, delegate focused read-only research or review with delegate_task, integrate the results, execute the remaining work, verify it, then report one coherent outcome. Do not delegate trivial work.",
   },
   {
+    id: "team",
+    label: "Agent Team",
+    icon: "groups",
+    description: "DSH collaborative multi-agent team",
+    prompt: "Act as a Native Agent Team orchestrator (DeepSeek Harness style). You operate a collaborative multi-agent system with a shared Task Board, Agent Roster (dev, qa, architect, reviewer), and P2P messaging. Post/claim tasks with team_post_task, inspect or register members with team_roster, dispatch peer work or reviews with team_send_message, and broadcast discoveries with team_broadcast. Keep the shared task board updated as milestones complete.",
+  },
+  {
     id: "coder",
     label: "Coder",
     icon: "code",
@@ -406,6 +413,8 @@ export default function ChatPageClient() {
   });
   const [tasks, setTasks] = useState([]);
   const [subAgents, setSubAgents] = useState([]);
+  const [teamRoster, setTeamRoster] = useState([]);
+  const [teamTasks, setTeamTasks] = useState([]);
   const [viewingAgent, setViewingAgent] = useState(null);
   const [liveInfo, setLiveInfo] = useState({ turn: 0, tool: null, waiting: false, notice: "", elapsed: 0 });
   const [approvals, setApprovals] = useState([]);
@@ -667,6 +676,10 @@ export default function ChatPageClient() {
               if (win > 0) setCtxWindow(win);
             } else if (event.type === "task_update") {
               setTasks(data.items || []);
+            } else if (event.type === "team_roster_update") {
+              setTeamRoster(data.roster || []);
+            } else if (event.type === "team_tasks_update") {
+              setTeamTasks(data.tasks || []);
             } else if (event.type === "approval") {
               setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
               setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
@@ -870,6 +883,10 @@ export default function ChatPageClient() {
                     : m
                 ),
               });
+            } else if (event.type === "team_roster_update") {
+              setTeamRoster(eventData.roster || []);
+            } else if (event.type === "team_tasks_update") {
+              setTeamTasks(eventData.tasks || []);
             } else if (event.type === "tool_start" || event.type === "tool_result") {
               loadSessionDetail(sessionId).catch(() => {});
             } else if (event.type === "done" || event.type === "error") {
@@ -1074,6 +1091,7 @@ export default function ChatPageClient() {
     setAttachments([]);
     setTasks([]);
     setSubAgents([]);
+    setTeamTasks([]);
     setError("");
   };
 
@@ -1722,6 +1740,10 @@ export default function ChatPageClient() {
             if (win > 0) setCtxWindow(win);
           } else if (event.type === "task_update") {
             setTasks(data.items || []);
+          } else if (event.type === "team_roster_update") {
+            setTeamRoster(data.roster || []);
+          } else if (event.type === "team_tasks_update") {
+            setTeamTasks(data.tasks || []);
           } else if (event.type === "approval") {
             setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
             setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
@@ -2664,13 +2686,30 @@ export default function ChatPageClient() {
               ))}
             </div>
           ) : null}
-          {(tasks.length > 0 || subAgents.length > 0) ? (
-            <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-border bg-sidebar/35 px-3 py-2">
-              <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                {tasks.length > 0 ? <span className="font-medium">Tasks {tasks.filter((item) => item.status === "completed").length}/{tasks.length}</span> : null}
-                {tasks.map((item, index) => <span key={index} className={`rounded-full px-2 py-0.5 ${item.status === "completed" ? "bg-emerald-500/10 text-emerald-600" : item.status === "in_progress" ? "bg-primary/10 text-primary" : "bg-background text-text-muted"}`}>{item.content}</span>)}
-                {subAgents.map((agent) => <button key={agent.id} type="button" title={agent.task} onClick={() => setViewingAgent(agent)} className="rounded-full border border-border px-2 py-0.5 hover:bg-sidebar"><span className={agent.status === "running" ? "text-primary" : agent.status === "failed" ? "text-red-500" : "text-emerald-500"}>●</span> {agent.role}</button>)}
-              </div>
+          {(tasks.length > 0 || subAgents.length > 0 || teamTasks.length > 0 || teamRoster.length > 0) ? (
+            <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-border bg-sidebar/35 px-3 py-2 space-y-1.5">
+              {tasks.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="font-medium text-text-muted">Tasks {tasks.filter((item) => item.status === "completed").length}/{tasks.length}:</span>
+                  {tasks.map((item, index) => <span key={index} className={`rounded-full px-2 py-0.5 ${item.status === "completed" ? "bg-emerald-500/10 text-emerald-600" : item.status === "in_progress" ? "bg-primary/10 text-primary" : "bg-background text-text-muted"}`}>{item.content}</span>)}
+                </div>
+              ) : null}
+              {teamTasks.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="font-medium text-primary flex items-center gap-1"><span className="material-symbols-outlined text-[13px]">developer_board</span> Team Board:</span>
+                  {teamTasks.map((item) => (
+                    <span key={item.id} className={`rounded-md border px-2 py-0.5 font-mono text-[10px] ${item.status === "completed" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600" : item.status === "in_progress" ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-background text-text-muted"}`}>
+                      {item.assignee ? `[${item.assignee}] ` : ""}{item.title} ({item.status})
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {subAgents.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="font-medium text-text-muted">Agents:</span>
+                  {subAgents.map((agent) => <button key={agent.id} type="button" title={agent.task} onClick={() => setViewingAgent(agent)} className="rounded-full border border-border bg-background px-2 py-0.5 hover:bg-sidebar"><span className={agent.status === "running" ? "text-primary" : agent.status === "failed" ? "text-red-500" : "text-emerald-500"}>●</span> {agent.role}</button>)}
+                </div>
+              ) : null}
             </div>
           ) : null}
           {approvals.map((approval) => (

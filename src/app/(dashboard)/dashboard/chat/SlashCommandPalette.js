@@ -8,7 +8,7 @@ export const CHAT_COMMANDS = [
   { name: "fork", args: "[title]", summary: "Fork this conversation" },
   { name: "rename", args: "<title>", summary: "Rename this conversation" },
   { name: "model", summary: "Open the model picker" },
-  { name: "agent", args: "orchestrator|coder|researcher|reviewer|planner", summary: "Switch agent role" },
+  { name: "agent", args: "orchestrator|team|coder|researcher|reviewer|planner", summary: "Switch agent role" },
   { name: "retry", summary: "Regenerate the latest answer" },
   { name: "stop", summary: "Stop the active run" },
   { name: "export", args: "md|json", summary: "Export this conversation" },

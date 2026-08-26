@@ -452,6 +452,111 @@ async function runAgent(run) {
       await emit(run, "task_update", { items });
     },
     onDelegate: async ({ role, task }) => runSubAgent(run, { role, task }),
+    onTeamRoster: async (args) => {
+      const action = args?.action || "list";
+      if (action === "register" && Array.isArray(args.members)) {
+        for (const m of args.members) {
+          if (m?.name) {
+            run.teamRoster.set(m.name, {
+              name: m.name,
+              role: m.role || m.name,
+              description: m.description || "",
+              status: "idle",
+            });
+          }
+        }
+      }
+      const list = Array.from(run.teamRoster.values());
+      await emit(run, "team_roster_update", { roster: list });
+      return { ok: true, roster: list };
+    },
+    onTeamTask: async (args) => {
+      const action = args?.action || "list";
+      if (action === "create") {
+        const taskId = args.taskId || `task_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`;
+        const taskObj = {
+          id: taskId,
+          title: args.title || "Untitled task",
+          description: args.description || "",
+          assignee: args.assignee || null,
+          status: args.status || "pending",
+          dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn : [],
+          updatedAt: new Date().toISOString(),
+        };
+        run.teamTasks.set(taskId, taskObj);
+      } else if (action === "update" || action === "claim") {
+        const taskObj = run.teamTasks.get(args.taskId);
+        if (!taskObj) return { ok: false, error: `Task ${args.taskId} not found` };
+        if (args.title) taskObj.title = args.title;
+        if (args.description) taskObj.description = args.description;
+        if (args.assignee) taskObj.assignee = args.assignee;
+        if (args.status) taskObj.status = args.status;
+        if (action === "claim" && args.assignee) {
+          taskObj.assignee = args.assignee;
+          taskObj.status = "in_progress";
+        }
+        taskObj.updatedAt = new Date().toISOString();
+        run.teamTasks.set(args.taskId, taskObj);
+      }
+      const list = Array.from(run.teamTasks.values());
+      await emit(run, "team_tasks_update", { tasks: list });
+      return { ok: true, tasks: list };
+    },
+    onTeamMessage: async ({ to, message, context: msgCtx }) => {
+      if (!to || !message) return { ok: false, error: "Recipient ('to') and message are required" };
+      const subId = `team_peer_${to}_${Date.now()}`;
+      const sub = { id: subId, role: to, task: message, status: "running", events: [], seq: 0 };
+      run.subAgents.set(subId, sub);
+      await emit(run, "subagent_start", { id: subId, role: to, task: message });
+      await emit(run, "team_message", { from: "peer", to, message, context: msgCtx || "" });
+
+      // Run targeted sub-agent execution with peer role instructions and shared task board access
+      let finalText = "";
+      try {
+        const targetMember = run.teamRoster.get(to);
+        const roleDesc = targetMember?.description ? ` (${targetMember.description})` : "";
+        const result = await runAgentLoop({
+          model: run.request.model,
+          messages: [{ role: "user", content: `${message}${msgCtx ? `\n\nContext:\n${msgCtx}` : ""}` }],
+          systemPrompt: `You are the ${to} member${roleDesc} of an active Agent Team (DSH style). Collaborate with your team, execute your specialized role, use tools to verify facts, and provide clear output.`,
+          apiKey: run.request.apiKey,
+          workspace: run.workspace,
+          accessMode: run.request.accessMode,
+          maxSteps: run.request.maxSteps > 0 ? Math.min(run.request.maxSteps, 8) : 8,
+          signal: run.abortController.signal,
+          depth: 1,
+          onEvent: async (type, data) => {
+            const event = { seq: ++sub.seq, type, data, createdAt: new Date().toISOString() };
+            sub.events.push(event);
+            await emit(run, "subagent_event", { id: subId, event });
+            if (type === "text") finalText = data.content || finalText;
+          },
+          onApproval: async ({ name, arguments: callArgs }) => {
+            return await openGate(run, "approval", {
+              subAgentId: subId,
+              tool: name,
+              arguments: JSON.stringify(callArgs || {}),
+              message: `Allow team member ${to} to run ${name}?`,
+            });
+          },
+          onAskUser: async (questions) => {
+            return await openGate(run, "ask", { subAgentId: subId, questions });
+          },
+        });
+        finalText = result.finalText || finalText;
+        sub.status = "completed";
+        await emit(run, "subagent_done", { id: subId, role: to, task: message, finalText });
+        return { ok: true, recipient: to, response: finalText };
+      } catch (err) {
+        sub.status = "failed";
+        await emit(run, "subagent_done", { id: subId, role: to, task: message, error: err?.message || String(err) });
+        return { ok: false, recipient: to, error: err?.message || String(err) };
+      }
+    },
+    onTeamBroadcast: async ({ topic, message }) => {
+      await emit(run, "team_broadcast", { topic, message, timestamp: new Date().toISOString() });
+      return { ok: true, topic, message, broadcastedTo: Array.from(run.teamRoster.keys()) };
+    },
     onApproval: async ({ name, arguments: args }) => {
       const allowed = await openGate(run, "approval", {
         tool: name,
@@ -619,7 +724,39 @@ export async function startServerChatRun(input) {
   const messages = Array.isArray(input.persistedMessages)
     ? input.persistedMessages
     : [...request.messages, { id: assistantId, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }];
-  const run = { id, sessionId: input.sessionId, mode: input.mode === "agent" ? "agent" : "plain", providerId: input.providerId || "", request, assistantId, messages, assistantText: "", reasoning: "", tokenUsage: null, titleSeed: input.titleSeed || "", workspace, codebase, steering: [], tasks: [], subAgents: new Map(), gates: new Map(), goal: null, autoApprove: request.autoApprove, status: "queued", abortController: new AbortController(), listeners: new Set(), events: [], seq: 0, lastCheckpointAt: 0 };
+  const run = {
+    id,
+    sessionId: input.sessionId,
+    mode: input.mode === "agent" ? "agent" : "plain",
+    providerId: input.providerId || "",
+    request,
+    assistantId,
+    messages,
+    assistantText: "",
+    reasoning: "",
+    tokenUsage: null,
+    titleSeed: input.titleSeed || "",
+    workspace,
+    codebase,
+    steering: [],
+    tasks: [],
+    subAgents: new Map(),
+    gates: new Map(),
+    teamRoster: new Map([
+      ["dev", { name: "dev", role: "Implementation Engineer", description: "Writes and updates code, runs tests", status: "idle" }],
+      ["qa", { name: "qa", role: "Quality & Security Reviewer", description: "Finds regressions, edge cases, vulnerabilities", status: "idle" }],
+      ["architect", { name: "architect", role: "System Architect", description: "Designs architecture, data flow, and boundaries", status: "idle" }],
+    ]),
+    teamTasks: new Map(),
+    goal: null,
+    autoApprove: request.autoApprove,
+    status: "queued",
+    abortController: new AbortController(),
+    listeners: new Set(),
+    events: [],
+    seq: 0,
+    lastCheckpointAt: 0,
+  };
   run.goal = (await getActiveChatGoal(run.sessionId).catch(() => null)) || null;
   await createChatRun({ id, sessionId: run.sessionId, mode: run.mode, request: { ...request, apiKey: "" } });
   liveRuns.set(id, run);
@@ -707,7 +844,7 @@ export function resolveChatGate(runId, gateId, outcome) {
   } else {
     gate.resolve(String(outcome || ""));
   }
-  return { id: gateId, resolved: true };
+  return { id, gateId, resolved: true };
 }
 
 export function setChatAutoApprove(runId, enabled) {

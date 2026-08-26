@@ -75,6 +75,10 @@ const TOOL_ACCESS = {
   generate_image: "sandbox",
   todo_update: "sandbox",
   delegate_task: "sandbox",
+  team_roster: "sandbox",
+  team_post_task: "sandbox",
+  team_send_message: "sandbox",
+  team_broadcast: "sandbox",
   read_document: "sandbox",
   ask_user: "sandbox",
   goal_update: "sandbox",
@@ -247,6 +251,84 @@ export const TOOL_DEFS = [
           task: { type: "string", description: "Focused task with the expected result" },
         },
         required: ["task"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "team_roster",
+      description: "List or update active agents in the native team roster (DSH style). Action: 'list' | 'register'.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["list", "register"], description: "Action to perform on roster" },
+          members: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string", description: "Agent name/role identifier, e.g. dev, qa, architect, reviewer" },
+                role: { type: "string", description: "Specialized role title" },
+                description: { type: "string", description: "Specialist skills and focus" },
+              },
+              required: ["name", "role"],
+            },
+            description: "Members to register if action is register",
+          },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "team_post_task",
+      description: "Create, update, or claim a task on the shared team task board (DSH style). Action: 'create' | 'update' | 'claim' | 'list'.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["create", "update", "claim", "list"], description: "Action on task board" },
+          taskId: { type: "string", description: "Task ID when updating or claiming" },
+          title: { type: "string", description: "Task title" },
+          description: { type: "string", description: "Task specification and acceptance criteria" },
+          assignee: { type: "string", description: "Assigned member name/role" },
+          status: { type: "string", enum: ["pending", "in_progress", "review", "completed", "blocked"], description: "Status" },
+          dependsOn: { type: "array", items: { type: "string" }, description: "Task IDs that must complete first" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "team_send_message",
+      description: "Send a direct peer-to-peer message or work request to another agent in the roster (DSH style).",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Recipient agent name/role from roster, e.g. dev, qa, reviewer" },
+          message: { type: "string", description: "Message content, query, or review request" },
+          context: { type: "string", description: "Optional context or file references" },
+        },
+        required: ["to", "message"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "team_broadcast",
+      description: "Broadcast a status update, finding, or blocking issue to all agents in the team (DSH style).",
+      parameters: {
+        type: "object",
+        properties: {
+          topic: { type: "string", description: "Headline or topic of broadcast" },
+          message: { type: "string", description: "Details broadcasted to the whole team" },
+        },
+        required: ["topic", "message"],
       },
     },
   },
@@ -681,6 +763,22 @@ export async function executeTool(name, args = {}, ctx = {}) {
           task: String(args.task || "").trim().slice(0, 4000),
         }));
       }
+      case "team_roster": {
+        if (!ctx.onTeamRoster) return JSON.stringify({ ok: false, error: "Native Agent Teams runtime unavailable" });
+        return JSON.stringify(await ctx.onTeamRoster(args));
+      }
+      case "team_post_task": {
+        if (!ctx.onTeamTask) return JSON.stringify({ ok: false, error: "Native Agent Teams runtime unavailable" });
+        return JSON.stringify(await ctx.onTeamTask(args));
+      }
+      case "team_send_message": {
+        if (!ctx.onTeamMessage) return JSON.stringify({ ok: false, error: "Native Agent Teams runtime unavailable" });
+        return JSON.stringify(await ctx.onTeamMessage(args));
+      }
+      case "team_broadcast": {
+        if (!ctx.onTeamBroadcast) return JSON.stringify({ ok: false, error: "Native Agent Teams runtime unavailable" });
+        return JSON.stringify(await ctx.onTeamBroadcast(args));
+      }
       case "read_document": {
         const p = path.resolve(String(args.path || ""));
         const uploadRoot = path.resolve(path.join(DATA_DIR, "chat-uploads"));
@@ -729,5 +827,3 @@ export async function executeTool(name, args = {}, ctx = {}) {
     return JSON.stringify({ ok: false, error: e.message || String(e) });
   }
 }
-
-// getOpenAiTools defined above (filters by accessMode)
