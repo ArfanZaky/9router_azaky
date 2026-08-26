@@ -90,6 +90,11 @@ export {
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
   getImageAsset, addImageAssets,
 } from "./repos/imageGenRepo.js";
+// Video prompt storyboards
+export {
+  listVideoPromptProjects, getVideoPromptProject, createVideoPromptProject,
+  updateVideoPromptProject, deleteVideoPromptProject,
+} from "./repos/videoPromptRepo.js";
 
 // Export/import full DB
 export async function exportDb() {

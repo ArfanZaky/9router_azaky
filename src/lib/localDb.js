@@ -29,4 +29,6 @@ export {
    updateChatMcpServer, deleteChatMcpServer,
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
   getImageAsset, addImageAssets,
+  listVideoPromptProjects, getVideoPromptProject, createVideoPromptProject,
+  updateVideoPromptProject, deleteVideoPromptProject,
 } from "./db/index.js";
