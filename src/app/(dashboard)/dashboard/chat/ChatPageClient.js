@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Button, ModelSelectModal } from "@/shared/components";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatToolCard from "./ChatToolCard";
+import TeamPanel from "./TeamPanel";
 import SlashCommandPalette, { CHAT_COMMANDS, commandMatches } from "./SlashCommandPalette";
 import ProjectSidebar from "./ProjectSidebar";
 import {
@@ -415,6 +416,7 @@ export default function ChatPageClient() {
   const [subAgents, setSubAgents] = useState([]);
   const [teamRoster, setTeamRoster] = useState([]);
   const [teamTasks, setTeamTasks] = useState([]);
+  const [teamMessages, setTeamMessages] = useState([]);
   const [viewingAgent, setViewingAgent] = useState(null);
   const [liveInfo, setLiveInfo] = useState({ turn: 0, tool: null, waiting: false, notice: "", elapsed: 0 });
   const [approvals, setApprovals] = useState([]);
@@ -680,6 +682,10 @@ export default function ChatPageClient() {
               setTeamRoster(data.roster || []);
             } else if (event.type === "team_tasks_update") {
               setTeamTasks(data.tasks || []);
+            } else if (event.type === "team_message") {
+              setTeamMessages((prev) => [...prev, { ...data, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() }]);
+            } else if (event.type === "team_broadcast") {
+              setTeamMessages((prev) => [...prev, { ...data, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: data.timestamp || event.createdAt || new Date().toISOString() }]);
             } else if (event.type === "approval") {
               setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
               setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
@@ -688,8 +694,12 @@ export default function ChatPageClient() {
               setAgentStatus("Waiting for your answer…");
             } else if (event.type === "subagent_start") {
               setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
+              // Update roster member status
+              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
             } else if (event.type === "subagent_done") {
               setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
+              // Update roster member status
+              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
             } else if (event.type === "tool_start" || event.type === "tool_result") {
               // Reload session messages on tool boundaries after remount.
               loadSessionDetail(existingSessionId).catch(() => {});
@@ -887,7 +897,11 @@ export default function ChatPageClient() {
               setTeamRoster(eventData.roster || []);
             } else if (event.type === "team_tasks_update") {
               setTeamTasks(eventData.tasks || []);
-            } else if (event.type === "tool_start" || event.type === "tool_result") {
+            } else if (event.type === "team_message") {
+              setTeamMessages((prev) => [...prev, { ...eventData, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() }]);
+            } else if (event.type === "team_broadcast") {
+              setTeamMessages((prev) => [...prev, { ...eventData, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: eventData.timestamp || event.createdAt || new Date().toISOString() }]);
+             } else if (event.type === "tool_start" || event.type === "tool_result") {
               loadSessionDetail(sessionId).catch(() => {});
             } else if (event.type === "done" || event.type === "error") {
               const finalMessages = eventData.messages || getChatRun(sessionId)?.messages || [];
@@ -1744,7 +1758,11 @@ export default function ChatPageClient() {
             setTeamRoster(data.roster || []);
           } else if (event.type === "team_tasks_update") {
             setTeamTasks(data.tasks || []);
-          } else if (event.type === "approval") {
+          } else if (event.type === "team_message") {
+              setTeamMessages((prev) => [...prev, { ...data, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() }]);
+            } else if (event.type === "team_broadcast") {
+              setTeamMessages((prev) => [...prev, { ...data, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: data.timestamp || event.createdAt || new Date().toISOString() }]);
+            } else if (event.type === "approval") {
             setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
             setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
           } else if (event.type === "ask") {
@@ -1752,8 +1770,12 @@ export default function ChatPageClient() {
             setAgentStatus("Waiting for your answer…");
           } else if (event.type === "subagent_start") {
             setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
+              // Update roster member status
+              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
           } else if (event.type === "subagent_done") {
             setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
+              // Update roster member status
+              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
           } else if (event.type === "tool_progress") {
             pushLive(liveMessages.map((m) => m.id === assistantId
               ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, progress: (segment.progress || "") + (data.chunk || "") } : segment) }
@@ -2686,22 +2708,21 @@ export default function ChatPageClient() {
               ))}
             </div>
           ) : null}
-          {(tasks.length > 0 || subAgents.length > 0 || teamTasks.length > 0 || teamRoster.length > 0) ? (
+          {agentRole === "team" ? (
+            <TeamPanel
+              roster={teamRoster}
+              tasks={teamTasks}
+              messages={teamMessages}
+              subAgents={subAgents}
+              onViewAgent={setViewingAgent}
+            />
+          ) : null}
+          {(tasks.length > 0 || subAgents.length > 0) ? (
             <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-border bg-sidebar/35 px-3 py-2 space-y-1.5">
               {tasks.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
                   <span className="font-medium text-text-muted">Tasks {tasks.filter((item) => item.status === "completed").length}/{tasks.length}:</span>
                   {tasks.map((item, index) => <span key={index} className={`rounded-full px-2 py-0.5 ${item.status === "completed" ? "bg-emerald-500/10 text-emerald-600" : item.status === "in_progress" ? "bg-primary/10 text-primary" : "bg-background text-text-muted"}`}>{item.content}</span>)}
-                </div>
-              ) : null}
-              {teamTasks.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                  <span className="font-medium text-primary flex items-center gap-1"><span className="material-symbols-outlined text-[13px]">developer_board</span> Team Board:</span>
-                  {teamTasks.map((item) => (
-                    <span key={item.id} className={`rounded-md border px-2 py-0.5 font-mono text-[10px] ${item.status === "completed" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600" : item.status === "in_progress" ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-background text-text-muted"}`}>
-                      {item.assignee ? `[${item.assignee}] ` : ""}{item.title} ({item.status})
-                    </span>
-                  ))}
                 </div>
               ) : null}
               {subAgents.length > 0 ? (

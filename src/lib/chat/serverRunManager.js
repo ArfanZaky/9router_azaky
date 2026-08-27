@@ -503,6 +503,13 @@ async function runAgent(run) {
       return { ok: true, tasks: list };
     },
     onTeamMessage: async ({ to, message, context: msgCtx }) => {
+      // Update roster member status to running
+      const rosterMember = run.teamRoster.get(to);
+      if (rosterMember) {
+        rosterMember.status = "running";
+        const rosterList = Array.from(run.teamRoster.values());
+        await emit(run, "team_roster_update", { roster: rosterList });
+      }
       if (!to || !message) return { ok: false, error: "Recipient ('to') and message are required" };
       const subId = `team_peer_${to}_${Date.now()}`;
       const sub = { id: subId, role: to, task: message, status: "running", events: [], seq: 0 };
@@ -748,6 +755,7 @@ export async function startServerChatRun(input) {
       ["architect", { name: "architect", role: "System Architect", description: "Designs architecture, data flow, and boundaries", status: "idle" }],
     ]),
     teamTasks: new Map(),
+    teamMessages: [],  // DSH-style activity feed
     goal: null,
     autoApprove: request.autoApprove,
     status: "queued",
