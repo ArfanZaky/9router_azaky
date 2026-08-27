@@ -2710,14 +2710,23 @@ export default function ChatPageClient() {
           ) : null}
           {agentRole === "team" ? (
             <TeamPanel
-              roster={teamRoster}
-              tasks={teamTasks}
+              roster={teamRoster.length > 0 ? teamRoster : [
+                { name: "orchestrator", role: "Team Lead", status: isSending ? "running" : "idle" },
+                { name: "dev", role: "Developer", status: "idle" },
+                { name: "qa", role: "QA Engineer", status: "idle" },
+                { name: "reviewer", role: "Code Reviewer", status: "idle" },
+              ]}
+              tasks={teamTasks.length > 0 ? teamTasks : tasks.map((t, idx) => ({
+                id: `task_${idx + 1}`,
+                title: t.content,
+                status: t.status === "in_progress" ? "in_progress" : t.status === "completed" ? "completed" : "pending",
+                assignee: "team",
+              }))}
               messages={teamMessages}
               subAgents={subAgents}
               onViewAgent={setViewingAgent}
             />
-          ) : null}
-          {(tasks.length > 0 || subAgents.length > 0) ? (
+          ) : (tasks.length > 0 || subAgents.length > 0) ? (
             <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-border bg-sidebar/35 px-3 py-2 space-y-1.5">
               {tasks.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
