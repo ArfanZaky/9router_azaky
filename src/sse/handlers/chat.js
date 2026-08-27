@@ -23,6 +23,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection, shouldResolveProjectId } from "open-sse/services/projectId.js";
 import { getCodexConnectionLabel, resolveCodexGatewayConnection } from "../services/codexGateway.js";
+import { injectKnowledgeContext } from "@/lib/rag/ragInjector.js";
 
 /**
  * Handle chat completion request
@@ -37,6 +38,12 @@ export async function handleChat(request, clientRawRequest = null) {
     log.warn("CHAT", "Invalid JSON body");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
   }
+
+  // RAG injection if knowledge_base_ids are passed in body
+  const proto = request.headers.get("x-forwarded-proto") || "http";
+  const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "localhost:3000";
+  const baseUrl = `${proto}://${host}`;
+  body = await injectKnowledgeContext(body, baseUrl);
 
   // Build clientRawRequest for logging (if not provided)
   if (!clientRawRequest) {

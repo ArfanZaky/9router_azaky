@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -177,6 +177,7 @@ export const TABLES = {
       projectMeta: "TEXT",
       tasks: "TEXT",
       codebase: "TEXT",
+      knowledgeBaseIds: "TEXT",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
@@ -221,8 +222,6 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_cm_session ON chatMessages(sessionId, createdAt)",
     ],
   },
-  // Server-owned runs make chat generation recoverable/replayable independently
-  // of a browser request or WebSocket connection.
   chatRuns: {
     columns: {
       id: "TEXT PRIMARY KEY",
@@ -351,6 +350,60 @@ export const TABLES = {
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_vpp_updated ON videoPromptProjects(updatedAt DESC)",
+    ],
+  },
+  // ── Knowledge Base / RAG ──
+  knowledgeBases: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT NOT NULL",
+      description: "TEXT",
+      embeddingModel: "TEXT",
+      chunkSize: "INTEGER DEFAULT 512",
+      chunkOverlap: "INTEGER DEFAULT 50",
+      status: "TEXT DEFAULT 'ready'",
+      docCount: "INTEGER DEFAULT 0",
+      chunkCount: "INTEGER DEFAULT 0",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_kb_updated ON knowledgeBases(updatedAt DESC)",
+    ],
+  },
+  knowledgeDocuments: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      kbId: "TEXT NOT NULL",
+      name: "TEXT NOT NULL",
+      type: "TEXT",
+      size: "INTEGER DEFAULT 0",
+      status: "TEXT DEFAULT 'pending'",
+      chunkCount: "INTEGER DEFAULT 0",
+      error: "TEXT",
+      content: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_kd_kb ON knowledgeDocuments(kbId)",
+      "CREATE INDEX IF NOT EXISTS idx_kd_status ON knowledgeDocuments(kbId, status)",
+    ],
+  },
+  knowledgeChunks: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      kbId: "TEXT NOT NULL",
+      docId: "TEXT NOT NULL",
+      chunkIndex: "INTEGER NOT NULL",
+      content: "TEXT NOT NULL",
+      embedding: "TEXT",
+      tokenCount: "INTEGER DEFAULT 0",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_kc_kb ON knowledgeChunks(kbId)",
+      "CREATE INDEX IF NOT EXISTS idx_kc_doc ON knowledgeChunks(docId)",
+      "CREATE INDEX IF NOT EXISTS idx_kc_kb_idx ON knowledgeChunks(kbId, chunkIndex)",
     ],
   },
 };

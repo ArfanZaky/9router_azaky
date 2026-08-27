@@ -21,6 +21,7 @@ const navItems = [
   { href: "/dashboard/endpoint", label: "Endpoint & Key", icon: "api" },
   { href: "/dashboard/providers", label: "Providers", icon: "dns" },
   { href: "/dashboard/chat", label: "Chat", icon: "chat" },
+  { href: "/dashboard/knowledge", label: "Knowledge Base (RAG)", icon: "menu_book" },
   { href: "/dashboard/image-gen", label: "Image Gen", icon: "image" },
   { href: "/dashboard/video-prompt", label: "Video Prompts", icon: "movie_edit" },
   { href: "/dashboard/combos", label: "Combo & Vision Adapter", icon: "layers" },
@@ -106,10 +107,6 @@ export default function Sidebar({ onClose }) {
     setIsUpdating(false);
     setShutdownCountdown(0);
   };
-
-  // Note: legacy updater poll removed. New flow: copy install cmd + shutdown server,
-  // user runs the command manually in another terminal.
-
 
   return (
     <>
