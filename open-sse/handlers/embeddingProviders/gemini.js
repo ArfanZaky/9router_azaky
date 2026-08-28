@@ -2,17 +2,28 @@
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 function modelPath(model) {
-  return model.startsWith("models/") ? model : `models/${model}`;
+  // Strip provider prefix if present (e.g. "gemini/text-embedding-004" -> "text-embedding-004")
+  const clean = model.includes("/") ? model.split("/").pop() : model;
+  return clean.startsWith("models/") ? clean : `models/${clean}`;
 }
 
 export default {
   buildUrl: (model, creds, { input } = {}) => {
-    const apiKey = creds.apiKey || creds.accessToken;
+    const apiKey = creds?.apiKey;
     const path = modelPath(model);
     const op = Array.isArray(input) ? "batchEmbedContents" : "embedContent";
-    return `${BASE}/${path}:${op}?key=${encodeURIComponent(apiKey)}`;
+    if (apiKey) {
+      return `${BASE}/${path}:${op}?key=${encodeURIComponent(apiKey)}`;
+    }
+    return `${BASE}/${path}:${op}`;
   },
-  buildHeaders: () => ({ "Content-Type": "application/json" }),
+  buildHeaders: (creds) => {
+    const headers = { "Content-Type": "application/json" };
+    if (creds?.accessToken && !creds?.apiKey) {
+      headers.Authorization = `Bearer ${creds.accessToken}`;
+    }
+    return headers;
+  },
   buildBody: (model, { input, dimensions }) => {
     const m = modelPath(model);
     const outputDimensionality = Number(dimensions);

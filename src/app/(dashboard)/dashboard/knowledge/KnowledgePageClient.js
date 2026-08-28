@@ -1,11 +1,23 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import {
-  BookOpen, Plus, Search, Trash2, RefreshCw, Upload, FileText,
-  Database, ChevronRight, X, AlertCircle, Sparkles, Layers, ArrowLeft
-} from "lucide-react";
 import ModelSelectModal from "@/shared/components/ModelSelectModal";
+
+function formatErrorText(value) {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  if (typeof value === "object") {
+    if (typeof value.message === "string") return value.message;
+    if (typeof value.error === "string") return value.error;
+    if (typeof value.error?.message === "string") return value.error.message;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
 
 export default function KnowledgePageClient() {
   const [bases, setBases] = useState([]);
@@ -15,18 +27,32 @@ export default function KnowledgePageClient() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newBaseName, setNewBaseName] = useState("");
   const [newBaseDesc, setNewBaseDesc] = useState("");
-  const [newBaseModel, setNewBaseModel] = useState("text-embedding-3-small");
+  const [newBaseModel, setNewBaseModel] = useState("gemini-embedding-001");
   const [showModelModal, setShowModelModal] = useState(false);
+  const [activeProviders, setActiveProviders] = useState([]);
+  const [modelAliases, setModelAliases] = useState({});
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
   const loadBases = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await fetch("/api/knowledge");
-      const data = await res.json();
+      const [resBases, resProviders, resAliases] = await Promise.all([
+        fetch("/api/knowledge"),
+        fetch("/api/providers").catch(() => null),
+        fetch("/api/models/alias").catch(() => null),
+      ]);
+      const data = await resBases.json();
       if (Array.isArray(data)) {
         setBases(data);
+      }
+      if (resProviders?.ok) {
+        const provData = await resProviders.json();
+        setActiveProviders(provData.connections || []);
+      }
+      if (resAliases?.ok) {
+        const aliasData = await resAliases.json();
+        setModelAliases(aliasData.aliases || {});
       }
     } catch (err) {
       console.error("Failed to load knowledge bases:", err);
@@ -62,10 +88,10 @@ export default function KnowledgePageClient() {
         loadBases();
         setSelectedBase(data);
       } else {
-        setError(data.error || "Failed to create knowledge base");
+        setError(formatErrorText(data.error) || "Failed to create knowledge base");
       }
     } catch (err) {
-      setError(err.message);
+      setError(formatErrorText(err.message));
     } finally {
       setCreating(false);
     }
@@ -99,14 +125,14 @@ export default function KnowledgePageClient() {
           {selectedBase && (
             <button
               onClick={() => setSelectedBase(null)}
-              className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition"
+              className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition flex items-center justify-center"
               title="Back to all Knowledge Bases"
             >
-              <ArrowLeft className="w-4 h-4" />
+              <span className="material-symbols-outlined text-[18px]">arrow_back</span>
             </button>
           )}
-          <div className="p-2 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-400">
-            <BookOpen className="w-5 h-5" />
+          <div className="p-2 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-400 flex items-center justify-center">
+            <span className="material-symbols-outlined text-[20px]">menu_book</span>
           </div>
           <div>
             <h1 className="text-lg font-semibold text-white">
@@ -126,7 +152,7 @@ export default function KnowledgePageClient() {
               onClick={() => setShowCreateModal(true)}
               className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-medium text-xs shadow-lg shadow-violet-600/20 transition"
             >
-              <Plus className="w-4 h-4" />
+              <span className="material-symbols-outlined text-[16px]">add</span>
               New Knowledge Base
             </button>
           </div>
@@ -145,7 +171,7 @@ export default function KnowledgePageClient() {
           <div className="max-w-6xl mx-auto space-y-6">
             {/* Search Bar */}
             <div className="flex items-center gap-3 bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-2.5 max-w-md">
-              <Search className="w-4 h-4 text-slate-400" />
+              <span className="material-symbols-outlined text-[18px] text-slate-400">search</span>
               <input
                 type="text"
                 placeholder="Search knowledge bases..."
@@ -154,8 +180,8 @@ export default function KnowledgePageClient() {
                 className="bg-transparent border-none outline-none text-xs text-white placeholder-slate-500 flex-1"
               />
               {searchQuery && (
-                <button onClick={() => setSearchQuery("")} className="text-slate-500 hover:text-slate-300">
-                  <X className="w-3.5 h-3.5" />
+                <button onClick={() => setSearchQuery("")} className="text-slate-500 hover:text-slate-300 flex items-center">
+                  <span className="material-symbols-outlined text-[16px]">close</span>
                 </button>
               )}
             </div>
@@ -169,7 +195,7 @@ export default function KnowledgePageClient() {
               </div>
             ) : filteredBases.length === 0 ? (
               <div className="text-center py-16 border border-dashed border-slate-800 rounded-2xl bg-slate-900/20">
-                <Database className="w-12 h-12 text-slate-600 mx-auto mb-3" />
+                <span className="material-symbols-outlined text-[48px] text-slate-600 mx-auto mb-3 block">database</span>
                 <h3 className="text-sm font-semibold text-slate-300">No Knowledge Bases Found</h3>
                 <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1 mb-4">
                   Create your first knowledge base to upload documents and enable semantic RAG chat.
@@ -178,7 +204,7 @@ export default function KnowledgePageClient() {
                   onClick={() => setShowCreateModal(true)}
                   className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-medium text-xs transition"
                 >
-                  <Plus className="w-4 h-4" />
+                  <span className="material-symbols-outlined text-[16px]">add</span>
                   Create Knowledge Base
                 </button>
               </div>
@@ -193,8 +219,8 @@ export default function KnowledgePageClient() {
                     <div>
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div className="flex items-center gap-2.5">
-                          <div className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400">
-                            <BookOpen className="w-4 h-4" />
+                          <div className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-400 flex items-center justify-center">
+                            <span className="material-symbols-outlined text-[18px]">menu_book</span>
                           </div>
                           <div>
                             <h3 className="text-sm font-semibold text-white group-hover:text-violet-300 transition">
@@ -205,10 +231,10 @@ export default function KnowledgePageClient() {
                         </div>
                         <button
                           onClick={(e) => handleDeleteBase(base.id, e)}
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100 transition"
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100 transition flex items-center justify-center"
                           title="Delete"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <span className="material-symbols-outlined text-[16px]">delete</span>
                         </button>
                       </div>
                       <p className="text-xs text-slate-400 line-clamp-2 mb-4">
@@ -219,17 +245,17 @@ export default function KnowledgePageClient() {
                     <div className="pt-3 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-400">
                       <div className="flex items-center gap-3">
                         <span className="flex items-center gap-1">
-                          <FileText className="w-3 h-3 text-slate-500" />
+                          <span className="material-symbols-outlined text-[14px] text-slate-500">description</span>
                           {base.docCount || 0} docs
                         </span>
                         <span className="flex items-center gap-1">
-                          <Layers className="w-3 h-3 text-slate-500" />
+                          <span className="material-symbols-outlined text-[14px] text-slate-500">layers</span>
                           {base.chunkCount || 0} chunks
                         </span>
                       </div>
                       <div className="flex items-center gap-1 text-violet-400 font-medium">
                         Explore
-                        <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition" />
+                        <span className="material-symbols-outlined text-[14px] group-hover:translate-x-0.5 transition">chevron_right</span>
                       </div>
                     </div>
                   </div>
@@ -246,18 +272,18 @@ export default function KnowledgePageClient() {
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-violet-400" />
+                <span className="material-symbols-outlined text-[18px] text-violet-400">menu_book</span>
                 Create New Knowledge Base
               </h3>
-              <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-white">
-                <X className="w-4 h-4" />
+              <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-white flex items-center">
+                <span className="material-symbols-outlined text-[18px]">close</span>
               </button>
             </div>
 
             <form onSubmit={handleCreateBase} className="p-5 space-y-4">
               {error && (
                 <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span className="material-symbols-outlined text-[18px] shrink-0">error</span>
                   <span>{error}</span>
                 </div>
               )}
@@ -303,7 +329,7 @@ export default function KnowledgePageClient() {
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Default: text-embedding-3-small (supports OpenAI, Gemini, Voyage, Mistral embeddings)
+                  Supports models with <code className="font-mono bg-slate-800 px-1 rounded text-violet-300">kind=embedding</code> (Gemini, OpenAI, Voyage, Mistral, Jina, etc.)
                 </p>
               </div>
 
@@ -320,7 +346,7 @@ export default function KnowledgePageClient() {
                   disabled={creating}
                   className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  {creating && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                  {creating && <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>}
                   Create
                 </button>
               </div>
@@ -334,11 +360,16 @@ export default function KnowledgePageClient() {
         <ModelSelectModal
           isOpen={showModelModal}
           onClose={() => setShowModelModal(false)}
-          onSelect={(modelId) => {
-            setNewBaseModel(modelId);
+          onSelect={(m) => {
+            const val = m?.value || m?.name || m?.id || "";
+            setNewBaseModel(val);
             setShowModelModal(false);
           }}
-          currentModel={newBaseModel}
+          selectedModel={newBaseModel}
+          activeProviders={activeProviders}
+          modelAliases={modelAliases}
+          kindFilter="embedding"
+          title="Select Embedding Model"
         />
       )}
     </div>
@@ -381,7 +412,7 @@ function KnowledgeBaseDetail({ base, onUpdate, onBack }) {
           <div className="flex items-center gap-2">
             <h2 className="text-base font-bold text-white">{base.name}</h2>
             <span className="px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[10px] font-mono">
-              {base.embeddingModel || "text-embedding-3-small"}
+              {base.embeddingModel || "gemini-embedding-001"}
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1 max-w-xl">
@@ -394,7 +425,7 @@ function KnowledgeBaseDetail({ base, onUpdate, onBack }) {
             onClick={() => setShowAddDocModal(true)}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-medium text-xs shadow-lg shadow-violet-600/20 transition"
           >
-            <Upload className="w-3.5 h-3.5" />
+            <span className="material-symbols-outlined text-[16px]">upload</span>
             Add Documents
           </button>
         </div>
@@ -410,7 +441,7 @@ function KnowledgeBaseDetail({ base, onUpdate, onBack }) {
               : "border-transparent text-slate-400 hover:text-slate-200"
           }`}
         >
-          <FileText className="w-4 h-4" />
+          <span className="material-symbols-outlined text-[18px]">description</span>
           Documents ({docs.length})
         </button>
         <button
@@ -421,7 +452,7 @@ function KnowledgeBaseDetail({ base, onUpdate, onBack }) {
               : "border-transparent text-slate-400 hover:text-slate-200"
           }`}
         >
-          <Sparkles className="w-4 h-4" />
+          <span className="material-symbols-outlined text-[18px]">auto_awesome</span>
           Semantic Search & RAG Test
         </button>
       </div>
@@ -463,7 +494,7 @@ function DocumentsList({ baseId, docs, loading, onRefresh }) {
   const handleDeleteDoc = async (docId) => {
     if (!confirm("Are you sure you want to delete this document and its chunk vectors?")) return;
     try {
-      const res = await fetch(`/api/knowledge/documents/${docId}`, {
+      const res = await fetch(`/api/knowledge/${baseId}/documents/${docId}`, {
         method: "DELETE",
       });
       const data = await res.json();
@@ -488,7 +519,7 @@ function DocumentsList({ baseId, docs, loading, onRefresh }) {
   if (docs.length === 0) {
     return (
       <div className="text-center py-12 border border-dashed border-slate-800 rounded-2xl bg-slate-900/20">
-        <FileText className="w-10 h-10 text-slate-600 mx-auto mb-2" />
+        <span className="material-symbols-outlined text-[40px] text-slate-600 mx-auto mb-2 block">description</span>
         <h4 className="text-xs font-semibold text-slate-300">No Documents Uploaded</h4>
         <p className="text-[11px] text-slate-500 mt-1">
           Upload TXT, MD, PDF, CSV files or paste raw text/URLs to index knowledge.
@@ -528,6 +559,7 @@ function DocumentsList({ baseId, docs, loading, onRefresh }) {
               </td>
               <td className="px-4 py-3">
                 <span
+                  title={doc.error || undefined}
                   className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${
                     doc.status === "ready"
                       ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
@@ -545,10 +577,10 @@ function DocumentsList({ baseId, docs, loading, onRefresh }) {
               <td className="px-4 py-3 text-right">
                 <button
                   onClick={() => handleDeleteDoc(doc.id)}
-                  className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                  className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition flex items-center justify-center ml-auto"
                   title="Delete Document"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <span className="material-symbols-outlined text-[16px]">delete</span>
                 </button>
               </td>
             </tr>
@@ -568,11 +600,13 @@ function RagTestPanel({ baseId }) {
   const [threshold, setThreshold] = useState(0.2);
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState(null);
+  const [searchError, setSearchError] = useState("");
 
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!query.trim()) return;
     setSearching(true);
+    setSearchError("");
     try {
       const res = await fetch(`/api/knowledge/${baseId}/search`, {
         method: "POST",
@@ -584,11 +618,14 @@ function RagTestPanel({ baseId }) {
         }),
       });
       const data = await res.json();
-      if (data.results) {
+      if (!res.ok) {
+        setSearchError(formatErrorText(data.error) || `HTTP ${res.status}`);
+        setResults(null);
+      } else if (data.results) {
         setResults(data.results);
       }
     } catch (err) {
-      console.error("Semantic search failed:", err);
+      setSearchError(formatErrorText(err.message));
     } finally {
       setSearching(false);
     }
@@ -599,6 +636,13 @@ function RagTestPanel({ baseId }) {
       {/* Search Input Card */}
       <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
         <form onSubmit={handleSearch} className="space-y-4">
+          {searchError && (
+            <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
+              <span className="material-symbols-outlined text-[18px] shrink-0">error</span>
+              <span>{searchError}</span>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1.5">
               Semantic Search Query / Question
@@ -617,7 +661,7 @@ function RagTestPanel({ baseId }) {
                 disabled={searching}
                 className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-medium text-xs transition disabled:opacity-50 flex items-center gap-2"
               >
-                {searching ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                {searching ? <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span> : <span className="material-symbols-outlined text-[16px]">search</span>}
                 Retrieve
               </button>
             </div>
@@ -752,10 +796,10 @@ function AddDocumentModal({ baseId, onClose, onSuccess }) {
       if (res.ok && data?.id) {
         onSuccess();
       } else {
-        setError(data.error || "Failed to index document");
+        setError(formatErrorText(data.error) || "Failed to index document");
       }
     } catch (err) {
-      setError(err.message);
+      setError(formatErrorText(err.message));
     } finally {
       setLoading(false);
     }
@@ -766,18 +810,18 @@ function AddDocumentModal({ baseId, onClose, onSuccess }) {
       <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
           <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-            <Upload className="w-4 h-4 text-violet-400" />
+            <span className="material-symbols-outlined text-[18px] text-violet-400">upload</span>
             Add Documents to Knowledge Base
           </h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-white">
-            <X className="w-4 h-4" />
+          <button onClick={onClose} className="text-slate-400 hover:text-white flex items-center">
+            <span className="material-symbols-outlined text-[18px]">close</span>
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
           {error && (
             <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span className="material-symbols-outlined text-[18px] shrink-0">error</span>
               <span>{error}</span>
             </div>
           )}
@@ -856,7 +900,7 @@ function AddDocumentModal({ baseId, onClose, onSuccess }) {
               disabled={loading}
               className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition disabled:opacity-50 flex items-center gap-1.5"
             >
-              {loading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+              {loading && <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>}
               Index Document
             </button>
           </div>
