@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from "react";
 import PropTypes from "prop-types";
-import { Button, Modal } from "@/shared/components";
+import { Button, Modal, Toggle } from "@/shared/components";
+import { CAPACITY_META } from "@/shared/constants/models";
+
+const defaultCaps = () => Object.fromEntries(Object.keys(CAPACITY_META).map((key) => [key, false]));
 
 const MODEL_TYPES = [
   { value: "llm", label: "LLM / Chat" },
@@ -24,14 +27,14 @@ function guessTypeFromId(id = "") {
 
 export default function AddCustomModelModal({ isOpen, providerAlias, providerDisplayAlias, onSave, onClose }) {
   const [modelId, setModelId] = useState("");
-  const [modelType, setModelType] = useState("llm");
+  const [caps, setCaps] = useState(defaultCaps);
   const [testStatus, setTestStatus] = useState(null); // null | "testing" | "ok" | "error"
   const [testError, setTestError] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Reset state when modal opens
   useEffect(() => {
-    if (isOpen) { setModelId(""); setModelType("llm"); setTestStatus(null); setTestError(""); }
+    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setTestStatus(null); setTestError(""); }
   }, [isOpen]);
 
   // Strip provider's own alias prefix (e.g. "cc/model" -> "model" for cc provider)
@@ -65,7 +68,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
     if (!cleanId || saving) return;
     setSaving(true);
     try {
-      await onSave(cleanId, modelType || guessTypeFromId(cleanId));
+      await onSave(cleanId, caps);
     } finally {
       setSaving(false);
     }
@@ -87,7 +90,6 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
               onChange={(e) => {
                 const v = e.target.value;
                 setModelId(v);
-                setModelType(guessTypeFromId(stripAlias(v.trim())));
                 setTestStatus(null);
                 setTestError("");
               }}
@@ -112,19 +114,19 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
         </div>
 
         <div>
-          <label className="text-sm font-medium mb-1.5 block">Type</label>
-          <select
-            value={modelType}
-            onChange={(e) => setModelType(e.target.value)}
-            className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-          >
-            {MODEL_TYPES.map((t) => (
-              <option key={t.value} value={t.value}>{t.label}</option>
+          <label className="text-sm font-medium mb-1.5 block">Capabilities</label>
+          <div className="flex flex-wrap gap-4">
+            {Object.entries(CAPACITY_META).map(([key, meta]) => (
+              <Toggle
+                key={key}
+                checked={!!caps[key]}
+                onChange={(v) => setCaps((prev) => ({ ...prev, [key]: v }))}
+                label={meta.label}
+                description={meta.desc}
+                size="sm"
+              />
             ))}
-          </select>
-          <p className="text-xs text-text-muted mt-1">
-            Image models must be type <code className="font-mono bg-sidebar px-1 rounded">image</code> to appear in Image Gen.
-          </p>
+          </div>
         </div>
 
         {/* Test result */}

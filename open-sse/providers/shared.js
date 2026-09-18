@@ -21,7 +21,7 @@ export function mapStainlessArch() {
 }
 
 // === Antigravity IDE fingerprint (v2.1.1) ===
-export const ANTIGRAVITY_IDE_VERSION = "2.1.1";
+export const ANTIGRAVITY_IDE_VERSION = "2.11.0";
 
 export function mapPlatformForAntigravity() {
   const p = platform();
@@ -41,6 +41,7 @@ export function getAntigravityUserAgent() {
 
 // Anthropic API version (single source — reused across claude-format providers/executors)
 export const ANTHROPIC_API_VERSION = "2023-06-01";
+export const CLAUDE_CLI_VERSION = "2.1.258";
 
 // Shared Claude-compatible API headers (reused across claude-format providers)
 export const CLAUDE_API_HEADERS = {
@@ -53,7 +54,7 @@ export const CLAUDE_CLI_SPOOF_HEADERS = {
   "Anthropic-Version": ANTHROPIC_API_VERSION,
   "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28",
   "Anthropic-Dangerous-Direct-Browser-Access": "true",
-  "User-Agent": "claude-cli/2.1.92 (external, sdk-cli)",
+  "User-Agent": `claude-cli/${CLAUDE_CLI_VERSION} (external, sdk-cli)`,
   "X-App": "cli",
   "X-Stainless-Helper-Method": "stream",
   "X-Stainless-Retry-Count": "0",
@@ -93,9 +94,9 @@ export const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1/messages";
 export const OPENAI_COMPAT_BASE = "https://api.openai.com/v1";
 export const ANTHROPIC_COMPAT_BASE = "https://api.anthropic.com/v1";
 
-// Official Antigravity IDE Desktop 2.1.1 fingerprint captured from macOS arm64.
-// Agent inference uses the daily host; cloudcode-pa remains for auth/quota APIs.
-// Keep this profile static even when 9Router runs on another OS.
+// Official Antigravity IDE Desktop 2.11.0 fingerprint captured from macOS arm64.
+// Keep this static even when 9router runs on Linux: the provider profile is
+// intentionally matching the IDE client, not the server host.
 export const ANTIGRAVITY_IDE_BASE_URL = "https://daily-cloudcode-pa.googleapis.com";
 export const ANTIGRAVITY_IDE_USER_AGENT = `antigravity/ide/${ANTIGRAVITY_IDE_VERSION} darwin/arm64`;
 
