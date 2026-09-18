@@ -137,12 +137,9 @@ export class AntigravityExecutor extends BaseExecutor {
 
   transformRequest(model, body, stream, credentials) {
     const rawProjectId = credentials?.projectId;
-    const projectId = typeof rawProjectId === "string"
+    const projectId = (typeof rawProjectId === "string"
       ? rawProjectId.trim()
-      : rawProjectId?.id?.trim?.();
-    if (!projectId) {
-      throw new Error("Antigravity project ID unavailable. Reconnect the account to refresh Code Assist project data.");
-    }
+      : rawProjectId?.id?.trim?.()) || this.generateProjectId();
 
     // OpenAI clients may include stream_options even for non-streaming calls.
     // Google generateContent rejects that combination before processing the request.
@@ -246,7 +243,7 @@ export class AntigravityExecutor extends BaseExecutor {
       const modifiedParts = parts?.map(p => {
         if (!p.functionCall) return p;
         const callId = p.functionCall.id;
-        const cachedSig = callId ? getGeminiThoughtSignatureSync(callId, sessionId) : null;
+        const cachedSig = callId ? getGeminiThoughtSignatureSync(callId, sessionId, body.model || model) : null;
         const callSig = p.thoughtSignature || cachedSig || (!firstFunctionCallSeen ? DEFAULT_THINKING_AG_SIGNATURE : undefined);
         firstFunctionCallSeen = true;
         if (callSig) {
@@ -368,6 +365,12 @@ export class AntigravityExecutor extends BaseExecutor {
       log?.error?.("TOKEN", `Antigravity refresh error: ${error.message}`);
       return null;
     }
+  }
+
+  generateProjectId() {
+    const adj = ["useful", "bright", "swift", "calm", "bold"][Math.floor(Math.random() * 5)];
+    const noun = ["fuze", "wave", "spark", "flow", "core"][Math.floor(Math.random() * 5)];
+    return `${adj}-${noun}-${crypto.randomUUID().slice(0, 5)}`;
   }
 
   generateSessionId() {
