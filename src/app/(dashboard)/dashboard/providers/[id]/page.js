@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal, SegmentedControl } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal, SegmentedControl, CodeBuddyQuotaCookieModal } from "@/shared/components";
+import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, THINKING_CONFIG } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -49,6 +50,7 @@ export default function ProviderDetailPage() {
   const [showOAuthModal, setShowOAuthModal] = useState(false);
   const [showXiaomiMimoModal, setShowXiaomiMimoModal] = useState(false);
   const [showIFlowCookieModal, setShowIFlowCookieModal] = useState(false);
+  const [showCodeBuddyQuotaCookieModal, setShowCodeBuddyQuotaCookieModal] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
   const [showAddApiKeyModal, setShowAddApiKeyModal] = useState(false);
   const [addConnectionError, setAddConnectionError] = useState("");
@@ -1818,7 +1820,15 @@ export default function ProviderDetailPage() {
                         Quota Cookie
                       </Button>
                     )}
-                    {providerId === "grok-cli" && (
+      {providerId === "codebuddy" && (
+        <CodeBuddyQuotaCookieModal
+          isOpen={showCodeBuddyQuotaCookieModal}
+          onClose={() => setShowCodeBuddyQuotaCookieModal(false)}
+          onSuccess={fetchConnections}
+        />
+      )}
+
+      {providerId === "grok-cli" && (
                       <Button size="sm" icon="playlist_add" variant="secondary" onClick={() => setShowBulkImportGrokCli(true)}>
                         {translate("Bulk Add")}
                       </Button>
