@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -15,22 +15,9 @@ PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
 `;
 
-// Declarative current schema. Used by syncSchemaFromTables() to
-// auto-add missing tables/columns/indexes after versioned migrations.
-// For destructive changes (drop/rename/type-change), write a migration file.
 export const TABLES = {
-  _meta: {
-    columns: {
-      key: "TEXT PRIMARY KEY",
-      value: "TEXT NOT NULL",
-    },
-  },
-  settings: {
-    columns: {
-      id: "INTEGER PRIMARY KEY CHECK (id = 1)",
-      data: "TEXT NOT NULL",
-    },
-  },
+  _meta: { columns: { key: "TEXT PRIMARY KEY", value: "TEXT NOT NULL" } },
+  settings: { columns: { id: "INTEGER PRIMARY KEY CHECK (id = 1)", data: "TEXT NOT NULL" } },
   providerConnections: {
     columns: {
       id: "TEXT PRIMARY KEY",
@@ -51,58 +38,26 @@ export const TABLES = {
     ],
   },
   providerNodes: {
-    columns: {
-      id: "TEXT PRIMARY KEY",
-      type: "TEXT",
-      name: "TEXT",
-      data: "TEXT NOT NULL",
-      createdAt: "TEXT NOT NULL",
-      updatedAt: "TEXT NOT NULL",
-    },
+    columns: { id: "TEXT PRIMARY KEY", type: "TEXT", name: "TEXT", data: "TEXT NOT NULL", createdAt: "TEXT NOT NULL", updatedAt: "TEXT NOT NULL" },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_pn_type ON providerNodes(type)"],
   },
   proxyPools: {
-    columns: {
-      id: "TEXT PRIMARY KEY",
-      isActive: "INTEGER DEFAULT 1",
-      testStatus: "TEXT",
-      data: "TEXT NOT NULL",
-      createdAt: "TEXT NOT NULL",
-      updatedAt: "TEXT NOT NULL",
-    },
+    columns: { id: "TEXT PRIMARY KEY", isActive: "INTEGER DEFAULT 1", testStatus: "TEXT", data: "TEXT NOT NULL", createdAt: "TEXT NOT NULL", updatedAt: "TEXT NOT NULL" },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_pp_active ON proxyPools(isActive)",
       "CREATE INDEX IF NOT EXISTS idx_pp_status ON proxyPools(testStatus)",
     ],
   },
   apiKeys: {
-    columns: {
-      id: "TEXT PRIMARY KEY",
-      key: "TEXT UNIQUE NOT NULL",
-      name: "TEXT",
-      machineId: "TEXT",
-      isActive: "INTEGER DEFAULT 1",
-      createdAt: "TEXT NOT NULL",
-    },
+    columns: { id: "TEXT PRIMARY KEY", key: "TEXT UNIQUE NOT NULL", name: "TEXT", machineId: "TEXT", isActive: "INTEGER DEFAULT 1", createdAt: "TEXT NOT NULL" },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
   },
   combos: {
-    columns: {
-      id: "TEXT PRIMARY KEY",
-      name: "TEXT UNIQUE NOT NULL",
-      kind: "TEXT",
-      models: "TEXT NOT NULL",
-      createdAt: "TEXT NOT NULL",
-      updatedAt: "TEXT NOT NULL",
-    },
+    columns: { id: "TEXT PRIMARY KEY", name: "TEXT UNIQUE NOT NULL", kind: "TEXT", models: "TEXT NOT NULL", createdAt: "TEXT NOT NULL", updatedAt: "TEXT NOT NULL" },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_combo_name ON combos(name)"],
   },
   kv: {
-    columns: {
-      scope: "TEXT NOT NULL",
-      key: "TEXT NOT NULL",
-      value: "TEXT NOT NULL",
-    },
+    columns: { scope: "TEXT NOT NULL", key: "TEXT NOT NULL", value: "TEXT NOT NULL" },
     primaryKey: "PRIMARY KEY (scope, key)",
     indexes: ["CREATE INDEX IF NOT EXISTS idx_kv_scope ON kv(scope)"],
   },
@@ -129,23 +84,10 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
     ],
   },
-  usageDaily: {
-    columns: {
-      dateKey: "TEXT PRIMARY KEY",
-      data: "TEXT NOT NULL",
-    },
-  },
+  usageDaily: { columns: { dateKey: "TEXT PRIMARY KEY", data: "TEXT NOT NULL" } },
   quotaCache: {
-    columns: {
-      connectionId: "TEXT PRIMARY KEY",
-      provider: "TEXT NOT NULL",
-      data: "TEXT NOT NULL",
-      cachedAt: "TEXT NOT NULL",
-    },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_qc_provider ON quotaCache(provider)",
-      "CREATE INDEX IF NOT EXISTS idx_qc_cachedAt ON quotaCache(cachedAt)",
-    ],
+    columns: { connectionId: "TEXT PRIMARY KEY", provider: "TEXT NOT NULL", data: "TEXT NOT NULL", cachedAt: "TEXT NOT NULL" },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_qc_provider ON quotaCache(provider)"],
   },
   requestDetails: {
     columns: {
@@ -187,19 +129,8 @@ export const TABLES = {
     ],
   },
   chatGoals: {
-    columns: {
-      id: "TEXT PRIMARY KEY",
-      sessionId: "TEXT NOT NULL",
-      text: "TEXT NOT NULL",
-      status: "TEXT NOT NULL",
-      iterations: "INTEGER DEFAULT 0",
-      judgeResult: "TEXT",
-      createdAt: "TEXT NOT NULL",
-      updatedAt: "TEXT NOT NULL",
-    },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_cg_session ON chatGoals(sessionId, status)",
-    ],
+    columns: { id: "TEXT PRIMARY KEY", sessionId: "TEXT NOT NULL", text: "TEXT NOT NULL", status: "TEXT NOT NULL", iterations: "INTEGER DEFAULT 0", judgeResult: "TEXT", createdAt: "TEXT NOT NULL", updatedAt: "TEXT NOT NULL" },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_cg_session ON chatGoals(sessionId, status)"],
   },
   chatMessages: {
     columns: {
@@ -218,9 +149,7 @@ export const TABLES = {
       segments: "TEXT",
       createdAt: "TEXT NOT NULL",
     },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_cm_session ON chatMessages(sessionId, createdAt)",
-    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_cm_session ON chatMessages(sessionId, createdAt)"],
   },
   chatRuns: {
     columns: {
@@ -242,13 +171,7 @@ export const TABLES = {
     ],
   },
   chatRunEvents: {
-    columns: {
-      runId: "TEXT NOT NULL",
-      seq: "INTEGER NOT NULL",
-      type: "TEXT NOT NULL",
-      data: "TEXT NOT NULL",
-      createdAt: "TEXT NOT NULL",
-    },
+    columns: { runId: "TEXT NOT NULL", seq: "INTEGER NOT NULL", type: "TEXT NOT NULL", data: "TEXT NOT NULL", createdAt: "TEXT NOT NULL" },
     primaryKey: "PRIMARY KEY (runId, seq)",
     indexes: ["CREATE INDEX IF NOT EXISTS idx_cre_run_seq ON chatRunEvents(runId, seq)"],
   },
@@ -267,19 +190,10 @@ export const TABLES = {
       finishedAt: "TEXT",
       updatedAt: "TEXT NOT NULL",
     },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_csa_run ON chatSubAgents(runId, createdAt)",
-      "CREATE INDEX IF NOT EXISTS idx_csa_session ON chatSubAgents(sessionId, createdAt DESC)",
-    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_csa_run ON chatSubAgents(runId, createdAt)", "CREATE INDEX IF NOT EXISTS idx_csa_session ON chatSubAgents(sessionId, createdAt DESC)"],
   },
   chatSubAgentEvents: {
-    columns: {
-      subAgentId: "TEXT NOT NULL",
-      seq: "INTEGER NOT NULL",
-      type: "TEXT NOT NULL",
-      data: "TEXT NOT NULL",
-      createdAt: "TEXT NOT NULL",
-    },
+    columns: { subAgentId: "TEXT NOT NULL", seq: "INTEGER NOT NULL", type: "TEXT NOT NULL", data: "TEXT NOT NULL", createdAt: "TEXT NOT NULL" },
     primaryKey: "PRIMARY KEY (subAgentId, seq)",
     indexes: ["CREATE INDEX IF NOT EXISTS idx_csae_agent_seq ON chatSubAgentEvents(subAgentId, seq)"],
   },
@@ -296,9 +210,7 @@ export const TABLES = {
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_cms_enabled ON chatMcpServers(enabled)",
-    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_cms_enabled ON chatMcpServers(enabled)"],
   },
   imageJobs: {
     columns: {
@@ -330,9 +242,7 @@ export const TABLES = {
       sourceUrl: "TEXT",
       createdAt: "TEXT NOT NULL",
     },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_ia_job ON imageAssets(jobId)",
-    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_ia_job ON imageAssets(jobId)"],
   },
   videoPromptProjects: {
     columns: {
@@ -341,6 +251,7 @@ export const TABLES = {
       prompt: "TEXT NOT NULL",
       llmModel: "TEXT",
       imageModel: "TEXT",
+      videoModel: "TEXT",
       style: "TEXT",
       targetEngine: "TEXT",
       characterDesc: "TEXT",
@@ -348,11 +259,8 @@ export const TABLES = {
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_vpp_updated ON videoPromptProjects(updatedAt DESC)",
-    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_vpp_updated ON videoPromptProjects(updatedAt DESC)"],
   },
-  // ── Knowledge Base / RAG ──
   knowledgeBases: {
     columns: {
       id: "TEXT PRIMARY KEY",
@@ -367,9 +275,7 @@ export const TABLES = {
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_kb_updated ON knowledgeBases(updatedAt DESC)",
-    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_kb_updated ON knowledgeBases(updatedAt DESC)"],
   },
   knowledgeDocuments: {
     columns: {
@@ -400,11 +306,7 @@ export const TABLES = {
       tokenCount: "INTEGER DEFAULT 0",
       createdAt: "TEXT NOT NULL",
     },
-    indexes: [
-      "CREATE INDEX IF NOT EXISTS idx_kc_kb ON knowledgeChunks(kbId)",
-      "CREATE INDEX IF NOT EXISTS idx_kc_doc ON knowledgeChunks(docId)",
-      "CREATE INDEX IF NOT EXISTS idx_kc_kb_idx ON knowledgeChunks(kbId, chunkIndex)",
-    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_kc_kb ON knowledgeChunks(kbId)", "CREATE INDEX IF NOT EXISTS idx_kc_doc ON knowledgeChunks(docId)", "CREATE INDEX IF NOT EXISTS idx_kc_kb_idx ON knowledgeChunks(kbId, chunkIndex)"],
   },
 };
 

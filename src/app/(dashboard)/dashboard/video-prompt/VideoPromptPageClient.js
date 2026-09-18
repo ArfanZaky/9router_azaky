@@ -1,19 +1,19 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import Link from "next/link";
-import { Button, ModelSelectModal } from "@/shared/components";
+import { Button, ModelSelectModal, Modal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 const STYLES = [
-  "Cinematic 35mm (Arri Alexa, natural film grain)",
-  "Photorealistic 8K Documentary",
-  "Cyberpunk Neon & Wet Reflections",
-  "Anime / Makoto Shinkai Style",
-  "Dark Moody Gothic Fantasy",
-  "Pixar 3D Animation Style",
-  "Vintage 1970s Retro Film",
-  "Surreal Dreamlike Fantasy",
+  { id: "cinematic", label: "Cinematic 35mm (Arri Alexa, natural film grain, anamorphic flare)" },
+  { id: "photo", label: "Photorealistic 8K Documentary (ultra detailed, natural lighting)" },
+  { id: "cyberpunk", label: "Cyberpunk Neon & Wet Reflections (rain, holograms, high contrast)" },
+  { id: "anime", label: "Anime / Makoto Shinkai Style (vibrant sky, emotional lighting)" },
+  { id: "gothic", label: "Dark Moody Gothic Fantasy (shadows, atmospheric haze, candlelight)" },
+  { id: "pixar", label: "3D Animation / Pixar Character Style (stylized shaders, subsurface scattering)" },
+  { id: "vintage", label: "Vintage 1970s Retro Film (Kodachrome, warm grain, lens bloom)" },
+  { id: "korean_drama", label: "K-Drama / Short Drama HD (soft glamour lighting, shallow depth of field)" },
+  { id: "surreal", label: "Surreal Dreamlike Fantasy (volumetric glow, floating particles)" },
 ];
 
 const TARGET_ENGINES = [
@@ -24,10 +24,13 @@ const TARGET_ENGINES = [
   "OpenAI Sora",
   "Hailuo Minimax Video-01",
   "xAI Grok Imagine Video",
+  "Volcengine Seedance 2.0",
   "Pika 2.0",
 ];
 
 const ASPECT_RATIOS = ["16:9", "9:16", "1:1", "2.39:1 (Anamorphic)"];
+const VIDEO_DURATIONS = [5, 6, 8, 10];
+const VIDEO_RESOLUTIONS = ["auto", "720p", "1080p"];
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -39,49 +42,78 @@ function fileToDataUrl(file) {
 }
 
 export default function VideoPromptPageClient() {
+  // Core config & auth
   const [apiKey, setApiKey] = useState("");
   const [activeProviders, setActiveProviders] = useState([]);
   const [modelAliases, setModelAliases] = useState({});
 
+  // Active Tab
+  const [activeTab, setActiveTab] = useState("story"); // 'story' | 'characters' | 'storyboard' | 'studio' | 'settings'
+
   // Model selection states
   const [llmModel, setLlmModel] = useState("");
   const [imageModel, setImageModel] = useState("");
+  const [videoModel, setVideoModel] = useState("xai/grok-imagine-video");
   const [showLlmModal, setShowLlmModal] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
+  const [showVideoModal, setShowVideoModal] = useState(false);
 
-  // Storyboard generator inputs
+  // Studio Settings & Presets
+  const [videoDuration, setVideoDuration] = useState(5);
+  const [videoAspect, setVideoAspect] = useState("16:9");
+  const [videoResolution, setVideoResolution] = useState("auto");
+  const [directorPersona, setDirectorPersona] = useState("huobao_drama");
+  const [negativePrompt, setNegativePrompt] = useState("blurry, low quality, deformed, extra limbs, watermark, text overlay");
+
+  // Storyboard Generation inputs
   const [prompt, setPrompt] = useState("");
   const [characterDesc, setCharacterDesc] = useState("");
-  const [style, setStyle] = useState(STYLES[0]);
+  const [style, setStyle] = useState(STYLES[0].label);
   const [targetEngine, setTargetEngine] = useState(TARGET_ENGINES[0]);
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [sceneCount, setSceneCount] = useState(4);
 
-  // Reference Image Upload (like /dashboard/image-gen)
+  // Reference image
   const [refImage, setRefImage] = useState("");
   const [refUrlDraft, setRefUrlDraft] = useState("");
   const [refDragging, setRefDragging] = useState(false);
   const refFileInputRef = useRef(null);
 
-  // Generation state
+  // Extracted/Custom Characters
+  const [characters, setCharacters] = useState([]);
+  const [newCharName, setNewCharName] = useState("");
+  const [newCharRole, setNewCharRole] = useState("");
+  const [newCharDesc, setNewCharDesc] = useState("");
+
+  // Storyboard Output
   const [generating, setGenerating] = useState(false);
   const [projectTitle, setProjectTitle] = useState("");
   const [characterConsistencyPrompt, setCharacterConsistencyPrompt] = useState("");
   const [scenes, setScenes] = useState([]);
   const [error, setError] = useState("");
 
-  // Projects & History
+  // Projects / History
   const [projects, setProjects] = useState([]);
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [searchHistory, setSearchHistory] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
-  // Per-scene image gen state: { [sceneNumber]: { running: bool, error: string, assetUrl: string } }
+  // Generation state tracking
   const [imageGenStates, setImageGenStates] = useState({});
   const [batchGenRunning, setBatchGenRunning] = useState(false);
+  const [videoGenStates, setVideoGenStates] = useState({});
+  const [batchVideoRunning, setBatchVideoRunning] = useState(false);
+
+  // Active scene selection for studio preview
+  const [selectedSceneIndex, setSelectedSceneIndex] = useState(0);
+
+  // Quick settings modal
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   const { copied, copy } = useCopyToClipboard(2000);
 
-  // Load initial settings & providers
+  // Load initial environment data
   useEffect(() => {
     (async () => {
       try {
@@ -161,19 +193,110 @@ export default function VideoPromptPageClient() {
     setRefUrlDraft("");
   };
 
+  const persistScenes = (nextScenes) => {
+    setScenes(nextScenes);
+    if (currentProjectId) {
+      fetch(`/api/video-prompt/projects/${currentProjectId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenes: nextScenes }),
+      })
+        .then(() => loadProjects())
+        .catch(() => {});
+    }
+  };
+
+  // Manual save project
+  const handleSaveProject = async () => {
+    if (!prompt.trim() && (!scenes || scenes.length === 0)) {
+      setError("Cannot save empty project. Please enter a prompt or generate scenes.");
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const payload = {
+        title: projectTitle || "Untitled Storyboard",
+        prompt: prompt.trim(),
+        llmModel,
+        imageModel,
+        videoModel,
+        style,
+        targetEngine,
+        characterDesc,
+        refImage: refImage || "",
+        scenes,
+      };
+
+      if (currentProjectId) {
+        await fetch(`/api/video-prompt/projects/${currentProjectId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        const res = await fetch("/api/video-prompt/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.project?.id) {
+          setCurrentProjectId(data.project.id);
+        }
+      }
+      await loadProjects();
+    } catch (e) {
+      console.error("Save error", e);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Add character
+  const handleAddCharacter = () => {
+    if (!newCharName.trim()) return;
+    const char = {
+      id: Date.now().toString(),
+      name: newCharName.trim(),
+      role: newCharRole.trim() || "Lead",
+      description: newCharDesc.trim(),
+      tags: [],
+    };
+    setCharacters([...characters, char]);
+    setNewCharName("");
+    setNewCharRole("");
+    setNewCharDesc("");
+  };
+
+  const handleDeleteCharacter = (id) => {
+    setCharacters(characters.filter((c) => c.id !== id));
+  };
+
+  // Generate Storyboard API
   const handleGenerateStoryboard = async () => {
     if (!prompt.trim()) {
-      setError("Please enter a story prompt or concept");
+      setError("Please enter a story concept or script");
       return;
     }
     if (!llmModel) {
-      setError("Please select an LLM model first");
+      setError("Please select an LLM model in settings or top bar");
       return;
     }
 
     setGenerating(true);
     setError("");
     try {
+      // Build composite character prompt
+      let combinedCharacterDesc = characterDesc.trim();
+      if (characters.length > 0) {
+        const charListStr = characters
+          .map((c) => `[${c.name} - ${c.role}]: ${c.description}`)
+          .join(" | ");
+        combinedCharacterDesc = combinedCharacterDesc
+          ? `${combinedCharacterDesc}\nStructured Characters: ${charListStr}`
+          : `Structured Characters: ${charListStr}`;
+      }
+
       const res = await fetch("/api/video-prompt/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -184,8 +307,9 @@ export default function VideoPromptPageClient() {
           sceneCount: Number(sceneCount),
           targetEngine,
           aspectRatio,
-          characterDesc: characterDesc.trim(),
+          characterDesc: combinedCharacterDesc,
           refImage: refImage || undefined,
+          directorPersona,
         }),
       });
 
@@ -194,17 +318,22 @@ export default function VideoPromptPageClient() {
         throw new Error(data.error || "Failed to generate video storyboard");
       }
 
-      setProjectTitle(data.projectTitle || "Generated Storyboard");
+      setProjectTitle(data.projectTitle || "Generated Drama Storyboard");
       setCharacterConsistencyPrompt(data.characterConsistencyPrompt || "");
       const generatedScenes = (data.scenes || []).map((s, idx) => ({
         ...s,
         sceneNumber: s.sceneNumber || idx + 1,
         imageStatus: "idle",
         imageUrl: "",
+        videoUrl: "",
+        videoStatus: "idle",
       }));
       setScenes(generatedScenes);
+      setSelectedSceneIndex(0);
 
-      // Auto save project to DB
+      // Auto switch to storyboard tab
+      setActiveTab("storyboard");
+
       const saveRes = await fetch("/api/video-prompt/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -213,9 +342,10 @@ export default function VideoPromptPageClient() {
           prompt: prompt.trim(),
           llmModel,
           imageModel,
+          videoModel,
           style,
           targetEngine,
-          characterDesc: characterDesc.trim(),
+          characterDesc: combinedCharacterDesc,
           refImage: refImage || "",
           scenes: generatedScenes,
         }),
@@ -232,779 +362,1386 @@ export default function VideoPromptPageClient() {
     }
   };
 
-  const handleGenerateSceneImage = async (scene, sceneIndex) => {
+  // Generate First-Frame Image
+  const handleGenerateImage = async (sceneIndex) => {
+    const targetScene = scenes[sceneIndex];
+    if (!targetScene) return;
+
     if (!imageModel) {
-      setError("Select an Image Model (kindFilter=image) first to generate first-frame stills");
-      return;
-    }
-    if (!apiKey) {
-      setError("No active API Key found in Endpoint & Key");
+      setError("Please select an Image Generation Model first (in Studio / Settings)");
       return;
     }
 
-    const sceneNum = scene.sceneNumber || sceneIndex + 1;
-    setImageGenStates((prev) => ({
-      ...prev,
-      [sceneNum]: { running: true, error: "", assetUrl: prev[sceneNum]?.assetUrl || "" },
-    }));
+    setImageGenStates((prev) => ({ ...prev, [sceneIndex]: { loading: true, error: "" } }));
+    setError("");
 
     try {
-      // Determine reference image: either from previous scene or user uploaded refImage
-      let imageRefToUse = "";
-      if (sceneIndex > 0) {
-        const prevScene = scenes[sceneIndex - 1];
-        const prevAssetUrl = prevScene?.imageUrl || imageGenStates[prevScene?.sceneNumber]?.assetUrl;
-        if (prevAssetUrl) {
-          imageRefToUse = prevAssetUrl.startsWith("http")
-            ? prevAssetUrl
-            : `${window.location.origin}${prevAssetUrl}`;
-        }
-      }
-      if (!imageRefToUse && refImage) {
-        imageRefToUse = refImage;
-      }
-
-      const imgPrompt = `${scene.imagePrompt}${
-        characterConsistencyPrompt ? `, Character ref: ${characterConsistencyPrompt}` : ""
-      }`;
-
-      const res = await fetch("/api/v1/images/generations", {
+      const fullPrompt = `${targetScene.imagePrompt}. Consistent Style: ${characterConsistencyPrompt || style}`;
+      const res = await fetch("/api/video-prompt/generate-image", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          prompt: fullPrompt,
           model: imageModel,
-          prompt: imgPrompt,
-          n: 1,
-          size: aspectRatio === "9:16" ? "1024x1792" : aspectRatio === "1:1" ? "1024x1024" : "1792x1024",
-          response_format: "b64_json",
-          ...(imageRefToUse ? { image: imageRefToUse, images: [imageRefToUse] } : {}),
+          aspectRatio,
+          apiKey,
         }),
       });
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data.error?.message || data.error || `HTTP ${res.status}`);
+        throw new Error(data.error || "Image generation failed");
       }
 
-      const imageItems = (Array.isArray(data.data) ? data.data : []).filter(
-        (item) => item?.b64_json || item?.url
-      );
-      if (!imageItems.length) {
-        throw new Error("Provider returned no image data");
-      }
-
-      // Save to Image Gallery Assets SQLite
-      const providerId = imageModel.includes("/") ? imageModel.split("/")[0] : "";
-      const saveRes = await fetch("/api/image-gen/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: imgPrompt,
-          model: imageModel,
-          providerId,
-          params: { sceneNumber: sceneNum, aspectRatio },
-          status: "done",
-          data: imageItems,
-        }),
-      });
-      const job = await saveRes.json().catch(() => ({}));
-      const asset = job.assets?.[0];
-      const finalUrl = asset?.path ? `/api/image-gen/assets/${asset.id}` : asset?.sourceUrl || "";
-
-      // Update scene state
-      setScenes((prev) =>
-        prev.map((s, idx) =>
-          idx === sceneIndex ? { ...s, imageUrl: finalUrl, imageStatus: "done" } : s
-        )
-      );
-      setImageGenStates((prev) => ({
-        ...prev,
-        [sceneNum]: { running: false, error: "", assetUrl: finalUrl },
-      }));
-
-      // Update project in DB if loaded
-      if (currentProjectId) {
-        const updatedScenes = scenes.map((s, idx) =>
-          idx === sceneIndex ? { ...s, imageUrl: finalUrl, imageStatus: "done" } : s
-        );
-        fetch(`/api/video-prompt/projects/${currentProjectId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scenes: updatedScenes }),
-        }).catch(() => {});
-      }
+      const nextScenes = [...scenes];
+      nextScenes[sceneIndex] = {
+        ...nextScenes[sceneIndex],
+        imageUrl: data.imageUrl,
+        imageStatus: "ready",
+      };
+      persistScenes(nextScenes);
+      setImageGenStates((prev) => ({ ...prev, [sceneIndex]: { loading: false, error: "" } }));
     } catch (err) {
       setImageGenStates((prev) => ({
         ...prev,
-        [sceneNum]: { running: false, error: err.message || "Image gen failed", assetUrl: "" },
+        [sceneIndex]: { loading: false, error: err.message },
       }));
     }
   };
 
-  const handleGenerateAllImages = async () => {
+  // Generate Video Clip
+  const handleGenerateVideo = async (sceneIndex) => {
+    const targetScene = scenes[sceneIndex];
+    if (!targetScene) return;
+
+    if (!videoModel) {
+      setError("Please select a Video Generation Model first (e.g. xai/grok-imagine-video)");
+      return;
+    }
+
+    setVideoGenStates((prev) => ({ ...prev, [sceneIndex]: { status: "submitting", error: "" } }));
+    setError("");
+
+    try {
+      const res = await fetch("/api/video-prompt/generate-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: videoModel,
+          prompt: targetScene.motionPrompt || targetScene.summary,
+          image: targetScene.imageUrl || undefined,
+          duration: videoDuration,
+          aspectRatio: videoAspect,
+          resolution: videoResolution,
+          apiKey,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Video dispatch failed");
+      }
+
+      const requestId = data.requestId;
+      const connectionId = data.connectionId;
+
+      if (!requestId && data.videoUrl) {
+        const nextScenes = [...scenes];
+        nextScenes[sceneIndex] = {
+          ...nextScenes[sceneIndex],
+          videoUrl: data.videoUrl,
+          videoStatus: "completed",
+        };
+        persistScenes(nextScenes);
+        setVideoGenStates((prev) => ({ ...prev, [sceneIndex]: { status: "completed", error: "" } }));
+        return;
+      }
+
+      setVideoGenStates((prev) => ({
+        ...prev,
+        [sceneIndex]: { status: "processing", requestId, connectionId, error: "" },
+      }));
+
+      // Poll video progress
+      const pollInterval = setInterval(async () => {
+        try {
+          const pollUrl = `/api/video-prompt/generate-video?requestId=${encodeURIComponent(
+            requestId
+          )}&apiKey=${encodeURIComponent(apiKey)}${connectionId ? `&connectionId=${encodeURIComponent(connectionId)}` : ""}`;
+
+          const pollRes = await fetch(pollUrl);
+          const pollData = await pollRes.json().catch(() => ({}));
+
+          if (pollData.status === "completed" && pollData.videoUrl) {
+            clearInterval(pollInterval);
+            const nextScenes = [...scenes];
+            nextScenes[sceneIndex] = {
+              ...nextScenes[sceneIndex],
+              videoUrl: pollData.videoUrl,
+              videoStatus: "completed",
+            };
+            persistScenes(nextScenes);
+            setVideoGenStates((prev) => ({ ...prev, [sceneIndex]: { status: "completed", error: "" } }));
+          } else if (pollData.status === "failed") {
+            clearInterval(pollInterval);
+            setVideoGenStates((prev) => ({
+              ...prev,
+              [sceneIndex]: { status: "failed", error: pollData.error || "Video rendering failed" },
+            }));
+          }
+        } catch (pollErr) {
+          console.error("Poll error", pollErr);
+        }
+      }, 4000);
+    } catch (err) {
+      setVideoGenStates((prev) => ({
+        ...prev,
+        [sceneIndex]: { status: "failed", error: err.message },
+      }));
+    }
+  };
+
+  // Batch Image Gen
+  const handleBatchGenerateImages = async () => {
     if (!imageModel) {
       setError("Please select an Image Model first");
       return;
     }
     setBatchGenRunning(true);
-    setError("");
     for (let i = 0; i < scenes.length; i++) {
-      await handleGenerateSceneImage(scenes[i], i);
+      if (!scenes[i].imageUrl) {
+        await handleGenerateImage(i);
+      }
     }
     setBatchGenRunning(false);
   };
 
-  const handleUpdateSceneField = (index, field, value) => {
-    setScenes((prev) =>
-      prev.map((s, idx) => (idx === index ? { ...s, [field]: value } : s))
-    );
+  // Batch Video Gen
+  const handleBatchGenerateVideos = async () => {
+    if (!videoModel) {
+      setError("Please select a Video Model first");
+      return;
+    }
+    setBatchVideoRunning(true);
+    for (let i = 0; i < scenes.length; i++) {
+      if (!scenes[i].videoUrl) {
+        await handleGenerateVideo(i);
+      }
+    }
+    setBatchVideoRunning(false);
   };
 
-  const handleLoadProject = (proj) => {
-    setCurrentProjectId(proj.id);
-    setProjectTitle(proj.title || "");
-    setPrompt(proj.prompt || "");
-    if (proj.llmModel) setLlmModel(proj.llmModel);
-    if (proj.imageModel) setImageModel(proj.imageModel);
-    if (proj.style) setStyle(proj.style);
-    if (proj.targetEngine) setTargetEngine(proj.targetEngine);
-    if (proj.characterDesc) setCharacterDesc(proj.characterDesc);
-    if (proj.refImage) setRefImage(proj.refImage);
-    setScenes(proj.scenes || []);
+  // Load project from history
+  const handleSelectProject = async (p) => {
+    setCurrentProjectId(p.id);
+    setProjectTitle(p.title || "");
+    setPrompt(p.prompt || "");
+    setLlmModel(p.llmModel || "");
+    setImageModel(p.imageModel || "");
+    setVideoModel(p.videoModel || "xai/grok-imagine-video");
+    setStyle(p.style || STYLES[0].label);
+    setTargetEngine(p.targetEngine || TARGET_ENGINES[0]);
+    setCharacterDesc(p.characterDesc || "");
+    setRefImage(p.refImage || "");
+    setScenes(p.scenes || []);
     setHistoryOpen(false);
   };
 
-  const handleDeleteProject = async (projId, e) => {
-    e?.stopPropagation();
+  const handleDeleteProject = async (e, id) => {
+    e.stopPropagation();
+    if (!confirm("Are you sure you want to delete this storyboard project?")) return;
     try {
-      await fetch(`/api/video-prompt/projects/${projId}`, { method: "DELETE" });
-      setProjects((prev) => prev.filter((p) => p.id !== projId));
-      if (currentProjectId === projId) {
+      await fetch(`/api/video-prompt/projects/${id}`, { method: "DELETE" });
+      await loadProjects();
+      if (currentProjectId === id) {
         setCurrentProjectId(null);
+        setScenes([]);
+        setProjectTitle("");
       }
     } catch (err) {
       console.error(err);
     }
   };
 
-  const getFullMarkdownExport = () => {
-    let md = `# ${projectTitle || "Video Storyboard"}\n\n`;
-    md += `**Style:** ${style}  \n`;
-    md += `**Target Engine:** ${targetEngine}  \n`;
-    md += `**Aspect Ratio:** ${aspectRatio}  \n`;
+  // Format full exported script/prompts
+  const exportFullScript = () => {
+    let output = `# ${projectTitle || "Huobao Short Drama Storyboard"}\n\n`;
+    output += `**Visual Style:** ${style}\n`;
+    output += `**Target Engine:** ${targetEngine}\n`;
+    output += `**Aspect Ratio:** ${aspectRatio}\n`;
     if (characterConsistencyPrompt) {
-      md += `**Character Consistency Anchor:** ${characterConsistencyPrompt}\n\n`;
+      output += `\n### Character Consistency Prompt\n${characterConsistencyPrompt}\n`;
     }
-    md += `---\n\n`;
+    output += `\n---\n\n## Scene Breakdown\n\n`;
 
-    scenes.forEach((s) => {
-      md += `### Scene ${s.sceneNumber} (${s.timecode || "00:00 - 00:05"})\n`;
-      md += `**Summary:** ${s.summary || ""}\n\n`;
-      md += `**Combined Motion Prompt (Production Text):**\n\`\`\`\n${s.motionPrompt}\n\`\`\`\n\n`;
-      md += `**First-Frame Image Prompt:**\n\`\`\`\n${s.imagePrompt}\n\`\`\`\n\n`;
-      md += `- **Camera:** ${s.camera || "-"}\n`;
-      md += `- **Lighting:** ${s.lighting || "-"}\n`;
-      md += `- **SFX:** ${s.audioSfx || "-"}\n`;
-      if (s.voiceover) md += `- **Voiceover:** "${s.voiceover}"\n`;
-      md += `\n---\n\n`;
+    scenes.forEach((s, idx) => {
+      output += `### Scene ${s.sceneNumber || idx + 1} (${s.timecode || "00:00"})\n`;
+      output += `**Action Summary:** ${s.summary}\n\n`;
+      output += `**First Frame Prompt (Image):**\n\`\`\`\n${s.imagePrompt}\n\`\`\`\n\n`;
+      output += `**Video Motion Prompt:**\n\`\`\`\n${s.motionPrompt}\n\`\`\`\n\n`;
+      if (s.camera) output += `- **Camera:** ${s.camera}\n`;
+      if (s.lighting) output += `- **Lighting:** ${s.lighting}\n`;
+      if (s.audioSfx) output += `- **Audio/SFX:** ${s.audioSfx}\n`;
+      if (s.voiceover) output += `- **Dialogue/VO:** ${s.voiceover}\n`;
+      output += `\n---\n\n`;
     });
 
-    return md;
+    return output;
   };
 
+  const filteredProjects = useMemo(() => {
+    if (!searchHistory.trim()) return projects;
+    const q = searchHistory.toLowerCase();
+    return projects.filter(
+      (p) =>
+        (p.title && p.title.toLowerCase().includes(q)) ||
+        (p.prompt && p.prompt.toLowerCase().includes(q))
+    );
+  }, [projects, searchHistory]);
+
+  const activeScene = scenes[selectedSceneIndex] || scenes[0];
+
   return (
-    <div className="flex flex-1 min-h-0 h-full w-full overflow-hidden bg-background text-text-main">
-      {/* Left Sidebar: Controls & Generator Form */}
-      <aside className="w-full max-w-md shrink-0 border-r border-border overflow-y-auto custom-scrollbar p-4 space-y-4">
-        <div className="flex items-center justify-between">
+    <div className="flex flex-1 flex-col min-h-0 h-full w-full overflow-hidden bg-background text-text-main">
+      {/* Top Navigation Bar: Huobao Drama Pipeline Tabs & Actions */}
+      <header className="h-14 border-b border-border bg-card/60 backdrop-blur-sm px-4 flex items-center justify-between shrink-0 z-10">
+        <div className="flex items-center gap-3">
+          <div className="h-8 w-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary font-bold">
+            <span className="material-symbols-outlined text-[20px]">movie_filter</span>
+          </div>
           <div>
-            <h1 className="text-lg font-semibold flex items-center gap-2">
-              <span className="material-symbols-outlined text-primary">movie_edit</span>
-              Video Storyboard Gen
-            </h1>
-            <p className="text-xs text-text-muted mt-0.5">
-              Scene-by-scene prompt generator with first-frame image sync
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-semibold tracking-tight">Huobao Video Drama Studio</h1>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/15 text-primary border border-primary/25">
+                Pipeline 3.0
+              </span>
+            </div>
+            <p className="text-[11px] text-text-muted truncate max-w-[280px]">
+              {projectTitle || "Script → Character → Storyboard → Video Production"}
             </p>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            icon="history"
-            onClick={() => setHistoryOpen(!historyOpen)}
-            title="Saved Storyboards"
-          >
-            History
-          </Button>
         </div>
 
-        {/* History Drawer / Panel */}
-        {historyOpen && (
-          <div className="rounded-xl border border-border bg-sidebar/50 p-3 space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-            <div className="flex items-center justify-between text-xs font-semibold text-text-muted">
-              <span>Saved Storyboards ({projects.length})</span>
-              <button
-                type="button"
-                className="text-[11px] hover:text-primary"
-                onClick={() => setHistoryOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-            {projects.length === 0 ? (
-              <p className="text-xs text-text-muted">No saved projects yet</p>
-            ) : (
-              projects.map((p) => (
-                <div
-                  key={p.id}
-                  onClick={() => handleLoadProject(p)}
-                  className={`flex items-center justify-between p-2 rounded-lg text-xs cursor-pointer transition ${
-                    currentProjectId === p.id
-                      ? "bg-primary/20 text-primary border border-primary/30"
-                      : "hover:bg-sidebar border border-transparent"
-                  }`}
-                >
-                  <div className="min-w-0 flex-1 pr-2">
-                    <p className="font-semibold truncate">{p.title}</p>
-                    <p className="text-[10px] text-text-muted truncate">
-                      {p.scenes?.length || 0} scenes · {p.style}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => handleDeleteProject(p.id, e)}
-                    className="material-symbols-outlined text-[15px] text-text-muted hover:text-red-500"
-                    title="Delete"
-                  >
-                    delete
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-
-        {/* Dual Model Selectors */}
-        <div className="space-y-2">
-          {/* 1. LLM Model */}
-          <div>
-            <label className="block text-xs font-medium text-text-muted mb-1">
-              1. Storyboard Director LLM Model
-            </label>
-            <button
-              type="button"
-              onClick={() => setShowLlmModal(true)}
-              className="w-full flex items-center justify-between rounded-xl border border-border bg-sidebar/50 px-3 py-2.5 text-left hover:bg-sidebar transition"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="material-symbols-outlined text-primary text-[20px]">smart_toy</span>
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-semibold">{llmModel || "Select Storyboard LLM"}</p>
-                  <p className="text-[10px] text-text-muted">Claude 3.7 / GPT-4o / DeepSeek / Gemini</p>
-                </div>
-              </div>
-              <span className="material-symbols-outlined text-[16px] text-text-muted">expand_more</span>
-            </button>
-          </div>
-
-          {/* 2. Image Model */}
-          <div>
-            <label className="block text-xs font-medium text-text-muted mb-1">
-              2. First-Frame Image Model
-            </label>
-            <button
-              type="button"
-              onClick={() => setShowImageModal(true)}
-              className="w-full flex items-center justify-between rounded-xl border border-border bg-sidebar/50 px-3 py-2.5 text-left hover:bg-sidebar transition"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="material-symbols-outlined text-amber-500 text-[20px]">image</span>
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-semibold">{imageModel || "Select Image Generator"}</p>
-                  <p className="text-[10px] text-text-muted">DALL-E 3 / FLUX.1 / SD / Imagen</p>
-                </div>
-              </div>
-              <span className="material-symbols-outlined text-[16px] text-text-muted">expand_more</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Story Concept / Prompt Textarea */}
-        <label className="block space-y-1.5">
-          <span className="text-xs font-medium text-text-muted">Story Concept / Script</span>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={4}
-            placeholder="Describe your video story, scene idea, or full script..."
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary resize-y min-h-[90px]"
-          />
-        </label>
-
-        {/* Reference Image Upload (Visual Concept / Character Ref) */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-medium text-text-muted">Concept / Character Reference Image (Optional)</span>
-            {refImage ? (
-              <button type="button" onClick={clearRefImage} className="text-[11px] text-red-500 hover:underline">
-                Remove
-              </button>
-            ) : null}
-          </div>
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setRefDragging(true);
-            }}
-            onDragLeave={() => setRefDragging(false)}
-            onDrop={handleRefDrop}
-            className={`rounded-xl border border-dashed p-3 transition ${
-              refDragging
-                ? "border-primary bg-primary/10"
-                : refImage
-                  ? "border-border bg-sidebar/40"
-                  : "border-border hover:border-primary/50 hover:bg-sidebar/30"
+        {/* Workflow Tabs */}
+        <div className="hidden md:flex items-center bg-muted/60 p-1 rounded-lg border border-border/80">
+          <button
+            onClick={() => setActiveTab("story")}
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition-all ${
+              activeTab === "story"
+                ? "bg-card text-text-main shadow-xs border border-border"
+                : "text-text-muted hover:text-text-main"
             }`}
           >
-            {refImage ? (
-              <div className="flex items-start gap-3">
-                <img
-                  src={refImage}
-                  alt="Reference"
-                  className="h-20 w-20 shrink-0 rounded-lg border border-border object-cover bg-black/10"
-                />
-                <div className="min-w-0 flex-1 space-y-1.5">
-                  <p className="text-[11px] text-text-muted">
-                    Reference image attached for vision analysis & scene-1 visual anchor.
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
+            <span className="material-symbols-outlined text-[16px]">menu_book</span>
+            1. Script & Story
+          </button>
+          <button
+            onClick={() => setActiveTab("characters")}
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition-all ${
+              activeTab === "characters"
+                ? "bg-card text-text-main shadow-xs border border-border"
+                : "text-text-muted hover:text-text-main"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">groups</span>
+            2. Characters ({characters.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("storyboard")}
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition-all ${
+              activeTab === "storyboard"
+                ? "bg-card text-text-main shadow-xs border border-border"
+                : "text-text-muted hover:text-text-main"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">grid_view</span>
+            3. Storyboard ({scenes.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("studio")}
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition-all ${
+              activeTab === "studio"
+                ? "bg-card text-text-main shadow-xs border border-border"
+                : "text-text-muted hover:text-text-main"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">videocam</span>
+            4. Video Studio
+          </button>
+          <button
+            onClick={() => setActiveTab("settings")}
+            className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-md transition-all ${
+              activeTab === "settings"
+                ? "bg-card text-text-main shadow-xs border border-border"
+                : "text-text-muted hover:text-text-main"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[16px]">tune</span>
+            5. Settings GUI
+          </button>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2">
+          {(scenes.length > 0 || prompt.trim()) && (
+            <Button
+              variant="outline"
+              size="sm"
+              icon="save"
+              loading={isSaving}
+              onClick={handleSaveProject}
+              className="text-xs"
+              title="Save project"
+            >
+              Save
+            </Button>
+          )}
+
+          {scenes.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              icon={copied ? "check" : "content_copy"}
+              onClick={() => copy(exportFullScript())}
+              className="text-xs"
+            >
+              {copied ? "Copied Script" : "Export Script"}
+            </Button>
+          )}
+
+          <Button
+            variant={historyOpen ? "primary" : "ghost"}
+            size="sm"
+            icon="history"
+            onClick={() => {
+              setHistoryOpen(!historyOpen);
+              loadProjects();
+            }}
+            className="text-xs"
+            title="Saved Storyboards"
+          >
+            History ({projects.length})
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            icon="tune"
+            onClick={() => setShowSettingsModal(true)}
+            className="text-xs"
+            title="Configure Models"
+          >
+            Model GUI
+          </Button>
+        </div>
+      </header>
+
+      {/* Main Workspace Area */}
+      <div className="flex flex-1 min-h-0 h-full overflow-hidden relative">
+        {/* TAB 1: SCRIPT & STORY INPUT */}
+        {activeTab === "story" && (
+          <div className="flex-1 flex overflow-y-auto custom-scrollbar p-6 justify-center">
+            <div className="max-w-4xl w-full space-y-6">
+              {/* Header card */}
+              <div className="p-5 rounded-xl bg-card border border-border/80 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-primary">auto_fix_high</span>
+                    <h2 className="text-base font-semibold">Short Drama Script & Concept</h2>
+                  </div>
+                  <span className="text-xs text-text-muted">Step 1: Input raw novel / story arc</span>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-text-muted">
+                    Story Concept / Novel Excerpt / Drama Outline *
+                  </label>
+                  <textarea
+                    rows={6}
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="Enter your novel excerpt, short drama script, or storyline here... e.g.: A high-stakes corporate betrayal in Neo Tokyo where a rookie detective uncovers a conspiracy connecting the CEO with underground cybernetic syndicates."
+                    className="w-full text-sm bg-muted/40 border border-border rounded-lg p-3 outline-none focus:border-primary transition-colors resize-y placeholder:text-text-muted/60"
+                  />
+                </div>
+
+                {/* Main Settings Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                  {/* Style selector */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-text-muted flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[15px]">palette</span> Visual Style Preset
+                    </label>
+                    <select
+                      value={style}
+                      onChange={(e) => setStyle(e.target.value)}
+                      className="w-full text-xs bg-muted/50 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary cursor-pointer text-text-main"
+                    >
+                      {STYLES.map((s) => (
+                        <option key={s.id} value={s.label}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Target Video Platform */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-text-muted flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[15px]">smart_display</span> Target Video Engine
+                    </label>
+                    <select
+                      value={targetEngine}
+                      onChange={(e) => setTargetEngine(e.target.value)}
+                      className="w-full text-xs bg-muted/50 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary cursor-pointer text-text-main"
+                    >
+                      {TARGET_ENGINES.map((eng) => (
+                        <option key={eng} value={eng}>
+                          {eng}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Scene Count */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-text-muted flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[15px]">movie</span> Scene Count ({sceneCount} shots)
+                    </label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min="2"
+                        max="12"
+                        value={sceneCount}
+                        onChange={(e) => setSceneCount(Number(e.target.value))}
+                        className="flex-1 accent-primary cursor-pointer"
+                      />
+                      <span className="text-xs font-semibold px-2 py-1 bg-muted rounded border border-border w-10 text-center">
+                        {sceneCount}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Aspect Ratio */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-text-muted flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[15px]">aspect_ratio</span> Aspect Ratio
+                    </label>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {ASPECT_RATIOS.map((ratio) => (
+                        <button
+                          key={ratio}
+                          type="button"
+                          onClick={() => setAspectRatio(ratio)}
+                          className={`px-2 py-1.5 text-xs rounded-md border font-medium transition-colors ${
+                            aspectRatio === ratio
+                              ? "bg-primary text-white border-primary"
+                              : "bg-muted/40 border-border hover:bg-muted"
+                          }`}
+                        >
+                          {ratio}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Reference Portrait / Visual anchor */}
+                <div className="space-y-2 pt-2 border-t border-border/60">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-text-muted flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[15px]">face</span> Reference Character / Keyframe Image
+                    </label>
+                    {refImage && (
+                      <button
+                        onClick={clearRefImage}
+                        className="text-[11px] text-destructive hover:underline flex items-center gap-1"
+                      >
+                        <span className="material-symbols-outlined text-[13px]">delete</span> Clear Image
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col md:flex-row gap-4 items-center">
+                    <div
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        setRefDragging(true);
+                      }}
+                      onDragLeave={() => setRefDragging(false)}
+                      onDrop={handleRefDrop}
                       onClick={() => refFileInputRef.current?.click()}
-                      className="rounded-lg border border-border px-2.5 py-1 text-[10px] hover:bg-sidebar"
+                      className={`flex-1 w-full h-24 border-2 border-dashed rounded-lg flex items-center justify-center p-3 cursor-pointer transition-colors ${
+                        refDragging
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:border-primary/50 bg-muted/20"
+                      }`}
                     >
-                      Replace
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearRefImage}
-                      className="rounded-lg border border-border px-2.5 py-1 text-[10px] text-red-500 hover:bg-sidebar"
-                    >
-                      Clear
-                    </button>
+                      <input
+                        ref={refFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleRefFile}
+                        className="hidden"
+                      />
+                      <div className="text-center">
+                        <span className="material-symbols-outlined text-text-muted text-[24px]">cloud_upload</span>
+                        <p className="text-xs text-text-muted mt-1">
+                          Drag & drop reference face / keyframe image, or click to upload
+                        </p>
+                      </div>
+                    </div>
+
+                    {refImage && (
+                      <div className="relative h-24 w-24 rounded-lg overflow-hidden border border-border bg-black/40 shrink-0">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={refImage} alt="Ref preview" className="w-full h-full object-cover" />
+                      </div>
+                    )}
                   </div>
                 </div>
+
+                {/* Action CTA */}
+                <div className="pt-4 flex items-center justify-between border-t border-border/60">
+                  <div className="text-xs text-text-muted">
+                    Active LLM: <span className="text-primary font-medium">{llmModel || "None (Select below)"}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowLlmModal(true)}
+                    >
+                      Change LLM Model
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="md"
+                      icon="auto_fix_high"
+                      loading={generating}
+                      onClick={handleGenerateStoryboard}
+                      disabled={generating}
+                    >
+                      Generate Storyboard Pipeline
+                    </Button>
+                  </div>
+                </div>
+
+                {error && (
+                  <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center gap-2">
+                    <span className="material-symbols-outlined text-[16px]">error</span>
+                    <span>{error}</span>
+                  </div>
+                )}
               </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => refFileInputRef.current?.click()}
-                className="w-full text-left"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="material-symbols-outlined text-[26px] text-primary">add_photo_alternate</span>
-                  <div>
-                    <p className="text-xs font-medium">Drop character/scene image or click to upload</p>
-                    <p className="text-[10px] text-text-muted mt-0.5">
-                      PNG/JPG/WebP · used as visual reference for storyboard & first still
-                    </p>
-                  </div>
-                </div>
-              </button>
-            )}
-            <input
-              ref={refFileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleRefFile}
-            />
-          </div>
-          <div className="flex gap-2">
-            <input
-              value={refUrlDraft}
-              onChange={(e) => setRefUrlDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  applyRefUrl();
-                }
-              }}
-              placeholder="Or paste reference image URL…"
-              className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:border-primary"
-            />
-            <button
-              type="button"
-              onClick={applyRefUrl}
-              disabled={!refUrlDraft.trim()}
-              className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:bg-sidebar disabled:opacity-40"
-            >
-              Use URL
-            </button>
-          </div>
-        </div>
-
-        {/* Character Consistency Anchor Text */}
-        <label className="block space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-text-muted">Consistent Character Anchor (Optional)</span>
-            <span className="text-[10px] text-primary">Keeps face/outfit across scenes</span>
-          </div>
-          <input
-            value={characterDesc}
-            onChange={(e) => setCharacterDesc(e.target.value)}
-            placeholder="e.g. 28yo Asian cyber-detective with neon blue hair, wearing leather trench coat"
-            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-xs outline-none focus:border-primary"
-          />
-        </label>
-
-        {/* Target Engine & Style Presets */}
-        <div className="grid grid-cols-2 gap-2">
-          <label className="text-xs text-text-muted space-y-1">
-            <span>Target AI Platform</span>
-            <select
-              value={targetEngine}
-              onChange={(e) => setTargetEngine(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-text-main"
-            >
-              {TARGET_ENGINES.map((e) => (
-                <option key={e} value={e}>
-                  {e}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="text-xs text-text-muted space-y-1">
-            <span>Visual Style</span>
-            <select
-              value={style}
-              onChange={(e) => setStyle(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-text-main"
-            >
-              {STYLES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        {/* Aspect Ratio & Scene Count */}
-        <div className="grid grid-cols-2 gap-2">
-          <label className="text-xs text-text-muted space-y-1">
-            <span>Aspect Ratio</span>
-            <select
-              value={aspectRatio}
-              onChange={(e) => setAspectRatio(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-text-main"
-            >
-              {ASPECT_RATIOS.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="text-xs text-text-muted space-y-1">
-            <span>Scene Count</span>
-            <input
-              type="number"
-              min={2}
-              max={12}
-              value={sceneCount}
-              onChange={(e) => setSceneCount(Math.min(12, Math.max(2, Number(e.target.value) || 4)))}
-              className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-text-main"
-            />
-          </label>
-        </div>
-
-        {error && (
-          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">
-            {error}
+            </div>
           </div>
         )}
 
-        <Button
-          className="w-full"
-          icon={generating ? "progress_activity" : "auto_awesome"}
-          onClick={handleGenerateStoryboard}
-          disabled={generating || !prompt.trim() || !llmModel}
-        >
-          {generating ? "Generating Storyboard Scenes…" : "Generate Video Storyboard"}
-        </Button>
-      </aside>
-
-      {/* Main Board: Storyboard Scenes Grid & Stills */}
-      <section className="flex-1 min-w-0 flex flex-col overflow-hidden">
-        {/* Top Header Bar */}
-        <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-3.5 bg-sidebar/20">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold truncate">
-              {projectTitle || "Generated Storyboard Board"}
-            </h2>
-            <p className="text-[11px] text-text-muted truncate">
-              {scenes.length} Scenes · Output formatted as unified production text prompts
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {scenes.length > 0 && (
-              <>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon="copy_all"
-                  onClick={() => copy(getFullMarkdownExport())}
-                >
-                  {copied ? "✓ Copied Storyboard" : "Copy Full Markdown"}
-                </Button>
-
-                <Button
-                  size="sm"
-                  variant="primary"
-                  icon={batchGenRunning ? "progress_activity" : "photo_library"}
-                  onClick={handleGenerateAllImages}
-                  disabled={batchGenRunning || !imageModel || !apiKey}
-                  title="Generate first-frame stills for all scenes sequentially"
-                >
-                  {batchGenRunning ? "Generating All Images…" : "Generate All Scene Images"}
-                </Button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Scenes Container */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
-          {scenes.length === 0 ? (
-            <div className="flex min-h-[60vh] flex-col items-center justify-center text-center gap-3">
-              <div className="size-16 rounded-2xl bg-primary/10 text-primary flex items-center justify-center">
-                <span className="material-symbols-outlined text-[36px]">video_library</span>
-              </div>
-              <h3 className="text-base font-semibold">No Storyboard Scenes Generated Yet</h3>
-              <p className="text-xs text-text-muted max-w-md">
-                Enter your story concept on the left, optionally upload reference image, select your Director LLM & Image Model, then click Generate to create consistent character storyboard scenes.
-              </p>
-            </div>
-          ) : (
-            <>
-              {characterConsistencyPrompt && (
-                <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 flex items-start gap-3">
-                  <span className="material-symbols-outlined text-primary text-[20px] mt-0.5">
-                    person_check
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold text-primary">Character Consistency Anchor</p>
-                    <p className="text-xs text-text-muted mt-0.5">{characterConsistencyPrompt}</p>
+        {/* TAB 2: CHARACTERS & ASSETS */}
+        {activeTab === "characters" && (
+          <div className="flex-1 flex overflow-y-auto custom-scrollbar p-6 justify-center">
+            <div className="max-w-4xl w-full space-y-6">
+              <div className="p-5 rounded-xl bg-card border border-border shadow-sm space-y-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-base font-semibold flex items-center gap-2">
+                      <span className="material-symbols-outlined text-primary">groups</span>
+                      Character & Asset Extractor
+                    </h2>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Define persistent visual traits, wardrobe, and actor seeds across shots
+                    </p>
                   </div>
-                  <button
-                    type="button"
-                    className="material-symbols-outlined text-[16px] text-text-muted hover:text-primary"
-                    onClick={() => copy(characterConsistencyPrompt)}
-                    title="Copy anchor"
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    icon="add"
+                    onClick={handleAddCharacter}
                   >
-                    content_copy
-                  </button>
+                    Add Character
+                  </Button>
                 </div>
-              )}
 
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                {scenes.map((scene, idx) => {
-                  const sceneNum = scene.sceneNumber || idx + 1;
-                  const imgState = imageGenStates[sceneNum] || {};
-                  const currentImgUrl = scene.imageUrl || imgState.assetUrl;
-                  const isImgRunning = imgState.running;
+                {/* Add new character form */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-3.5 rounded-lg bg-muted/40 border border-border">
+                  <div>
+                    <label className="text-[11px] font-medium text-text-muted">Character Name</label>
+                    <input
+                      type="text"
+                      value={newCharName}
+                      onChange={(e) => setNewCharName(e.target.value)}
+                      placeholder="e.g. Jack Vance"
+                      className="w-full mt-1 text-xs bg-card border border-border rounded px-2.5 py-1.5 outline-none focus:border-primary"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-text-muted">Role / Archetype</label>
+                    <input
+                      type="text"
+                      value={newCharRole}
+                      onChange={(e) => setNewCharRole(e.target.value)}
+                      placeholder="e.g. Cybernetic Detective"
+                      className="w-full mt-1 text-xs bg-card border border-border rounded px-2.5 py-1.5 outline-none focus:border-primary"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-medium text-text-muted">Visual Description / Wardrobe</label>
+                    <input
+                      type="text"
+                      value={newCharDesc}
+                      onChange={(e) => setNewCharDesc(e.target.value)}
+                      placeholder="e.g. 35yo, worn brown trench coat, glowing blue cybernetic eye"
+                      className="w-full mt-1 text-xs bg-card border border-border rounded px-2.5 py-1.5 outline-none focus:border-primary"
+                    />
+                  </div>
+                </div>
 
-                  return (
-                    <div
-                      key={sceneNum}
-                      className="rounded-2xl border border-border bg-sidebar/30 overflow-hidden flex flex-col shadow-sm"
-                    >
-                      {/* Scene Header */}
-                      <div className="flex items-center justify-between border-b border-border px-4 py-2.5 bg-sidebar/50">
-                        <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded-md bg-primary text-white text-[11px] font-bold">
-                            Scene {sceneNum}
-                          </span>
-                          <span className="text-xs font-medium text-text-muted">
-                            {scene.timecode || `00:${String((idx * 5)).padStart(2, '0')} - 00:${String((idx + 1) * 5).padStart(2, '0')}`}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
+                {/* Character List Grid */}
+                <div className="space-y-3">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                    Active Cast & Consistency Anchors ({characters.length})
+                  </h3>
+
+                  {characters.length === 0 ? (
+                    <div className="text-center py-8 border border-dashed border-border rounded-xl text-text-muted text-xs">
+                      <span className="material-symbols-outlined text-[32px] mb-2 opacity-50">person_search</span>
+                      <p>No custom characters defined yet.</p>
+                      <p className="text-[11px] mt-1 text-text-muted/70">
+                        Add key characters above or let the Storyboard Generator extract them automatically.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {characters.map((char) => (
+                        <div
+                          key={char.id}
+                          className="p-4 rounded-lg bg-muted/20 border border-border/80 hover:border-primary/50 transition-colors space-y-2 relative group"
+                        >
                           <button
-                            type="button"
-                            className="p-1 rounded hover:bg-sidebar text-text-muted hover:text-primary transition"
-                            onClick={() => copy(scene.motionPrompt)}
-                            title="Copy Combined Motion Prompt"
+                            onClick={() => handleDeleteCharacter(char.id)}
+                            className="absolute top-3 right-3 text-text-muted hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Delete character"
                           >
-                            <span className="material-symbols-outlined text-[16px]">content_copy</span>
+                            <span className="material-symbols-outlined text-[16px]">close</span>
                           </button>
-                        </div>
-                      </div>
-
-                      <div className="p-4 space-y-4 flex-1 flex flex-col">
-                        {/* Summary */}
-                        <div className="text-xs font-medium text-text-main bg-background/60 p-2.5 rounded-lg border border-border/50">
-                          {scene.summary}
-                        </div>
-
-                        {/* First-Frame Image Preview & Generation */}
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between text-xs font-medium text-text-muted">
-                            <span>First-Frame Still</span>
-                            {idx > 0 ? (
-                              <span className="text-[10px] text-amber-500 font-normal">
-                                🔗 Ref: Scene {idx} Still
-                              </span>
-                            ) : refImage ? (
-                              <span className="text-[10px] text-primary font-normal">
-                                🖼️ Ref: Concept Upload
-                              </span>
-                            ) : null}
-                          </div>
-
-                          <div className="relative aspect-video rounded-xl border border-border bg-black/20 overflow-hidden flex items-center justify-center group">
-                            {currentImgUrl ? (
-                              <img
-                                src={currentImgUrl}
-                                alt={`Scene ${sceneNum}`}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="flex flex-col items-center justify-center text-text-muted text-xs gap-1">
-                                <span className="material-symbols-outlined text-[28px]">image</span>
-                                <span>No initial frame yet</span>
-                              </div>
-                            )}
-
-                            {isImgRunning && (
-                              <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center text-white text-xs gap-2">
-                                <span className="material-symbols-outlined text-[28px] animate-spin">
-                                  progress_activity
-                                </span>
-                                <span>Generating still...</span>
-                              </div>
-                            )}
-
-                            <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                icon={isImgRunning ? "progress_activity" : "auto_awesome"}
-                                onClick={() => handleGenerateSceneImage(scene, idx)}
-                                disabled={isImgRunning || !imageModel || !apiKey}
-                              >
-                                {currentImgUrl ? "Regenerate Still" : "Generate Still"}
-                              </Button>
+                          <div className="flex items-center gap-2">
+                            <div className="h-7 w-7 rounded-full bg-primary/20 text-primary flex items-center justify-center font-bold text-xs">
+                              {char.name[0]?.toUpperCase()}
+                            </div>
+                            <div>
+                              <h4 className="text-xs font-semibold">{char.name}</h4>
+                              <span className="text-[10px] text-primary">{char.role}</span>
                             </div>
                           </div>
-                          {imgState.error && (
-                            <p className="text-[11px] text-red-500">{imgState.error}</p>
+                          <p className="text-xs text-text-muted line-clamp-3">{char.description || "No visual details specified."}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Global Character Consistency Prompt */}
+                <div className="space-y-2 pt-4 border-t border-border/60">
+                  <label className="text-xs font-medium text-text-muted flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[15px]">lock_reset</span> Global Character Consistency Rules
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={characterConsistencyPrompt}
+                    onChange={(e) => setCharacterConsistencyPrompt(e.target.value)}
+                    placeholder="Global prompt injected into every scene to maintain visual style, actor facial features, lighting, and wardrobe..."
+                    className="w-full text-xs bg-muted/40 border border-border rounded-lg p-2.5 outline-none focus:border-primary"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: STORYBOARD BREAKDOWN (SCENE LIST & DETAILS) */}
+        {activeTab === "storyboard" && (
+          <div className="flex-1 flex overflow-hidden">
+            {/* Storyboard List & Grid */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
+              <div className="flex items-center justify-between pb-2 border-b border-border">
+                <div>
+                  <h2 className="text-base font-semibold flex items-center gap-2">
+                    <span className="material-symbols-outlined text-primary">grid_view</span>
+                    {projectTitle || "Generated Storyboard Scenes"}
+                  </h2>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    {scenes.length} Shots • Style: {style} • Target: {targetEngine}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    icon="image"
+                    onClick={handleBatchGenerateImages}
+                    loading={batchGenRunning}
+                    disabled={batchGenRunning || scenes.length === 0}
+                  >
+                    Batch Gen Images
+                  </Button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    icon="movie"
+                    onClick={handleBatchGenerateVideos}
+                    loading={batchVideoRunning}
+                    disabled={batchVideoRunning || scenes.length === 0}
+                  >
+                    Batch Gen Videos
+                  </Button>
+                </div>
+              </div>
+
+              {scenes.length === 0 ? (
+                <div className="text-center py-16 border border-dashed border-border rounded-xl text-text-muted text-xs">
+                  <span className="material-symbols-outlined text-[40px] mb-2 opacity-40">movie_edit</span>
+                  <p className="text-sm font-medium">No Storyboard Generated Yet</p>
+                  <p className="text-xs mt-1 text-text-muted/70 max-w-sm mx-auto">
+                    Go to Tab 1 (Script & Story), enter your story outline, and click Generate Storyboard.
+                  </p>
+                  <div className="mt-4">
+                    <Button variant="primary" size="sm" onClick={() => setActiveTab("story")}>
+                      Go to Story Input
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-4">
+                  {scenes.map((scene, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => {
+                        setSelectedSceneIndex(idx);
+                        setActiveTab("studio");
+                      }}
+                      className={`p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+                        selectedSceneIndex === idx
+                          ? "bg-card border-primary/60 shadow-md ring-1 ring-primary/30"
+                          : "bg-card/70 border-border/80 hover:border-primary/40 hover:bg-card"
+                      }`}
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-primary/10 text-primary border border-primary/20">
+                              Shot #{scene.sceneNumber || idx + 1}
+                            </span>
+                            <span className="text-[11px] text-text-muted">{scene.timecode || `00:${idx * 5}s`}</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {scene.imageUrl && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] bg-emerald-500/15 text-emerald-500 border border-emerald-500/20 font-medium">
+                                Image Ready
+                              </span>
+                            )}
+                            {scene.videoUrl && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] bg-blue-500/15 text-blue-500 border border-blue-500/20 font-medium">
+                                Video Ready
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Image / Video preview thumbnail */}
+                        <div className="aspect-video w-full rounded-lg bg-muted/40 border border-border overflow-hidden relative group">
+                          {scene.videoUrl ? (
+                            <video src={scene.videoUrl} className="w-full h-full object-cover" muted autoPlay loop />
+                          ) : scene.imageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={scene.imageUrl} alt={`Scene ${idx + 1}`} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex flex-col items-center justify-center text-text-muted/60">
+                              <span className="material-symbols-outlined text-[28px]">image</span>
+                              <span className="text-[10px] mt-1">No preview generated</span>
+                            </div>
                           )}
                         </div>
 
-                        {/* 1-Text Unified Video Motion Prompt */}
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-primary flex items-center gap-1">
-                              <span className="material-symbols-outlined text-[16px]">videocam</span>
-                              Combined Production Prompt (1-Text Prompt)
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => copy(scene.motionPrompt)}
-                              className="text-[11px] text-text-muted hover:text-primary underline"
-                            >
-                              Copy Prompt
-                            </button>
-                          </div>
-                          <textarea
-                            value={scene.motionPrompt || ""}
-                            onChange={(e) => handleUpdateSceneField(idx, "motionPrompt", e.target.value)}
-                            rows={3}
-                            className="w-full rounded-xl border border-primary/30 bg-primary/5 p-2.5 text-xs outline-none focus:border-primary resize-y font-mono leading-relaxed"
-                          />
-                        </div>
+                        <p className="text-xs font-medium text-text-main line-clamp-2">{scene.summary}</p>
 
-                        {/* Image Generator Prompt */}
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium text-text-muted flex items-center gap-1">
-                              <span className="material-symbols-outlined text-[14px]">photo_camera</span>
-                              Image Gen Prompt
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => copy(scene.imagePrompt)}
-                              className="text-[11px] text-text-muted hover:text-primary underline"
-                            >
-                              Copy
-                            </button>
-                          </div>
-                          <textarea
-                            value={scene.imagePrompt || ""}
-                            onChange={(e) => handleUpdateSceneField(idx, "imagePrompt", e.target.value)}
-                            rows={2}
-                            className="w-full rounded-xl border border-border bg-background p-2 text-xs outline-none focus:border-primary resize-y font-mono"
-                          />
-                        </div>
-
-                        {/* Metadata Tags Pill Grid */}
-                        <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
-                          <div className="rounded-lg bg-background/50 border border-border p-2">
-                            <span className="font-semibold text-text-muted block">Camera:</span>
-                            <span className="text-text-main">{scene.camera || "-"}</span>
-                          </div>
-                          <div className="rounded-lg bg-background/50 border border-border p-2">
-                            <span className="font-semibold text-text-muted block">Lighting:</span>
-                            <span className="text-text-main">{scene.lighting || "-"}</span>
-                          </div>
-                          <div className="rounded-lg bg-background/50 border border-border p-2">
-                            <span className="font-semibold text-text-muted block">Audio / SFX:</span>
-                            <span className="text-text-main">{scene.audioSfx || "-"}</span>
-                          </div>
-                          <div className="rounded-lg bg-background/50 border border-border p-2">
-                            <span className="font-semibold text-text-muted block">Voiceover:</span>
-                            <span className="text-text-main">{scene.voiceover ? `"${scene.voiceover}"` : "None"}</span>
-                          </div>
+                        {/* Motion prompt snippet */}
+                        <div className="p-2 rounded bg-muted/40 border border-border/60 text-[11px] text-text-muted line-clamp-2 font-mono">
+                          {scene.motionPrompt}
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-      </section>
 
-      {/* LLM Model Select Modal */}
+                      <div className="pt-3 mt-2 border-t border-border/60 flex items-center justify-between text-xs">
+                        <span className="text-[11px] text-text-muted flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px]">videocam</span>
+                          {scene.camera || "Dynamic"}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          icon="arrow_forward"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedSceneIndex(idx);
+                            setActiveTab("studio");
+                          }}
+                        >
+                          Open in Studio
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: VIDEO STUDIO & MEDIA GENERATOR */}
+        {activeTab === "studio" && (
+          <div className="flex-1 flex overflow-hidden">
+            {/* Left scene selector strip */}
+            <div className="w-64 border-r border-border bg-muted/10 overflow-y-auto custom-scrollbar p-3 space-y-2 shrink-0">
+              <div className="text-[11px] font-semibold text-text-muted uppercase px-2 tracking-wider">
+                Scene Timeline ({scenes.length})
+              </div>
+
+              {scenes.map((sc, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => setSelectedSceneIndex(idx)}
+                  className={`p-2.5 rounded-lg border text-left cursor-pointer transition-colors ${
+                    selectedSceneIndex === idx
+                      ? "bg-card border-primary text-text-main shadow-xs"
+                      : "bg-card/40 border-border/70 text-text-muted hover:border-primary/40"
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-semibold text-text-main">Shot #{sc.sceneNumber || idx + 1}</span>
+                    <span className="text-[10px]">{sc.timecode || `${idx * 5}s`}</span>
+                  </div>
+                  <p className="text-[11px] truncate mt-1 text-text-muted">{sc.summary}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Right main editing canvas */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
+              {activeScene ? (
+                <div className="max-w-4xl space-y-6">
+                  {/* Scene Header */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-base font-semibold flex items-center gap-2">
+                        <span className="material-symbols-outlined text-primary">videocam</span>
+                        Shot #{activeScene.sceneNumber || selectedSceneIndex + 1}: {activeScene.summary}
+                      </h2>
+                      <p className="text-xs text-text-muted mt-0.5">
+                        Camera: {activeScene.camera || "35mm Anamorphic"} • Lighting: {activeScene.lighting || "Natural"}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        icon="content_copy"
+                        onClick={() => copy(activeScene.motionPrompt)}
+                      >
+                        Copy Video Prompt
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Dual Preview Box (First-frame image & Generated Video) */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* First frame Image Box */}
+                    <div className="p-4 rounded-xl bg-card border border-border shadow-sm space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-primary text-[16px]">image</span>
+                          First-Frame Keyframe Image
+                        </span>
+                        <span className="text-[11px] text-text-muted font-mono">{imageModel || "No model set"}</span>
+                      </div>
+
+                      <div className="aspect-video rounded-lg bg-muted/40 border border-border overflow-hidden relative flex items-center justify-center">
+                        {activeScene.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={activeScene.imageUrl} alt="First frame" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="text-center text-text-muted/60">
+                            <span className="material-symbols-outlined text-[32px]">image_search</span>
+                            <p className="text-xs mt-1">First-frame not rendered yet</p>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => setShowImageModal(true)}
+                        >
+                          Select Image Model
+                        </Button>
+
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          icon="draw"
+                          loading={imageGenStates[selectedSceneIndex]?.loading}
+                          onClick={() => handleGenerateImage(selectedSceneIndex)}
+                        >
+                          Generate Image
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* AI Video Generation Box */}
+                    <div className="p-4 rounded-xl bg-card border border-border shadow-sm space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-primary text-[16px]">movie</span>
+                          AI Video Generation
+                        </span>
+                        <span className="text-[11px] text-text-muted font-mono">{videoModel || "No model set"}</span>
+                      </div>
+
+                      <div className="aspect-video rounded-lg bg-black/60 border border-border overflow-hidden relative flex items-center justify-center">
+                        {activeScene.videoUrl ? (
+                          <video src={activeScene.videoUrl} controls className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="text-center text-text-muted/60 p-4">
+                            <span className="material-symbols-outlined text-[32px]">videocam_off</span>
+                            <p className="text-xs mt-1">Video not rendered yet</p>
+                            {videoGenStates[selectedSceneIndex]?.status === "processing" && (
+                              <p className="text-xs text-primary font-medium mt-1 animate-pulse">
+                                Rendering video on AI cluster...
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => setShowVideoModal(true)}
+                        >
+                          Select Video Model
+                        </Button>
+
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          icon="play_arrow"
+                          loading={videoGenStates[selectedSceneIndex]?.status === "processing" || videoGenStates[selectedSceneIndex]?.status === "submitting"}
+                          onClick={() => handleGenerateVideo(selectedSceneIndex)}
+                        >
+                          Generate Video
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Prompt Editors for Current Scene */}
+                  <div className="p-4 rounded-xl bg-card border border-border space-y-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                      Prompt Engineering Details
+                    </h3>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-text-muted">First-Frame Image Generation Prompt</label>
+                      <textarea
+                        rows={3}
+                        value={activeScene.imagePrompt}
+                        onChange={(e) => {
+                          const next = [...scenes];
+                          next[selectedSceneIndex].imagePrompt = e.target.value;
+                          persistScenes(next);
+                        }}
+                        className="w-full text-xs font-mono bg-muted/40 border border-border rounded-lg p-2.5 outline-none focus:border-primary"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-text-muted">Video Motion & Camera Prompt</label>
+                      <textarea
+                        rows={3}
+                        value={activeScene.motionPrompt}
+                        onChange={(e) => {
+                          const next = [...scenes];
+                          next[selectedSceneIndex].motionPrompt = e.target.value;
+                          persistScenes(next);
+                        }}
+                        className="w-full text-xs font-mono bg-muted/40 border border-border rounded-lg p-2.5 outline-none focus:border-primary"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-border/60">
+                      <div>
+                        <label className="text-[11px] font-medium text-text-muted">Audio / SFX</label>
+                        <input
+                          type="text"
+                          value={activeScene.audioSfx || ""}
+                          onChange={(e) => {
+                            const next = [...scenes];
+                            next[selectedSceneIndex].audioSfx = e.target.value;
+                            persistScenes(next);
+                          }}
+                          className="w-full mt-1 text-xs bg-muted/40 border border-border rounded px-2.5 py-1.5 outline-none focus:border-primary"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-medium text-text-muted">Dialogue / Voiceover</label>
+                        <input
+                          type="text"
+                          value={activeScene.voiceover || ""}
+                          onChange={(e) => {
+                            const next = [...scenes];
+                            next[selectedSceneIndex].voiceover = e.target.value;
+                            persistScenes(next);
+                          }}
+                          className="w-full mt-1 text-xs bg-muted/40 border border-border rounded px-2.5 py-1.5 outline-none focus:border-primary"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-16 text-text-muted text-xs">
+                  Select a shot from the left timeline to edit.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: SETTINGS GUI (FULL CONFIGURATOR) */}
+        {activeTab === "settings" && (
+          <div className="flex-1 flex overflow-y-auto custom-scrollbar p-6 justify-center">
+            <div className="max-w-4xl w-full space-y-6">
+              <div className="p-5 rounded-xl bg-card border border-border shadow-sm space-y-5">
+                <div>
+                  <h2 className="text-base font-semibold flex items-center gap-2">
+                    <span className="material-symbols-outlined text-primary">tune</span>
+                    AI Model & Video Generation Settings
+                  </h2>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    Configure LLM, image generator, video render engine, and prompt engineering parameters
+                  </p>
+                </div>
+
+                {/* Model Selectors Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* LLM Model */}
+                  <div className="p-3.5 rounded-lg bg-muted/30 border border-border space-y-2">
+                    <label className="text-xs font-semibold text-text-main flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-primary text-[16px]">psychology</span>
+                      Script & Story LLM
+                    </label>
+                    <p className="text-[11px] text-text-muted">Extracts characters and splits storyboard</p>
+                    <div className="pt-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-between text-xs"
+                        onClick={() => setShowLlmModal(true)}
+                      >
+                        <span className="truncate">{llmModel || "Select LLM Model..."}</span>
+                        <span className="material-symbols-outlined text-[16px]">arrow_drop_down</span>
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Image Gen Model */}
+                  <div className="p-3.5 rounded-lg bg-muted/30 border border-border space-y-2">
+                    <label className="text-xs font-semibold text-text-main flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-primary text-[16px]">image</span>
+                      First-Frame Image Model
+                    </label>
+                    <p className="text-[11px] text-text-muted">Generates keyframe image for each shot</p>
+                    <div className="pt-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-between text-xs"
+                        onClick={() => setShowImageModal(true)}
+                      >
+                        <span className="truncate">{imageModel || "Select Image Model..."}</span>
+                        <span className="material-symbols-outlined text-[16px]">arrow_drop_down</span>
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Video Gen Model */}
+                  <div className="p-3.5 rounded-lg bg-muted/30 border border-border space-y-2">
+                    <label className="text-xs font-semibold text-text-main flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-primary text-[16px]">movie</span>
+                      AI Video Model
+                    </label>
+                    <p className="text-[11px] text-text-muted">Renders motion video clips</p>
+                    <div className="pt-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-between text-xs"
+                        onClick={() => setShowVideoModal(true)}
+                      >
+                        <span className="truncate">{videoModel || "Select Video Model..."}</span>
+                        <span className="material-symbols-outlined text-[16px]">arrow_drop_down</span>
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Video Generation Parameters */}
+                <div className="space-y-3 pt-4 border-t border-border/60">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                    Render Configuration
+                  </h3>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Duration */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-text-muted">Default Clip Duration</label>
+                      <div className="flex gap-2">
+                        {VIDEO_DURATIONS.map((dur) => (
+                          <button
+                            key={dur}
+                            type="button"
+                            onClick={() => setVideoDuration(dur)}
+                            className={`flex-1 py-1.5 text-xs rounded border font-medium ${
+                              videoDuration === dur
+                                ? "bg-primary text-white border-primary"
+                                : "bg-muted/40 border-border"
+                            }`}
+                          >
+                            {dur}s
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Video Resolution */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-text-muted">Resolution</label>
+                      <div className="flex gap-2">
+                        {VIDEO_RESOLUTIONS.map((res) => (
+                          <button
+                            key={res}
+                            type="button"
+                            onClick={() => setVideoResolution(res)}
+                            className={`flex-1 py-1.5 text-xs rounded border font-medium capitalize ${
+                              videoResolution === res
+                                ? "bg-primary text-white border-primary"
+                                : "bg-muted/40 border-border"
+                            }`}
+                          >
+                            {res}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Aspect */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-text-muted">Video Aspect Ratio</label>
+                      <select
+                        value={videoAspect}
+                        onChange={(e) => setVideoAspect(e.target.value)}
+                        className="w-full text-xs bg-muted/40 border border-border rounded px-3 py-1.5 outline-none focus:border-primary"
+                      >
+                        <option value="16:9">16:9 (Landscape HD)</option>
+                        <option value="9:16">9:16 (Vertical Short)</option>
+                        <option value="1:1">1:1 (Square)</option>
+                        <option value="21:9">21:9 (Cinematic Ultrawide)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Negative Prompt */}
+                <div className="space-y-1.5 pt-3 border-t border-border/60">
+                  <label className="text-xs font-medium text-text-muted">Negative Prompt (Image & Video)</label>
+                  <input
+                    type="text"
+                    value={negativePrompt}
+                    onChange={(e) => setNegativePrompt(e.target.value)}
+                    className="w-full text-xs bg-muted/40 border border-border rounded-lg px-3 py-2 outline-none focus:border-primary"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Saved Projects Drawer / Sidebar */}
+        {historyOpen && (
+          <aside className="w-80 border-l border-border bg-card/95 backdrop-blur-sm p-4 flex flex-col justify-between shrink-0 z-20">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                  Saved Storyboards ({projects.length})
+                </h3>
+                <button
+                  onClick={() => setHistoryOpen(false)}
+                  className="text-text-muted hover:text-text-main"
+                >
+                  <span className="material-symbols-outlined text-[18px]">close</span>
+                </button>
+              </div>
+
+              <input
+                type="text"
+                placeholder="Search history..."
+                value={searchHistory}
+                onChange={(e) => setSearchHistory(e.target.value)}
+                className="w-full text-xs bg-muted/50 border border-border rounded-md px-2.5 py-1.5 outline-none focus:border-primary"
+              />
+
+              <div className="space-y-2 max-h-[70vh] overflow-y-auto custom-scrollbar pr-1">
+                {filteredProjects.length === 0 ? (
+                  <div className="text-center py-6 text-xs text-text-muted">No projects found</div>
+                ) : (
+                  filteredProjects.map((p) => (
+                    <div
+                      key={p.id}
+                      onClick={() => handleSelectProject(p)}
+                      className={`p-3 rounded-lg border text-left cursor-pointer transition-colors relative group ${
+                        currentProjectId === p.id
+                          ? "bg-primary/10 border-primary/50 text-text-main"
+                          : "bg-muted/20 border-border hover:border-primary/40 text-text-muted hover:text-text-main"
+                      }`}
+                    >
+                      <button
+                        onClick={(e) => handleDeleteProject(e, p.id)}
+                        className="absolute top-2 right-2 text-text-muted hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete project"
+                      >
+                        <span className="material-symbols-outlined text-[15px]">delete</span>
+                      </button>
+                      <h4 className="text-xs font-semibold truncate pr-4 text-text-main">
+                        {p.title || "Untitled Storyboard"}
+                      </h4>
+                      <p className="text-[11px] text-text-muted line-clamp-2 mt-1">{p.prompt}</p>
+                      <div className="flex items-center justify-between text-[10px] text-text-muted mt-2">
+                        <span>{p.scenes?.length || 0} scenes</span>
+                        <span>{new Date(p.updatedAt || p.createdAt).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </aside>
+        )}
+      </div>
+
+      {/* Model Selection Modals */}
       <ModelSelectModal
         isOpen={showLlmModal}
         onClose={() => setShowLlmModal(false)}
-        onSelect={(m) => setLlmModel(m?.value || m?.name || "")}
+        onSelect={(m) => {
+          const modelVal = m?.value || m?.name || m;
+          setLlmModel(modelVal);
+          setShowLlmModal(false);
+        }}
         selectedModel={llmModel}
         activeProviders={activeProviders}
         modelAliases={modelAliases}
-        title="Select Storyboard Director Model (LLM)"
+        title="Select Script LLM Model"
       />
 
-      {/* Image Model Select Modal */}
       <ModelSelectModal
         isOpen={showImageModal}
         onClose={() => setShowImageModal(false)}
-        onSelect={(m) => setImageModel(m?.value || m?.name || "")}
+        onSelect={(m) => {
+          const modelVal = m?.value || m?.name || m;
+          setImageModel(modelVal);
+          setShowImageModal(false);
+        }}
         selectedModel={imageModel}
         activeProviders={activeProviders}
         modelAliases={modelAliases}
         kindFilter="image"
         title="Select First-Frame Image Model"
       />
+
+      <ModelSelectModal
+        isOpen={showVideoModal}
+        onClose={() => setShowVideoModal(false)}
+        onSelect={(m) => {
+          const modelVal = m?.value || m?.name || m;
+          setVideoModel(modelVal);
+          setShowVideoModal(false);
+        }}
+        selectedModel={videoModel}
+        activeProviders={activeProviders}
+        modelAliases={modelAliases}
+        title="Select AI Video Generation Model"
+      />
+
+      {/* Settings Modal Shortcut */}
+      <Modal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        title="Quick Model Configuration"
+      >
+        <div className="space-y-4 py-2 text-xs">
+          <div>
+            <label className="font-semibold block mb-1">LLM Model (Story / Script)</label>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full justify-between"
+              onClick={() => {
+                setShowSettingsModal(false);
+                setShowLlmModal(true);
+              }}
+            >
+              <span>{llmModel || "Select Model..."}</span>
+              <span className="material-symbols-outlined text-[16px]">edit</span>
+            </Button>
+          </div>
+
+          <div>
+            <label className="font-semibold block mb-1">Image Model (First-Frame Synthesis)</label>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full justify-between"
+              onClick={() => {
+                setShowSettingsModal(false);
+                setShowImageModal(true);
+              }}
+            >
+              <span>{imageModel || "Select Model..."}</span>
+              <span className="material-symbols-outlined text-[16px]">edit</span>
+            </Button>
+          </div>
+
+          <div>
+            <label className="font-semibold block mb-1">Video Model (AI Video Engine)</label>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full justify-between"
+              onClick={() => {
+                setShowSettingsModal(false);
+                setShowVideoModal(true);
+              }}
+            >
+              <span>{videoModel || "Select Model..."}</span>
+              <span className="material-symbols-outlined text-[16px]">edit</span>
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

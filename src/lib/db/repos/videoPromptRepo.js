@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
-function rowToProject(row) {
+export function rowToProject(row) {
   if (!row) return null;
   return {
     id: row.id,
@@ -10,6 +10,7 @@ function rowToProject(row) {
     prompt: row.prompt || "",
     llmModel: row.llmModel || "",
     imageModel: row.imageModel || "",
+    videoModel: row.videoModel || "",
     style: row.style || "Cinematic",
     targetEngine: row.targetEngine || "General AI Video",
     characterDesc: row.characterDesc || "",
@@ -57,6 +58,7 @@ export async function createVideoPromptProject(data = {}) {
     prompt: data.prompt || "",
     llmModel: data.llmModel || "",
     imageModel: data.imageModel || "",
+    videoModel: data.videoModel || "",
     style: data.style || "Cinematic",
     targetEngine: data.targetEngine || "General AI Video",
     characterDesc: data.characterDesc || "",
@@ -65,14 +67,15 @@ export async function createVideoPromptProject(data = {}) {
     updatedAt: data.updatedAt || now,
   };
   db.run(
-    `INSERT INTO videoPromptProjects(id, title, prompt, llmModel, imageModel, style, targetEngine, characterDesc, scenes, createdAt, updatedAt)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO videoPromptProjects(id, title, prompt, llmModel, imageModel, videoModel, style, targetEngine, characterDesc, scenes, createdAt, updatedAt)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       project.id,
       project.title,
       project.prompt,
       project.llmModel,
       project.imageModel,
+      project.videoModel,
       project.style,
       project.targetEngine,
       project.characterDesc,
@@ -98,13 +101,14 @@ export async function updateVideoPromptProject(id, data = {}) {
   };
   db.run(
     `UPDATE videoPromptProjects
-     SET title = ?, prompt = ?, llmModel = ?, imageModel = ?, style = ?, targetEngine = ?, characterDesc = ?, scenes = ?, updatedAt = ?
+     SET title = ?, prompt = ?, llmModel = ?, imageModel = ?, videoModel = ?, style = ?, targetEngine = ?, characterDesc = ?, scenes = ?, updatedAt = ?
      WHERE id = ?`,
     [
       merged.title,
       merged.prompt,
       merged.llmModel,
       merged.imageModel,
+      merged.videoModel,
       merged.style,
       merged.targetEngine,
       merged.characterDesc,
