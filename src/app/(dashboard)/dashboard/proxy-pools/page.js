@@ -261,11 +261,11 @@ export default function ProxyPoolsPage() {
     (activePage - 1) * pageSize,
     activePage * pageSize
   );
-  const allSelected = paginatedProxyPools.length > 0 && paginatedProxyPools.every((pool) => selectedIds.includes(pool.id));
+  const allSelected = proxyPools.length > 0 && proxyPools.every((pool) => selectedIds.includes(pool.id));
   const toggleSelect = (id) => setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
-  const toggleSelectAll = () => setSelectedIds((prev) => {
-    if (allSelected) return prev.filter((id) => !paginatedProxyPools.some((pool) => pool.id === id));
-    return Array.from(new Set([...prev, ...paginatedProxyPools.map((pool) => pool.id)]));
+  const toggleSelectAll = () => setSelectedIds(() => {
+    if (allSelected) return [];
+    return proxyPools.map((pool) => pool.id);
   });
   const clearSelection = () => setSelectedIds([]);
 
@@ -767,7 +767,7 @@ export default function ProxyPoolsPage() {
                 onChange={toggleSelectAll}
                 className="size-4 rounded border-black/20 dark:border-white/20"
               />
-              {allSelected ? "Unselect visible" : "Select visible"}
+              {allSelected ? "Unselect all" : "Select all"}
             </label>
           )}
           <Badge variant="default">Total Custom Pools: {proxyPools.length}</Badge>
