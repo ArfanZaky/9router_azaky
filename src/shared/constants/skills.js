@@ -54,16 +54,9 @@ export const SKILLS = [
     icon: "scatter_plot",
   },
   {
-    id: "9router-web-search",
-    name: "Web Search",
-    description: "Web and X search via Tavily / Exa / Brave / Serper / SearXNG / Google PSE / You.com / Xquik.",
-    endpoint: "/v1/search",
-    icon: "search",
-  },
-  {
     id: "browser-use",
-    name: "Browser Use",
-    description: "Web automation, scraping, and testing via browser-use and browser-harness headless CLI.",
+    name: "Browser Use & Search",
+    description: "Web search, browsing, automation, scraping, and testing via browser-use and browser-harness headless CLI.",
     endpoint: null,
     icon: "language",
     customUrl: "https://github.com/browser-use/browser-harness/blob/main/install.md",

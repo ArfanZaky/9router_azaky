@@ -1,6 +1,6 @@
 ---
 name: 9router
-description: Entry point for 9Router — local/remote AI gateway with OpenAI-compatible REST for chat, image, TTS, embeddings, web search, browser-use. Use when the user mentions 9Router, NINEROUTER_URL, or wants AI without writing provider boilerplate. This skill covers setup + indexes capability skills; fetch the relevant capability SKILL.md from the URLs below when needed.
+description: Entry point for 9Router — local/remote AI gateway with OpenAI-compatible REST for chat, image, TTS, embeddings, browser-use. Use when the user mentions 9Router, NINEROUTER_URL, or wants AI without writing provider boilerplate. This skill covers setup + indexes capability skills; fetch the relevant capability SKILL.md from the URLs below when needed.
 ---
 
 # 9Router
@@ -25,7 +25,6 @@ curl $NINEROUTER_URL/v1/models                  # chat/LLM (default)
 curl $NINEROUTER_URL/v1/models/image            # image-gen
 curl $NINEROUTER_URL/v1/models/tts              # text-to-speech
 curl $NINEROUTER_URL/v1/models/embedding        # embeddings
-curl $NINEROUTER_URL/v1/models/web              # web search (entries have `kind` field)
 curl $NINEROUTER_URL/v1/models/stt              # speech-to-text
 curl $NINEROUTER_URL/v1/models/image-to-text    # vision
 ```
@@ -35,8 +34,7 @@ Use `data[].id` as `model` field in requests. Combos appear with `owned_by:"comb
 Response shape:
 ```json
 { "object": "list", "data": [
-  { "id": "openai/gpt-5", "object": "model", "owned_by": "openai", "created": 1735000000 },
-  { "id": "tavily/search", "object": "model", "kind": "webSearch", "owned_by": "tavily", "created": 1735000000 }
+  { "id": "openai/gpt-5", "object": "model", "owned_by": "openai", "created": 1735000000 }
 ]}
 ```
 
@@ -51,8 +49,7 @@ When the user needs a specific capability, fetch that skill's `SKILL.md` from it
 | Text-to-speech | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-tts/SKILL.md |
 | Speech-to-text | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-stt/SKILL.md |
 | Embeddings | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-embeddings/SKILL.md |
-| Web search | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-web-search/SKILL.md |
-| Browser Use / Automation | https://raw.githubusercontent.com/browser-use/browser-harness/main/install.md |
+| Browser Use / Search / Automation | https://raw.githubusercontent.com/browser-use/browser-harness/main/install.md |
 
 ## Errors
 

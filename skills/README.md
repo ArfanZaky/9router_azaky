@@ -13,8 +13,7 @@ Skills for AI agents running with 9Router. Each skill folder contains a `SKILL.m
 | [`9router-stt`](9router-stt/) | Speech-to-text via `/v1/audio/transcriptions` | [SKILL.md](9router-stt/SKILL.md) |
 | [`9router-embeddings`](9router-embeddings/) | Vector embeddings via `/v1/embeddings` | [SKILL.md](9router-embeddings/SKILL.md) |
 | [`9router-video`](9router-video/) | Video generation via `/v1/videos/generations` (xAI Grok Imagine) | [SKILL.md](9router-video/SKILL.md) |
-| [`9router-web-search`](9router-web-search/) | Web & X search via `/v1/search` | [SKILL.md](9router-web-search/SKILL.md) |
-| [`browser-use`](browser-use/) | Browser interaction, automation & scraping via `browser-harness` | [SKILL.md](browser-use/SKILL.md) |
+| [`browser-use`](browser-use/) | Browser interaction, automation, search & scraping via `browser-use` / `browser-harness` | [SKILL.md](browser-use/SKILL.md) |
 
 ## Quick Start for Agents
 
@@ -46,5 +45,4 @@ When an agent needs to fetch skills remotely without cloning the repo:
 | STT | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-stt/SKILL.md |
 | Embeddings | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-embeddings/SKILL.md |
 | Video | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-video/SKILL.md |
-| Web search | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-web-search/SKILL.md |
 | Browser Use | https://raw.githubusercontent.com/browser-use/browser-harness/main/install.md |
