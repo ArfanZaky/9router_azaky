@@ -34,6 +34,8 @@ export default function ProxyPoolsPage() {
   const [publicProxyStats, setPublicProxyStats] = useState({ total: 0, maxLatencyMs: 3000, isScanning: false, proxies: [] });
   const [publicProxyLoading, setPublicProxyLoading] = useState(false);
   const [maxLatencyInput, setMaxLatencyInput] = useState("3000");
+  const [savingLatency, setSavingLatency] = useState(false);
+  const latencyInitializedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [showFormModal, setShowFormModal] = useState(false);
   const [showBatchImportModal, setShowBatchImportModal] = useState(false);
@@ -93,7 +95,10 @@ export default function ProxyPoolsPage() {
       const data = await res.json();
       if (res.ok) {
         setPublicProxyStats(data);
-        if (data.maxLatencyMs) setMaxLatencyInput(String(data.maxLatencyMs));
+        if (!latencyInitializedRef.current && data.maxLatencyMs) {
+          setMaxLatencyInput(String(data.maxLatencyMs));
+          latencyInitializedRef.current = true;
+        }
       }
     } catch (e) {
       console.log("Error fetching public proxy stats:", e);
@@ -106,6 +111,42 @@ export default function ProxyPoolsPage() {
     const interval = setInterval(fetchPublicProxyStats, 15000);
     return () => clearInterval(interval);
   }, [fetchProxyPools, fetchPublicProxyStats]);
+
+  const handleSaveMaxLatency = async (e) => {
+    e?.preventDefault?.();
+    const val = Number(maxLatencyInput);
+    if (!val || val <= 0) {
+      notify.error("Please enter a valid max latency in ms (e.g. 1000)");
+      return;
+    }
+    setSavingLatency(true);
+    try {
+      const res = await fetch("/api/proxy-pools/public", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_max_latency",
+          maxLatencyMs: val,
+          autoRescan: true,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        notify.success(`Max latency filter set to ≤ ${val}ms. Auto-screening started...`);
+        if (data.stats) {
+          setPublicProxyStats(data.stats);
+        } else {
+          await fetchPublicProxyStats();
+        }
+      } else {
+        notify.error(data?.error || "Failed to set latency filter");
+      }
+    } catch (err) {
+      notify.error("Error setting latency filter: " + err.message);
+    } finally {
+      setSavingLatency(false);
+    }
+  };
 
   const triggerPublicScan = async () => {
     setPublicProxyLoading(true);
@@ -717,18 +758,39 @@ export default function ProxyPoolsPage() {
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 bg-sidebar/50 p-3 rounded-lg border border-accent/20">
-          <div className="flex items-center gap-2 flex-1">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-sidebar/50 p-3 rounded-lg border border-accent/20">
+          <form
+            onSubmit={handleSaveMaxLatency}
+            className="flex items-center gap-2 flex-wrap"
+          >
             <span className="text-xs font-medium text-text-main shrink-0">Max Latency Filter:</span>
-            <input
-              type="number"
-              value={maxLatencyInput}
-              onChange={(e) => setMaxLatencyInput(e.target.value)}
-              className="w-24 px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary"
-              placeholder="3000"
-            />
-            <span className="text-xs text-text-muted">ms</span>
-          </div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                min="50"
+                step="50"
+                value={maxLatencyInput}
+                onChange={(e) => setMaxLatencyInput(e.target.value)}
+                className="w-24 px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono"
+                placeholder="3000"
+              />
+              <span className="text-xs text-text-muted">ms</span>
+            </div>
+            <Button
+              type="submit"
+              size="sm"
+              variant="primary"
+              icon={savingLatency ? "progress_activity" : "check"}
+              disabled={savingLatency || !maxLatencyInput || Number(maxLatencyInput) <= 0}
+            >
+              {savingLatency ? "Saving..." : "Submit"}
+            </Button>
+            {publicProxyStats.maxLatencyMs ? (
+              <span className="text-[11px] text-text-muted">
+                (Active: ≤ {publicProxyStats.maxLatencyMs}ms)
+              </span>
+            ) : null}
+          </form>
 
           <div className="flex items-center gap-2">
             <Button

@@ -9,6 +9,7 @@ class PublicProxyManager {
     this.lastScanTime = 0;
     this.timer = null;
     this.maxLatencyMs = 3000; // Filter N latency: default 3000ms
+    this._settingsLoaded = false;
     this.scanIntervalMs = 10 * 60 * 1000; // 10 minutes
     this.sources = [
       // Regional HProxy (ID, SG, MY, TH, VN, PH, JP, KR)
@@ -45,9 +46,30 @@ class PublicProxyManager {
     ];
   }
 
+  async initSettings() {
+    try {
+      const { getSettings } = await import("../db/repos/settingsRepo.js");
+      const settings = await getSettings();
+      if (settings?.publicProxyMaxLatencyMs && Number.isFinite(settings.publicProxyMaxLatencyMs) && settings.publicProxyMaxLatencyMs > 0) {
+        this.maxLatencyMs = Number(settings.publicProxyMaxLatencyMs);
+        this.proxies = this.proxies.filter((p) => p.latency <= this.maxLatencyMs);
+      }
+    } catch {
+      // ignore if db not ready yet
+    }
+  }
+
   setMaxLatency(ms) {
     if (Number.isFinite(ms) && ms > 0) {
       this.maxLatencyMs = ms;
+      const prevLen = this.proxies.length;
+      this.proxies = this.proxies.filter((p) => p.latency <= ms);
+      if (this.proxies.length !== prevLen) {
+        console.log(`[PublicProxy] Filtered out ${prevLen - this.proxies.length} proxies exceeding max latency ${ms}ms. Remaining: ${this.proxies.length}`);
+      }
+      import("../db/repos/settingsRepo.js")
+        .then(({ updateSettings }) => updateSettings({ publicProxyMaxLatencyMs: ms }))
+        .catch(() => {});
     }
   }
 
@@ -155,6 +177,11 @@ class PublicProxyManager {
       return;
     }
 
+    if (!this._settingsLoaded) {
+      this._settingsLoaded = true;
+      await this.initSettings();
+    }
+
     this.isScanning = true;
     console.log(`[PublicProxy] Starting proxy screening (Filter max latency: ${this.maxLatencyMs}ms)...`);
 
@@ -188,15 +215,21 @@ class PublicProxyManager {
       await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
 
       if (verified.length > 0) {
-        // Merge with existing working proxies and deduplicate
+        // Merge with existing working proxies and deduplicate, strictly keeping latency <= maxLatencyMs
         const map = new Map();
         for (const p of this.proxies) {
-          map.set(p.url, p);
+          if (p.latency <= this.maxLatencyMs) {
+            map.set(p.url, p);
+          }
         }
         for (const p of verified) {
-          map.set(p.url, p);
+          if (p.latency <= this.maxLatencyMs) {
+            map.set(p.url, p);
+          }
         }
         this.proxies = Array.from(map.values()).sort((a, b) => a.latency - b.latency);
+      } else {
+        this.proxies = this.proxies.filter((p) => p.latency <= this.maxLatencyMs);
       }
 
       this.lastScanTime = Date.now();
@@ -209,9 +242,14 @@ class PublicProxyManager {
   }
 
   // Start background periodic screening every 10 minutes
-  startPeriodicScreening(intervalMs = null) {
+  async startPeriodicScreening(intervalMs = null) {
     if (intervalMs) this.scanIntervalMs = intervalMs;
     if (this.timer) clearInterval(this.timer);
+
+    if (!this._settingsLoaded) {
+      this._settingsLoaded = true;
+      await this.initSettings();
+    }
 
     // Initial background scan
     this.screenProxies().catch(() => {});
