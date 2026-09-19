@@ -61,10 +61,10 @@ export const SKILLS = [
     icon: "search",
   },
   {
-    id: "9router-web-fetch",
-    name: "Web Fetch",
-    description: "URL → markdown / text / HTML via Firecrawl, Jina, Tavily, Exa.",
-    endpoint: "/v1/web/fetch",
+    id: "browser-use",
+    name: "Browser Use",
+    description: "Web automation, scraping, and testing via browser-use and browser-harness headless CLI.",
+    endpoint: null,
     icon: "language",
   },
 ];

@@ -1,43 +1,50 @@
-# 9Router — Agent Skills
+# 9Router Skills
 
-Drop-in skills for any AI agent (Claude, Cursor, ChatGPT, custom SDK). Just **copy a link** below and paste it to your AI — it will fetch the skill and use 9Router for you.
+Skills for AI agents running with 9Router. Each skill folder contains a `SKILL.md` with instructions, endpoint specs, and examples.
 
-> Tip: start with the **9router** entry skill — it covers setup and links to all capability skills.
+## Available Skills
 
-## Skills
+| Skill | Description | Doc |
+|---|---|---|
+| [`9router`](9router/) | Entry point — setup, auth, model discovery, index of all capabilities | [SKILL.md](9router/SKILL.md) |
+| [`9router-chat`](9router-chat/) | Chat & code generation via `/v1/chat/completions` or `/v1/messages` | [SKILL.md](9router-chat/SKILL.md) |
+| [`9router-image`](9router-image/) | Image generation via `/v1/images/generations` | [SKILL.md](9router-image/SKILL.md) |
+| [`9router-tts`](9router-tts/) | Text-to-speech via `/v1/audio/speech` | [SKILL.md](9router-tts/SKILL.md) |
+| [`9router-stt`](9router-stt/) | Speech-to-text via `/v1/audio/transcriptions` | [SKILL.md](9router-stt/SKILL.md) |
+| [`9router-embeddings`](9router-embeddings/) | Vector embeddings via `/v1/embeddings` | [SKILL.md](9router-embeddings/SKILL.md) |
+| [`9router-video`](9router-video/) | Video generation via `/v1/videos/generations` (xAI Grok Imagine) | [SKILL.md](9router-video/SKILL.md) |
+| [`9router-web-search`](9router-web-search/) | Web & X search via `/v1/search` | [SKILL.md](9router-web-search/SKILL.md) |
+| [`browser-use`](browser-use/) | Browser interaction, automation & scraping via `browser-harness` | [SKILL.md](browser-use/SKILL.md) |
 
-| Capability | Copy link below and paste to your AI |
-|---|---|
-| **Entry / Setup** (start here) | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router/SKILL.md |
-| Chat / code-gen | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-chat/SKILL.md |
-| Image generation | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-image/SKILL.md |
-| Video generation (xAI Grok Imagine) | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-video/SKILL.md |
-| Text-to-speech | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-tts/SKILL.md |
-| Speech-to-text | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-stt/SKILL.md |
-| Embeddings | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-embeddings/SKILL.md |
-| Web search | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-web-search/SKILL.md |
-| Web fetch (URL → markdown) | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-web-fetch/SKILL.md |
+## Quick Start for Agents
 
-## How to use
+Add to your system prompt:
 
-Paste to your AI (Claude, Cursor, ChatGPT, …):
-
+```text
+You have access to 9Router AI gateway. To use a capability:
+1. Check available models: curl $NINEROUTER_URL/v1/models (or /v1/models/<kind>)
+2. Read the relevant skill file: skills/<skill-name>/SKILL.md
+3. Call the endpoint with Authorization: Bearer $NINEROUTER_KEY
 ```
-Read this skill and use it: https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router/SKILL.md
-```
 
-Then ask normally — *"generate an image of a cat"*, *"transcribe this URL"*, etc.
-
-## Configure your shell once
+Or read the entry-point skill directly:
 
 ```bash
-export NINEROUTER_URL="http://localhost:20128"   # local default, or your VPS / tunnel URL
-export NINEROUTER_KEY="sk-..."                   # from Dashboard → Keys (only if requireApiKey=true)
+cat skills/9router/SKILL.md
 ```
 
-Verify: `curl $NINEROUTER_URL/api/health` → `{"ok":true}`.
+## Raw URLs (for remote agents / curl)
 
-## Links
+When an agent needs to fetch skills remotely without cloning the repo:
 
-- Source: https://github.com/decolua/9router
-- Dashboard: https://9router.com
+| Skill | Raw URL |
+|---|---|
+| Entry point | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router/SKILL.md |
+| Chat | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-chat/SKILL.md |
+| Image | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-image/SKILL.md |
+| TTS | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-tts/SKILL.md |
+| STT | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-stt/SKILL.md |
+| Embeddings | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-embeddings/SKILL.md |
+| Video | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-video/SKILL.md |
+| Web search | https://raw.githubusercontent.com/decolua/9router/refs/heads/master/skills/9router-web-search/SKILL.md |
+| Browser Use | https://raw.githubusercontent.com/browser-use/browser-harness/main/install.md |
