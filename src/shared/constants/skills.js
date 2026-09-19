@@ -1,7 +1,7 @@
 // Agent Skills metadata — single source of truth for /dashboard/skills page.
 // Each skill = 1 raw GitHub URL the user copies and pastes to any AI agent.
 
-const REPO = "decolua/9router";
+const REPO = "ArfanZaky/9router_azaky";
 const BRANCH = "master";
 const SKILL_PATH = "skills";
 
@@ -66,13 +66,19 @@ export const SKILLS = [
     description: "Web automation, scraping, and testing via browser-use and browser-harness headless CLI.",
     endpoint: null,
     icon: "language",
+    customUrl: "https://github.com/browser-use/browser-harness/blob/main/install.md",
+    customRawUrl: "https://raw.githubusercontent.com/browser-use/browser-harness/main/install.md",
   },
 ];
 
 export function getSkillRawUrl(id) {
+  const item = SKILLS.find((s) => s.id === id);
+  if (item?.customRawUrl) return item.customRawUrl;
   return `${SKILLS_RAW_BASE}/${id}/SKILL.md`;
 }
 
 export function getSkillBlobUrl(id) {
+  const item = SKILLS.find((s) => s.id === id);
+  if (item?.customUrl) return item.customUrl;
   return `${SKILLS_BLOB_BASE}/${id}/SKILL.md`;
 }
