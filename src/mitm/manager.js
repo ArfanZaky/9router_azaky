@@ -88,7 +88,7 @@ function resolveSourceMitmDir() {
 // Copies all dependencies: logger.js, config.js, paths.js, cert/, dns/, handlers/
 function ensureRuntimeServer(bundledPath) {
   try {
-    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] bundledPath: ${bundledPath}\n`, { flag: 'a' });
+    log(`[MITM] ensureRuntimeServer bundledPath: ${bundledPath}`);
     if (!bundledPath || !fs.existsSync(bundledPath)) return bundledPath;
 
     // Copy to runtime for node_modules (avoid EBUSY) and standalone (incomplete build).
@@ -97,7 +97,7 @@ function ensureRuntimeServer(bundledPath) {
     const isNodeModules = normalizedPath.includes('/node_modules/');
     const isStandalone = normalizedPath.includes('/.next/standalone/');
     
-    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] isStandalone: ${isStandalone}, isNodeModules: ${isNodeModules}\n`, { flag: 'a' });
+    log(`[MITM] isStandalone: ${isStandalone}, isNodeModules: ${isNodeModules}`);
 
     if (!isNodeModules && !isStandalone) {
       return bundledPath;  // Dev mode
@@ -110,7 +110,7 @@ function ensureRuntimeServer(bundledPath) {
     if (fs.existsSync(runtimeServer)) {
       try {
         if (fs.statSync(bundledPath).size === fs.statSync(runtimeServer).size) {
-           fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] Skipped copy due to size match\n`, { flag: 'a' });
+           log(`[MITM] Skipped copy due to size match`);
            return runtimeServer;
         }
       } catch { /* recopy */ }
@@ -118,7 +118,7 @@ function ensureRuntimeServer(bundledPath) {
 
     // Find complete source MITM directory (standalone output is incomplete - missing dependencies)
     const sourceMitmDir = resolveSourceMitmDir();
-    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] sourceMitmDir: ${sourceMitmDir}\n`, { flag: 'a' });
+    log(`[MITM] sourceMitmDir: ${sourceMitmDir}`);
     
     if (!sourceMitmDir) {
       return bundledPath;
@@ -156,10 +156,10 @@ function ensureRuntimeServer(bundledPath) {
       }
     }
     
-    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] Copy SUCCESS\n`, { flag: 'a' });
+    log(`[MITM] Copy SUCCESS`);
     return runtimeServer;
   } catch (e) {
-    fs.writeFileSync('C:\\Users\\arfan\\AppData\\Roaming\\9router\\mitm-debug.log', `[Init] Copy FAILED: ${e.stack}\n`, { flag: 'a' });
+    log(`[MITM] Copy FAILED: ${e.stack}`);
     try { log(`[MITM] runtime copy failed: ${e.message}`); } catch { /* ignore */ }
     return bundledPath;
   }
