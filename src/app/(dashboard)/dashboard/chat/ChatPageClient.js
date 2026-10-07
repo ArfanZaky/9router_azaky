@@ -1879,8 +1879,14 @@ export default function ChatPageClient() {
   };
 
   const resolveGate = async (gate, outcome, always = false) => {
-    const runId = getChatRun(activeSessionId)?.runId;
-    if (!runId) return;
+    let runId = gate.runId || getChatRun(activeSessionId)?.runId;
+    // Fallback: scan liveRunRef for any active run
+    if (!runId) {
+      for (const [id, ctx] of liveRunRef.current.entries()) {
+        if (ctx.isActive?.()) { runId = id; break; }
+      }
+    }
+    if (!runId) { setError("No active run found for approval"); return; }
     try {
       const res = await fetch(`/api/chat/runs/${runId}/gates`, {
         method: "POST",
@@ -2811,7 +2817,15 @@ export default function ChatPageClient() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setAutoApprove((value) => !value)}
+                  onClick={() => {
+                    const next = !autoApprove;
+                    setAutoApprove(next);
+                    if (next) {
+                      let rid = getChatRun(activeSessionId)?.runId;
+                      if (!rid) { for (const [id, ctx] of liveRunRef.current.entries()) { if (ctx.isActive?.()) { rid = id; break; } } }
+                      if (rid) fetch(`/api/chat/runs/${rid}/gates`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoApprove: true }) }).catch(() => {});
+                    }
+                  }}
                   className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${autoApprove ? "bg-emerald-500/10 text-emerald-600" : "text-text-muted hover:bg-sidebar"}`}
                   title="Auto-approve all tools for this run"
                 >
