@@ -24,6 +24,7 @@ export default {
     // account/token even when quota is full — verified live.
     baseUrl: `${ANTIGRAVITY_IDE_BASE_URL}/v1internal`,
     format: "gemini-cli",
+    forceStream: true,
     cliVersion: "0.34.0",
     apiClient: "google-genai-sdk/1.41.0 gl-node/v22.19.0",
     usage: {

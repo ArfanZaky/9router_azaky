@@ -67,12 +67,39 @@ function isTruncatedText(content, finish) {
   return false;
 }
 
-async function callChatCompletions({ model, messages, tools, apiKey, temperature, max_tokens, top_p, signal, reasoning_effort }) {
+function parseSseLineBuffer(buffer, onEvent, initialEventName = "message") {
+  const lines = buffer.split(/\r?\n/);
+  const remainder = lines.pop() || "";
+  let eventName = initialEventName;
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim() || "message";
+    } else if (line.startsWith("data:")) {
+      onEvent(eventName, line.slice(5).trim());
+      eventName = "message";
+    }
+  }
+  return { remainder, eventName };
+}
+
+async function callChatCompletions({
+  model,
+  messages,
+  tools,
+  apiKey,
+  temperature,
+  max_tokens,
+  top_p,
+  signal,
+  reasoning_effort,
+  onReasoningDelta,
+  onTextDelta,
+}) {
   await ensureTranslators();
   const body = {
     model,
     messages,
-    stream: false,
+    stream: true,
   };
   if (tools?.length) {
     body.tools = tools;
@@ -101,8 +128,8 @@ async function callChatCompletions({ model, messages, tools, apiKey, temperature
     headers,
   });
 
-  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
     const msg =
       data?.error?.message ||
       data?.error ||
@@ -110,7 +137,94 @@ async function callChatCompletions({ model, messages, tools, apiKey, temperature
       `Chat completions failed (${response.status})`;
     throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
   }
-  return data;
+
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("text/event-stream") || !response.body) {
+    return await response.json().catch(() => ({}));
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "message";
+  let accumulatedText = "";
+  let accumulatedReasoning = "";
+  let usage = null;
+  let finishReason = "";
+  const toolCallMap = new Map();
+
+  const consume = (_eventName, payload) => {
+    if (!payload || payload === "[DONE]") return;
+    let chunk;
+    try {
+      chunk = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    if (chunk.error) {
+      throw new Error(typeof chunk.error === "string" ? chunk.error : chunk.error?.message || "Stream error");
+    }
+    const choice = chunk.choices?.[0];
+    const delta = choice?.delta || {};
+    const reasoningPiece = delta.reasoning_content || delta.reasoning || delta.thinking || delta.thought || "";
+    const textPiece = delta.content || "";
+    if (choice?.finish_reason) finishReason = choice.finish_reason;
+    if (chunk.usage) usage = chunk.usage;
+
+    if (reasoningPiece) {
+      accumulatedReasoning += reasoningPiece;
+      onReasoningDelta?.(accumulatedReasoning);
+    }
+    if (textPiece) {
+      accumulatedText += textPiece;
+      onTextDelta?.(accumulatedText);
+    }
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index ?? 0;
+        if (!toolCallMap.has(idx)) {
+          toolCallMap.set(idx, { id: tc.id || "", type: "function", name: "", arguments: "" });
+        }
+        const existing = toolCallMap.get(idx);
+        if (tc.id) existing.id = tc.id;
+        if (tc.function?.name) existing.name += tc.function.name;
+        if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+      }
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parsed = parseSseLineBuffer(buffer, consume, eventName);
+    buffer = parsed.remainder;
+    eventName = parsed.eventName;
+  }
+  const tail = buffer.trim();
+  if (tail.startsWith("data:")) consume(eventName, tail.slice(5).trim());
+
+  const toolCalls = toolCallMap.size > 0
+    ? [...toolCallMap.entries()].sort((a, b) => a[0] - b[0]).map(([, tc]) => ({
+        id: tc.id || `call_${Date.now()}`,
+        type: "function",
+        function: { name: tc.name, arguments: tc.arguments }
+      }))
+    : undefined;
+
+  return {
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: accumulatedText || null,
+        ...(accumulatedReasoning ? { reasoning_content: accumulatedReasoning } : {}),
+        ...(toolCalls ? { tool_calls: toolCalls } : {}),
+      },
+      finish_reason: finishReason || (toolCalls?.length ? "tool_calls" : "stop"),
+    }],
+    usage,
+  };
 }
 
 function extractReasoning(message) {
@@ -240,6 +354,10 @@ export async function runAgentLoop({
     }
   }
   const history = sanitizeToolHistory(rawHistory);
+  // Ensure history does not end with an orphaned assistant turn without response
+  while (history.length > 0 && history.at(-1)?.role === "assistant" && !history.at(-1)?.tool_calls?.length) {
+    history.pop();
+  }
 
   const working = [{ role: "system", content: agentSystem }, ...history];
   const transcript = []; // UI-facing turns (assistant/tool)
@@ -280,6 +398,12 @@ export async function runAgentLoop({
         top_p,
         signal,
         reasoning_effort,
+        onReasoningDelta: async (liveReasoning) => {
+          await emit("reasoning", { step: step + 1, content: liveReasoning });
+        },
+        onTextDelta: async (liveText) => {
+          await emit("text", { step: step + 1, content: liveText });
+        },
       });
     } catch (e) {
       lastError = e.message || String(e);
@@ -336,6 +460,7 @@ export async function runAgentLoop({
     const assistantMsg = {
       role: "assistant",
       content: content || null,
+      ...(reasoning ? { reasoning_content: reasoning } : {}),
     };
     if (toolCalls.length) {
       assistantMsg.tool_calls = toolCalls.map((c) => ({

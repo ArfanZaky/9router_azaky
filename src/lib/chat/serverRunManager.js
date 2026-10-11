@@ -225,7 +225,6 @@ async function emit(run, type, data) {
   const event = { runId: run.id, seq: ++run.seq, type, data, createdAt: new Date().toISOString() };
   run.events.push(event);
   if (run.events.length > 1000) run.events.shift();
-  await appendChatRunEvent(run.id, event).catch(() => {});
   for (const listener of run.listeners) {
     try { listener(event); } catch { /* ignore disconnected subscribers */ }
   }
@@ -234,6 +233,7 @@ async function emit(run, type, data) {
   } catch {
     // optional WS bridge from chat-server.mjs
   }
+  appendChatRunEvent(run.id, event).catch(() => {});
   return event;
 }
 
@@ -337,7 +337,7 @@ async function runPlainChat(run) {
     }
     const choice = chunk.choices?.[0];
     const delta = choice?.delta || {};
-    const reasoningPiece = text(delta.reasoning_content || delta.reasoning || "");
+    const reasoningPiece = text(delta.reasoning_content || delta.reasoning || delta.thinking || delta.thought || "");
     const piece = text(delta.content || choice?.message?.content || chunk.output_text || chunk.text);
     if (chunk.usage) {
       run.tokenUsage = chunk.usage;
