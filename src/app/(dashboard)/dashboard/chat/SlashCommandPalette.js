@@ -9,6 +9,7 @@ export const CHAT_COMMANDS = [
   { name: "rename", args: "<title>", summary: "Rename this conversation" },
   { name: "model", summary: "Open the model picker" },
   { name: "agent", args: "orchestrator|team|coder|researcher|reviewer|planner", summary: "Switch agent role" },
+  { name: "agent-teams", args: "<goal>", summary: "DSH AgentTeams: multi-agent team execution with DAG task scheduler" },
   { name: "retry", summary: "Regenerate the latest answer" },
   { name: "stop", summary: "Stop the active run" },
   { name: "export", args: "md|json", summary: "Export this conversation" },

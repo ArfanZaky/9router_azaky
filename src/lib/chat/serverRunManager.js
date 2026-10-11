@@ -42,7 +42,7 @@ async function openGate(run, kind, payload) {
       resolve(kind === "approval" ? false : null);
     }, GATE_TIMEOUT_MS);
     run.gates.set(id, { kind, resolve, timer });
-    emit(run, kind === "approval" ? "approval" : "ask", { id, ...payload }).catch(() => {});
+    emit(run, kind === "approval" ? "approval" : "ask", { id, runId: run.id, ...payload }).catch(() => {});
   });
 }
 
@@ -474,13 +474,19 @@ async function runAgent(run) {
       const action = args?.action || "list";
       if (action === "create") {
         const taskId = args.taskId || `task_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`;
+        // Check dependency satisfaction for DSH state awareness
+        const depends = Array.isArray(args.dependsOn) ? args.dependsOn : [];
+        const isDepSatisfied = depends.every((d) => {
+          const prior = run.teamTasks.get(d);
+          return prior && prior.status === "completed";
+        });
         const taskObj = {
           id: taskId,
           title: args.title || "Untitled task",
           description: args.description || "",
           assignee: args.assignee || null,
-          status: args.status || "pending",
-          dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn : [],
+          status: args.status || (isDepSatisfied ? "pending" : "blocked"),
+          dependsOn: depends,
           updatedAt: new Date().toISOString(),
         };
         run.teamTasks.set(taskId, taskObj);
@@ -497,6 +503,22 @@ async function runAgent(run) {
         }
         taskObj.updatedAt = new Date().toISOString();
         run.teamTasks.set(args.taskId, taskObj);
+
+        // Auto-unblock any dependent tasks if this task is completed
+        if (taskObj.status === "completed") {
+          for (const other of run.teamTasks.values()) {
+            if (other.status === "blocked" && Array.isArray(other.dependsOn)) {
+              const allDone = other.dependsOn.every((depId) => {
+                const dt = run.teamTasks.get(depId);
+                return dt && dt.status === "completed";
+              });
+              if (allDone) {
+                other.status = "pending";
+                other.updatedAt = new Date().toISOString();
+              }
+            }
+          }
+        }
       }
       const list = Array.from(run.teamTasks.values());
       await emit(run, "team_tasks_update", { tasks: list });
@@ -552,10 +574,20 @@ async function runAgent(run) {
         });
         finalText = result.finalText || finalText;
         sub.status = "completed";
+        if (rosterMember) {
+          rosterMember.status = "completed";
+          const rosterList = Array.from(run.teamRoster.values());
+          await emit(run, "team_roster_update", { roster: rosterList });
+        }
         await emit(run, "subagent_done", { id: subId, role: to, task: message, finalText });
         return { ok: true, recipient: to, response: finalText };
       } catch (err) {
         sub.status = "failed";
+        if (rosterMember) {
+          rosterMember.status = "failed";
+          const rosterList = Array.from(run.teamRoster.values());
+          await emit(run, "team_roster_update", { roster: rosterList });
+        }
         await emit(run, "subagent_done", { id: subId, role: to, task: message, error: err?.message || String(err) });
         return { ok: false, recipient: to, error: err?.message || String(err) };
       }
@@ -750,6 +782,7 @@ export async function startServerChatRun(input) {
     subAgents: new Map(),
     gates: new Map(),
     teamRoster: new Map([
+      ["orchestrator", { name: "orchestrator", role: "Team Lead & Captain", description: "Plans DAG tasks, assigns work, synthesizes results", status: "idle" }],
       ["dev", { name: "dev", role: "Implementation Engineer", description: "Writes and updates code, runs tests", status: "idle" }],
       ["qa", { name: "qa", role: "Quality & Security Reviewer", description: "Finds regressions, edge cases, vulnerabilities", status: "idle" }],
       ["architect", { name: "architect", role: "System Architect", description: "Designs architecture, data flow, and boundaries", status: "idle" }],
@@ -842,8 +875,17 @@ export async function steerServerChatRun(id, instruction) {
 }
 
 export function resolveChatGate(runId, gateId, outcome) {
-  const run = liveRuns.get(runId);
-  const gate = run?.gates?.get(gateId);
+  let run = liveRuns.get(runId);
+  let gate = run?.gates?.get(gateId);
+  if (!gate) {
+    for (const r of liveRuns.values()) {
+      if (r.gates?.has(gateId)) {
+        run = r;
+        gate = r.gates.get(gateId);
+        break;
+      }
+    }
+  }
   if (!run || !gate) return null;
   clearTimeout(gate.timer);
   run.gates.delete(gateId);
@@ -852,14 +894,31 @@ export function resolveChatGate(runId, gateId, outcome) {
   } else {
     gate.resolve(String(outcome || ""));
   }
-  return { id, gateId, resolved: true };
+  return { id: run.id, gateId, resolved: true };
 }
 
 export function setChatAutoApprove(runId, enabled) {
-  const run = liveRuns.get(runId);
+  let run = liveRuns.get(runId);
+  if (!run) {
+    for (const r of liveRuns.values()) {
+      if (r.id === runId || r.sessionId === runId) {
+        run = r;
+        break;
+      }
+    }
+  }
   if (!run) return null;
   run.autoApprove = enabled === true;
-  return { id: runId, autoApprove: run.autoApprove };
+  if (run.autoApprove && run.gates?.size > 0) {
+    for (const [gid, gate] of Array.from(run.gates.entries())) {
+      if (gate.kind === "approval") {
+        clearTimeout(gate.timer);
+        run.gates.delete(gid);
+        gate.resolve(true);
+      }
+    }
+  }
+  return { id: run.id, autoApprove: run.autoApprove };
 }
 
 export function subscribeServerChatRun(id, listener, after = 0) {

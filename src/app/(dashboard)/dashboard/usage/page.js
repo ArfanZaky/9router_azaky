@@ -4,6 +4,7 @@ import { Suspense, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { UsageStats, RequestLogger, CardSkeleton, SegmentedControl } from "@/shared/components";
 import RequestDetailsTab from "./components/RequestDetailsTab";
+import UsageErrorBoundary from "./components/UsageErrorBoundary";
 
 const PERIODS = [
   { value: "today", label: "Today" },
@@ -15,9 +16,11 @@ const PERIODS = [
 
 export default function UsagePage() {
   return (
-    <Suspense fallback={<CardSkeleton />}>
-      <UsageContent />
-    </Suspense>
+    <UsageErrorBoundary title="Usage Dashboard">
+      <Suspense fallback={<CardSkeleton />}>
+        <UsageContent />
+      </Suspense>
+    </UsageErrorBoundary>
   );
 }
 
@@ -63,13 +66,15 @@ function UsageContent() {
         )}
       </div>
 
-      {activeTab === "overview" && (
-        <Suspense fallback={<CardSkeleton />}>
-          <UsageStats period={period} setPeriod={setPeriod} hidePeriodSelector />
-        </Suspense>
-      )}
-      {activeTab === "logs" && <RequestLogger />}
-      {activeTab === "details" && <RequestDetailsTab />}
+      <UsageErrorBoundary title={activeTab === "details" ? "Request Details" : "Usage Overview"}>
+        {activeTab === "overview" && (
+          <Suspense fallback={<CardSkeleton />}>
+            <UsageStats period={period} setPeriod={setPeriod} hidePeriodSelector />
+          </Suspense>
+        )}
+        {activeTab === "logs" && <RequestLogger />}
+        {activeTab === "details" && <RequestDetailsTab />}
+      </UsageErrorBoundary>
     </div>
   );
 }

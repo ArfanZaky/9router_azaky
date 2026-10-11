@@ -356,6 +356,10 @@ export default function ChatPageClient() {
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [messages, setMessages] = useState([]);
+  const messagesRef = useRef([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [apiKey, setApiKey] = useState("");
@@ -366,6 +370,11 @@ export default function ChatPageClient() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
+  const [messageQueue, setMessageQueue] = useState([]);
+  const messageQueueRef = useRef([]);
+  useEffect(() => {
+    messageQueueRef.current = messageQueue;
+  }, [messageQueue]);
   const [error, setError] = useState("");
   const [renameId, setRenameId] = useState("");
   const [renameValue, setRenameValue] = useState("");
@@ -552,7 +561,6 @@ export default function ChatPageClient() {
 
   const params = { ...DEFAULT_PARAMS, ...(activeSession?.params || {}) };
   const canSend =
-    !isSending &&
     !!activeSession?.model &&
     !!apiKey &&
     (draft.trim().length > 0 || attachments.length > 0);
@@ -913,6 +921,7 @@ export default function ChatPageClient() {
                 error: event.type === "error" ? eventData.message || "Chat failed" : "",
               });
               clearChatRun(sessionId);
+    // Queue auto-drained by worker effect
               stopRunTransport(data.runId);
               liveRunRef.current.delete(data.runId);
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
@@ -1403,7 +1412,15 @@ export default function ChatPageClient() {
     return finalMessages;
   };
 
-  const sendMessage = async ({ regenerate = false, sourceMessages = null } = {}) => {
+  const removeFromQueue = (id) => {
+    setMessageQueue((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const clearQueue = () => {
+    setMessageQueue([]);
+  };
+
+  const sendMessage = async ({ regenerate = false, sourceMessages = null, queuedItem = null } = {}) => {
     if (!activeSession?.model) {
       setError("Select a model first.");
       return;
@@ -1413,6 +1430,23 @@ export default function ChatPageClient() {
       return;
     }
     if (getChatRun(activeSessionId)?.isSending) {
+      if (!regenerate && !queuedItem && (draft.trim() || attachments.length > 0)) {
+        const item = {
+          id: createId(),
+          text: draft.trim(),
+          attachments: [...attachments],
+          timestamp: new Date().toISOString(),
+        };
+        setMessageQueue((prev) => [...prev, item]);
+        setDraft("");
+        setAttachments([]);
+        setError("Message queued. Will send automatically when current response finishes.");
+        return;
+      }
+      if (queuedItem) {
+        setMessageQueue((prev) => [queuedItem, ...prev]);
+        return;
+      }
       setError("This session is already running. Stop it first or wait.");
       return;
     }
@@ -1424,15 +1458,16 @@ export default function ChatPageClient() {
       providerId: activeSession.providerId,
     };
 
-    let workingMessages = [...(sourceMessages || messages)];
+    let workingMessages = [...(sourceMessages || messagesRef.current || messages)];
     if (regenerate) {
       const lastUserIdx = [...workingMessages].map((m) => m.role).lastIndexOf("user");
       if (lastUserIdx < 0) return;
       workingMessages = workingMessages.slice(0, lastUserIdx + 1);
     } else {
-      const userText = draft.trim();
-      if (!userText && attachments.length === 0) return;
-      const docList = attachments.filter((a) => a.docPath);
+      const userText = queuedItem ? (queuedItem.text || "").trim() : draft.trim();
+      const userAttachments = queuedItem ? (queuedItem.attachments || []) : attachments;
+      if (!userText && userAttachments.length === 0) return;
+      const docList = userAttachments.filter((a) => a.docPath);
       let content = userText;
       if (docList.length > 0) {
         const note = docList.map((d) => `- ${d.name} (path: ${d.docPath})`).join("\n");
@@ -1442,7 +1477,7 @@ export default function ChatPageClient() {
         id: createId(),
         role: "user",
         content,
-        attachments: attachments.map((a) => ({
+        attachments: userAttachments.map((a) => ({
           id: a.id,
           name: a.name,
           type: a.type,
@@ -1453,8 +1488,10 @@ export default function ChatPageClient() {
         createdAt: new Date().toISOString(),
       };
       workingMessages = [...workingMessages, userMessage];
-      setDraft("");
-      setAttachments([]);
+      if (!queuedItem) {
+        setDraft("");
+        setAttachments([]);
+      }
       if (userText) {
         setInputHistory((prev) => {
           const next = prev[0] === userText ? prev : [userText, ...prev.filter((x) => x !== userText)].slice(0, 50);
@@ -1811,6 +1848,22 @@ export default function ChatPageClient() {
       });
     }
   };
+
+  // Queue worker: automatically pops and sends the next queued message when AI turns idle
+  useEffect(() => {
+    if (!isSending && messageQueue.length > 0 && activeSession?.model && apiKey) {
+      const timer = setTimeout(() => {
+        if (!getChatRun(activeSessionId)?.isSending && messageQueueRef.current.length > 0) {
+          const nextItem = messageQueueRef.current[0];
+          setMessageQueue((prev) => prev.slice(1));
+          if (nextItem && (nextItem.text || nextItem.attachments?.length)) {
+            sendMessage({ queuedItem: nextItem });
+          }
+        }
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [isSending, messageQueue.length, activeSessionId, activeSession?.model, apiKey]);
 
   const handleKeyDown = (event) => {
     if (commandOptions.length > 0) {
@@ -2768,6 +2821,44 @@ export default function ChatPageClient() {
           {asks.map((ask) => (
             <AskWizard key={ask.id} ask={ask} onAnswer={(answer) => resolveGate(ask, answer)} />
           ))}
+          {messageQueue.length > 0 && (
+            <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+              <div className="flex items-center justify-between font-medium text-primary">
+                <span className="flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px]">queue</span>
+                  Queued Messages ({messageQueue.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={clearQueue}
+                  className="text-[11px] text-text-muted hover:text-red-400 transition-colors"
+                >
+                  Clear all
+                </button>
+              </div>
+              <div className="mt-1.5 flex flex-col gap-1 max-h-28 overflow-y-auto custom-scrollbar">
+                {messageQueue.map((item, qIdx) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between gap-2 rounded-lg bg-surface/90 px-2 py-1 border border-border text-[11px]"
+                  >
+                    <span className="truncate flex-1 text-text-main font-mono">
+                      <span className="text-primary mr-1.5 font-semibold">#{qIdx + 1}</span>
+                      {item.text || "(attachments only)"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeFromQueue(item.id)}
+                      className="text-text-muted hover:text-red-400 transition-colors p-0.5 rounded"
+                      title="Remove from queue"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">close</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div
             ref={composerRef}
             className="relative mx-auto max-w-3xl rounded-2xl border border-border bg-sidebar/40 p-2 shadow-sm"
@@ -2934,8 +3025,8 @@ export default function ChatPageClient() {
                     Stop
                   </Button>
                 ) : null}
-                <Button size="sm" icon="send" onClick={() => draft.trim().startsWith("/") ? runCommand(draft) : sendMessage()} disabled={!draft.trim().startsWith("/") && !canSend}>
-                  Send
+                <Button size="sm" icon={isSending ? "queue" : "send"} onClick={() => draft.trim().startsWith("/") ? runCommand(draft) : sendMessage()} disabled={!draft.trim().startsWith("/") && !canSend}>
+                  {isSending ? "Queue" : "Send"}
                 </Button>
               </div>
             </div>
