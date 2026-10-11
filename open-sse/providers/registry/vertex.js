@@ -21,6 +21,7 @@ export default {
   transport: {
     baseUrl: "https://aiplatform.googleapis.com",
     format: "vertex",
+    forceStream: true,
   },
   models: [
     { id: "gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview" },

@@ -74,4 +74,36 @@ describe("agent loop completion", () => {
       messages: [{ role: "user", content: "Continue" }],
     })).rejects.toThrow("Provider disconnected");
   });
+
+  it("streams reasoning and text tokens via SSE", async () => {
+    const sseBody = [
+      'data: {"choices":[{"delta":{"reasoning_content":"Thinking about answer"}}]}',
+      '',
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+      '',
+      'data: {"choices":[{"delta":{"content":" world!"}}]}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join("\n");
+
+    mocks.handleChat.mockResolvedValueOnce(new Response(sseBody, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+
+    const events = [];
+    const result = await runAgentLoop({
+      model: "test",
+      messages: [{ role: "user", content: "Hi" }],
+      onEvent: (type, data) => events.push({ type, data }),
+    });
+
+    expect(events.some((e) => e.type === "reasoning" && e.data.content === "Thinking about answer")).toBe(true);
+    expect(events.filter((e) => e.type === "reasoning")).toHaveLength(1);
+    expect(events.some((e) => e.type === "text" && e.data.content === "Hello")).toBe(true);
+    expect(events.some((e) => e.type === "text" && e.data.content === "Hello world!")).toBe(true);
+    expect(events.filter((e) => e.type === "text")).toHaveLength(2);
+    expect(result.finalText).toBe("Hello world!");
+  });
 });

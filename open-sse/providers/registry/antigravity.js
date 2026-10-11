@@ -24,6 +24,7 @@ export default {
       "https://daily-cloudcode-pa.sandbox.googleapis.com",
     ],
     format: "antigravity",
+    forceStream: true,
     headers: {
       "User-Agent": getAntigravityUserAgent(), // Dynamic: matches real IDE v2.1.1
     },

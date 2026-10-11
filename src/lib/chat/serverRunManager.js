@@ -225,7 +225,6 @@ async function emit(run, type, data) {
   const event = { runId: run.id, seq: ++run.seq, type, data, createdAt: new Date().toISOString() };
   run.events.push(event);
   if (run.events.length > 1000) run.events.shift();
-  await appendChatRunEvent(run.id, event).catch(() => {});
   for (const listener of run.listeners) {
     try { listener(event); } catch { /* ignore disconnected subscribers */ }
   }
@@ -234,6 +233,7 @@ async function emit(run, type, data) {
   } catch {
     // optional WS bridge from chat-server.mjs
   }
+  appendChatRunEvent(run.id, event).catch(() => {});
   return event;
 }
 
@@ -245,12 +245,17 @@ function appendAssistantSegment(run, segment) {
   const message = run.messages.find((item) => item.id === run.assistantId);
   if (!message) return;
   const segments = Array.isArray(message.segments) ? [...message.segments] : [];
-  const last = segments.at(-1);
-  if ((segment.type === "text" || segment.type === "reasoning") && last?.type === segment.type) {
-    last.content = segment.content;
-  } else {
-    segments.push(segment);
+  if (segment.type === "text" || segment.type === "reasoning") {
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (segments[i].type === "tool") break;
+      if (segments[i].type === segment.type) {
+        segments[i] = { ...segments[i], content: segment.content };
+        patchAssistant(run, { segments });
+        return;
+      }
+    }
   }
+  segments.push(segment);
   patchAssistant(run, { segments });
 }
 
@@ -337,7 +342,7 @@ async function runPlainChat(run) {
     }
     const choice = chunk.choices?.[0];
     const delta = choice?.delta || {};
-    const reasoningPiece = text(delta.reasoning_content || delta.reasoning || "");
+    const reasoningPiece = text(delta.reasoning_content || delta.reasoning || delta.thinking || delta.thought || "");
     const piece = text(delta.content || choice?.message?.content || chunk.output_text || chunk.text);
     if (chunk.usage) {
       run.tokenUsage = chunk.usage;
@@ -356,6 +361,7 @@ async function runPlainChat(run) {
     if (!piece) return;
     run.assistantText += piece;
     patchAssistant(run, { content: run.assistantText, status: "streaming" });
+    appendAssistantSegment(run, { type: "text", content: run.assistantText });
     await emit(run, "text", { content: run.assistantText });
     await checkpoint(run);
   };

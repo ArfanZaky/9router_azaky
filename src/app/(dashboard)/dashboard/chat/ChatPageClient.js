@@ -175,6 +175,21 @@ function downloadText(filename, text) {
   URL.revokeObjectURL(url);
 }
 
+function updateOrAppendSegment(segments, type, content, extra = {}) {
+  const next = [...(segments || [])];
+  if (type === "text" || type === "reasoning") {
+    for (let i = next.length - 1; i >= 0; i--) {
+      if (next[i].type === "tool") break;
+      if (next[i].type === type) {
+        next[i] = { ...next[i], content, ...extra };
+        return next;
+      }
+    }
+  }
+  next.push({ type, content, ...extra });
+  return next;
+}
+
 function SubAgentOverlay({ agent, onClose }) {
   const [info, setInfo] = useState(null);
 
@@ -474,6 +489,7 @@ export default function ChatPageClient() {
   const composerRef = useRef(null);
   const websocketRef = useRef(new Map()); // runId → WebSocket
   const reconnectTimerRef = useRef(new Map()); // runId → timer
+  const pollTimerRef = useRef(new Map()); // runId → polling timer
   const liveRunRef = useRef(new Map()); // runId → live run context
 
   // Transport callbacks need the latest session without reconnecting on every selection.
@@ -566,8 +582,8 @@ export default function ChatPageClient() {
     (draft.trim().length > 0 || attachments.length > 0);
   const commandOptions = useMemo(() => commandMatches(draft), [draft]);
 
-  const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = useCallback((smooth = false) => {
+    bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
   }, []);
 
   const handleTranscriptScroll = useCallback((event) => {
@@ -657,6 +673,7 @@ export default function ChatPageClient() {
                     ? {
                         ...m,
                         content,
+                        segments: updateOrAppendSegment(m.segments, "text", content),
                         tool_calls: data.tool_calls || m.tool_calls || null,
                         status: data.tool_calls?.length ? "tool_calls" : "streaming",
                       }
@@ -675,9 +692,11 @@ export default function ChatPageClient() {
             } else if (event.type === "reasoning") {
               const reasoning = data.content || "";
               patchChatRun(existingSessionId, {
-                messages: (getChatRun(existingSessionId)?.messages || []).map((m) => m.id === existing.assistantId
-                  ? { ...m, reasoning, segments: [...(m.segments || []).filter((s) => s.type !== "reasoning"), { type: "reasoning", content: reasoning }] }
-                  : m),
+                messages: (getChatRun(existingSessionId)?.messages || []).map((m) =>
+                  m.id === existing.assistantId
+                    ? { ...m, reasoning, segments: updateOrAppendSegment(m.segments, "reasoning", reasoning) }
+                    : m
+                ),
               });
             } else if (event.type === "usage") {
               const used = Number(data.context_tokens || 0);
@@ -876,7 +895,8 @@ export default function ChatPageClient() {
 
       // Reattach WebSocket listener for streaming events
       if (!liveRunRef.current.get(data.runId)) {
-        let lastSeq = data.lastSeq || 0;
+        let lastSeq = 0;
+        let assistantText = data.assistantText || "";
         const liveCtx = {
           runId: data.runId,
           lastSeq: () => lastSeq,
@@ -886,21 +906,163 @@ export default function ChatPageClient() {
             lastSeq = event.seq;
             const eventData = event.data || {};
             updateLiveFromEvent(event, eventData);
-            if (event.type === "text" || (event.type === "message" && eventData.role === "assistant")) {
-              const content = eventData.content || data.assistantText || "";
-              patchChatRun(sessionId, {
-                assistantText: content,
-                messages: (getChatRun(sessionId)?.messages || []).map((m) =>
-                  m.id === data.assistantId
-                    ? {
-                        ...m,
-                        content,
-                        tool_calls: eventData.tool_calls || m.tool_calls || null,
-                        status: eventData.tool_calls?.length ? "tool_calls" : "streaming",
-                      }
-                    : m
-                ),
+            if (event.type === "text") {
+              assistantText = eventData.content || assistantText;
+              const currentRun = getChatRun(sessionId);
+              const currentMsgs = currentRun?.messages || messagesRef.current || [];
+              const next = currentMsgs.map((m) =>
+                m.id === data.assistantId
+                  ? {
+                      ...m,
+                      content: assistantText,
+                      segments: updateOrAppendSegment(m.segments, "text", assistantText),
+                      status: "streaming",
+                    }
+                  : m
+              );
+              patchChatRun(sessionId, { assistantText, messages: next });
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setMessages(next);
+              }
+            } else if (event.type === "reasoning") {
+              const reasoning = eventData.content || "";
+              const currentRun = getChatRun(sessionId);
+              const currentMsgs = currentRun?.messages || messagesRef.current || [];
+              const next = currentMsgs.map((m) => {
+                if (m.id !== data.assistantId) return m;
+                const segments = updateOrAppendSegment(m.segments, "reasoning", reasoning, { timestamp: new Date().toISOString() });
+                return { ...m, reasoning, segments };
               });
+              patchChatRun(sessionId, { messages: next });
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setMessages(next);
+              }
+            } else if (event.type === "message" && eventData.role === "assistant") {
+              assistantText = eventData.content || assistantText;
+              const currentRun = getChatRun(sessionId);
+              const currentMsgs = currentRun?.messages || messagesRef.current || [];
+              const next = currentMsgs.map((m) =>
+                m.id === data.assistantId
+                  ? {
+                      ...m,
+                      content: assistantText,
+                      tool_calls: eventData.tool_calls || m.tool_calls || null,
+                      status: eventData.tool_calls?.length ? "tool_calls" : "streaming",
+                    }
+                  : m
+              );
+              patchChatRun(sessionId, { assistantText, messages: next });
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setMessages(next);
+              }
+            } else if (event.type === "status") {
+              const roleLabel = AGENT_ROLES.find((r) => r.id === agentRole)?.label || "Agent";
+              const detail =
+                eventData.phase === "thinking"
+                  ? `thinking (step ${eventData.step || "?"})`
+                  : eventData.phase === "init"
+                    ? `workspace ${eventData.workspace || "…"}`
+                    : eventData.phase || "working";
+              const statusStr = `${roleLabel} ${detail}…`;
+              patchChatRun(sessionId, { agentStatus: statusStr });
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setAgentStatus(statusStr);
+              }
+            } else if (event.type === "tool_start") {
+              const toolTime = new Date().toISOString();
+              const currentRun = getChatRun(sessionId);
+              const currentMsgs = currentRun?.messages || messagesRef.current || [];
+              const updatedWithSegment = currentMsgs.map((m) =>
+                m.id === data.assistantId
+                  ? { ...m, segments: [...(m.segments || []), { type: "tool", callId: eventData.id, name: eventData.name, arguments: eventData.arguments, status: "running", timestamp: toolTime }] }
+                  : m
+              );
+              const toolMsg = {
+                id: eventData.id || createId(),
+                role: "tool",
+                tool_call_id: eventData.id,
+                name: eventData.name,
+                content: JSON.stringify({ status: "running", arguments: eventData.arguments }),
+                status: "running",
+                createdAt: toolTime,
+              };
+              const next = [...updatedWithSegment, toolMsg];
+              const toolStatus = `Tool: ${eventData.name}…`;
+              patchChatRun(sessionId, { messages: next, agentStatus: toolStatus });
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setMessages(next);
+                setAgentStatus(toolStatus);
+              }
+            } else if (event.type === "tool_result") {
+              const toolTime = new Date().toISOString();
+              const nextTool = {
+                id: eventData.id || createId(),
+                role: "tool",
+                tool_call_id: eventData.id,
+                name: eventData.name,
+                content: eventData.content,
+                status: "done",
+                createdAt: toolTime,
+              };
+              const currentRun = getChatRun(sessionId);
+              const currentMsgs = currentRun?.messages || messagesRef.current || [];
+              const index = currentMsgs.findIndex(
+                (m) => m.role === "tool" && m.tool_call_id === eventData.id && m.status === "running"
+              );
+              const base = index >= 0
+                ? currentMsgs.map((m, i) => (i === index ? nextTool : m))
+                : [...currentMsgs, nextTool];
+              const next = base.map((m) =>
+                m.id === data.assistantId
+                  ? { ...m, segments: (m.segments || []).map((seg) => seg.type === "tool" && seg.callId === eventData.id ? { ...seg, content: eventData.content, status: "done" } : seg) }
+                  : m
+              );
+              const toolDoneStatus = `Tool done: ${eventData.name}`;
+              patchChatRun(sessionId, { messages: next, agentStatus: toolDoneStatus });
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setMessages(next);
+                setAgentStatus(toolDoneStatus);
+              }
+              loadSessionDetail(sessionId).catch(() => {});
+            } else if (event.type === "tool_progress") {
+              const currentRun = getChatRun(sessionId);
+              const currentMsgs = currentRun?.messages || messagesRef.current || [];
+              const next = currentMsgs.map((m) =>
+                m.id === data.assistantId
+                  ? { ...m, segments: (m.segments || []).map((seg) => seg.type === "tool" && seg.callId === eventData.id ? { ...seg, progress: (seg.progress || "") + (eventData.chunk || "") } : seg) }
+                  : m
+              );
+              patchChatRun(sessionId, { messages: next });
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setMessages(next);
+              }
+            } else if (event.type === "usage") {
+              const used = Number(eventData.context_tokens || 0);
+              const win = Number(eventData.context_window || 0);
+              if (used > 0) setCtxUsed(used);
+              if (win > 0) setCtxWindow(win);
+            } else if (event.type === "task_update") {
+              setTasks(eventData.items || []);
+            } else if (event.type === "approval") {
+              setApprovals((prev) => [...prev.filter((item) => item.id !== eventData.id), eventData]);
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setAgentStatus(`Waiting for approval: ${eventData.tool || "tool"}`);
+              }
+            } else if (event.type === "ask") {
+              setAsks((prev) => [...prev.filter((item) => item.id !== eventData.id), eventData]);
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setAgentStatus("Waiting for your answer…");
+              }
+            } else if (event.type === "subagent_start") {
+              setSubAgents((prev) => [...prev.filter((item) => item.id !== eventData.id), { ...eventData, status: "running" }]);
+              setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: "running" } : m));
+            } else if (event.type === "subagent_done") {
+              setSubAgents((prev) => prev.map((item) => item.id === eventData.id ? { ...item, ...eventData, status: eventData.error ? "failed" : "completed" } : item));
+              setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: eventData.error ? "failed" : "idle" } : m));
+            } else if (event.type === "notice") {
+              if (mountedRef.current && activeSessionIdRef.current === sessionId) {
+                setAgentStatus(eventData.message || "Working…");
+              }
             } else if (event.type === "team_roster_update") {
               setTeamRoster(eventData.roster || []);
             } else if (event.type === "team_tasks_update") {
@@ -909,8 +1071,6 @@ export default function ChatPageClient() {
               setTeamMessages((prev) => [...prev, { ...eventData, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() }]);
             } else if (event.type === "team_broadcast") {
               setTeamMessages((prev) => [...prev, { ...eventData, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: eventData.timestamp || event.createdAt || new Date().toISOString() }]);
-             } else if (event.type === "tool_start" || event.type === "tool_result") {
-              loadSessionDetail(sessionId).catch(() => {});
             } else if (event.type === "done" || event.type === "error") {
               const finalMessages = eventData.messages || getChatRun(sessionId)?.messages || [];
               patchChatRun(sessionId, {
@@ -921,9 +1081,10 @@ export default function ChatPageClient() {
                 error: event.type === "error" ? eventData.message || "Chat failed" : "",
               });
               clearChatRun(sessionId);
-    // Queue auto-drained by worker effect
               stopRunTransport(data.runId);
               liveRunRef.current.delete(data.runId);
+              setApprovals([]);
+              setAsks([]);
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
                 setMessages(finalMessages);
                 setIsSending(false);
@@ -935,7 +1096,7 @@ export default function ChatPageClient() {
         };
         liveRunRef.current.set(data.runId, liveCtx);
       }
-      connectRunSocket(data.runId, data.lastSeq || 0, liveRunRef.current.get(data.runId));
+      connectRunSocket(data.runId, 0, liveRunRef.current.get(data.runId));
     } catch {
       // Ignore sync failures
     }
@@ -977,7 +1138,7 @@ export default function ChatPageClient() {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setWindowIndex(visibleMessages.length - 1);
     }
-    scrollToBottom();
+    scrollToBottom(false);
   }, [messages, isSending, scrollToBottom, visibleMessages.length]);
 
   const patchSession = async (id, patch) => {
@@ -1256,6 +1417,8 @@ export default function ChatPageClient() {
 
   const stopRunTransport = (runId) => {
     if (runId) {
+      const pTimer = pollTimerRef.current.get(runId);
+      if (pTimer) { clearTimeout(pTimer); pollTimerRef.current.delete(runId); }
       const timer = reconnectTimerRef.current.get(runId);
       if (timer) { clearTimeout(timer); reconnectTimerRef.current.delete(runId); }
       const socket = websocketRef.current.get(runId);
@@ -1266,6 +1429,8 @@ export default function ChatPageClient() {
       return;
     }
     // Stop all transports (full teardown).
+    for (const timer of pollTimerRef.current.values()) clearTimeout(timer);
+    pollTimerRef.current.clear();
     for (const timer of reconnectTimerRef.current.values()) clearTimeout(timer);
     reconnectTimerRef.current.clear();
     for (const socket of websocketRef.current.values()) {
@@ -1275,40 +1440,91 @@ export default function ChatPageClient() {
   };
 
   const connectRunSocket = (runId, after = 0, ctx = null) => {
-    if (!runId || typeof WebSocket === "undefined") return;
+    if (!runId) return;
     // Do NOT close other runs' sockets — each active run keeps its own WS.
     stopRunTransport(runId);
-    const protocol = globalThis.location?.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${globalThis.location.host}/api/chat/ws`);
-    websocketRef.current.set(runId, socket);
     const live = ctx || liveRunRef.current.get(runId);
-    socket.onopen = () => {
-      socket.send(JSON.stringify({ type: "subscribe", runId, after }));
+    if (!live) return;
+
+    const startHttpPolling = () => {
+      if (pollTimerRef.current.has(runId)) return;
+      const poll = async () => {
+        if (!live.isActive()) {
+          pollTimerRef.current.delete(runId);
+          return;
+        }
+        try {
+          const currentAfter = live.lastSeq?.() || 0;
+          const res = await fetch(`/api/chat/runs/${encodeURIComponent(runId)}?after=${currentAfter}`);
+          if (res.ok) {
+            const runData = await res.json().catch(() => null);
+            if (runData?.events?.length) {
+              for (const ev of runData.events) {
+                live.applyEvent(ev);
+              }
+            }
+            if (runData && !runData.live) {
+              pollTimerRef.current.delete(runId);
+              return;
+            }
+          }
+        } catch {
+          // ignore network hiccups
+        }
+        if (live.isActive()) {
+          const timer = setTimeout(poll, 1000);
+          pollTimerRef.current.set(runId, timer);
+        } else {
+          pollTimerRef.current.delete(runId);
+        }
+      };
+      const timer = setTimeout(poll, 500);
+      pollTimerRef.current.set(runId, timer);
     };
-    socket.onmessage = (message) => {
-      let payload;
-      try {
-        payload = JSON.parse(message.data);
-      } catch {
-        return;
-      }
-      if (payload.type === "snapshot" && payload.run?.events) {
-        for (const event of payload.run.events) live?.applyEvent(event);
-        return;
-      }
-      const event = payload.type === "event" ? payload.event : null;
-      if (!event || !live || live.runId !== runId) return;
-      live.applyEvent(event);
-    };
-    socket.onclose = () => {
-      if (live && live.isActive()) {
-        const timer = setTimeout(
-          () => connectRunSocket(runId, live.lastSeq?.() || 0, live),
-          1000
-        );
-        reconnectTimerRef.current.set(runId, timer);
-      }
-    };
+
+    if (typeof WebSocket === "undefined") {
+      startHttpPolling();
+      return;
+    }
+
+    try {
+      const protocol = globalThis.location?.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${protocol}://${globalThis.location.host}/api/chat/ws`);
+      websocketRef.current.set(runId, socket);
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ type: "subscribe", runId, after }));
+      };
+      socket.onmessage = (message) => {
+        let payload;
+        try {
+          payload = JSON.parse(message.data);
+        } catch {
+          return;
+        }
+        if (payload.type === "snapshot" && payload.run?.events) {
+          for (const event of payload.run.events) live?.applyEvent(event);
+          return;
+        }
+        const event = payload.type === "event" ? payload.event : null;
+        if (!event || !live || live.runId !== runId) return;
+        live.applyEvent(event);
+      };
+      socket.onerror = () => {
+        startHttpPolling();
+      };
+      socket.onclose = () => {
+        if (live && live.isActive()) {
+          startHttpPolling();
+          const timer = setTimeout(
+            () => connectRunSocket(runId, live.lastSeq?.() || 0, live),
+            2000
+          );
+          reconnectTimerRef.current.set(runId, timer);
+        }
+      };
+    } catch {
+      startHttpPolling();
+    }
   };
 
   const applyUiIfActive = (sessionId, fn) => {
@@ -1320,7 +1536,12 @@ export default function ChatPageClient() {
   // Keep the live streaming indicator in sync with run events.
   const updateLiveFromEvent = (event, data) => {
     if (event.type === "status") {
-      setLiveInfo((s) => ({ ...s, turn: Number(data.step) || s.turn, notice: "", waiting: false }));
+      const notice = data.phase === "thinking" ? "Thinking…" : "";
+      setLiveInfo((s) => ({ ...s, turn: Number(data.step) || s.turn, notice, waiting: false }));
+    } else if (event.type === "reasoning") {
+      setLiveInfo((s) => ({ ...s, notice: "Thinking…", waiting: false }));
+    } else if (event.type === "text") {
+      setLiveInfo((s) => ({ ...s, notice: "", waiting: false }));
     } else if (event.type === "tool_start") {
       setLiveInfo((s) => ({ ...s, tool: data.name || null, waiting: false, notice: "" }));
     } else if (event.type === "tool_result") {
@@ -1699,25 +1920,25 @@ export default function ChatPageClient() {
             assistantText = data.content || assistantText;
             pushLive(
               liveMessages.map((m) =>
-                m.id === assistantId ? (() => {
-                  const segments = [...(m.segments || [])];
-                  const last = segments.at(-1);
-                  if (last?.type === "text") last.content = assistantText;
-                  else segments.push({ type: "text", content: assistantText });
-                  return { ...m, content: assistantText, segments, status: "streaming" };
-                })() : m
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      content: assistantText,
+                      segments: updateOrAppendSegment(m.segments, "text", assistantText),
+                      status: "streaming",
+                    }
+                  : m
               )
             );
           } else if (event.type === "reasoning") {
             const reasoning = data.content || "";
-            pushLive(liveMessages.map((m) => {
-              if (m.id !== assistantId) return m;
-              const segments = [...(m.segments || [])];
-              const last = segments.at(-1);
-              if (last?.type === "reasoning") last.content = reasoning;
-              else segments.push({ type: "reasoning", content: reasoning, timestamp: new Date().toISOString() });
-              return { ...m, reasoning, segments };
-            }));
+            pushLive(
+              liveMessages.map((m) => {
+                if (m.id !== assistantId) return m;
+                const segments = updateOrAppendSegment(m.segments, "reasoning", reasoning, { timestamp: new Date().toISOString() });
+                return { ...m, reasoning, segments };
+              })
+            );
           } else if (event.type === "message" && data.role === "assistant") {
             assistantText = data.content || assistantText;
             pushLive(
@@ -1743,12 +1964,12 @@ export default function ChatPageClient() {
             pushLive(liveMessages, `${roleLabel} ${detail}…`);
           } else if (event.type === "tool_start") {
             const toolTime = new Date().toISOString();
-            pushLive(liveMessages.map((m) => m.id === assistantId
+            const withSegment = liveMessages.map((m) => m.id === assistantId
               ? { ...m, segments: [...(m.segments || []), { type: "tool", callId: data.id, name: data.name, arguments: data.arguments, status: "running", timestamp: toolTime }] }
-              : m));
+              : m);
             pushLive(
               [
-                ...liveMessages,
+                ...withSegment,
                 {
                   id: data.id || createId(),
                   role: "tool",
@@ -1775,15 +1996,13 @@ export default function ChatPageClient() {
             const index = liveMessages.findIndex(
               (m) => m.role === "tool" && m.tool_call_id === data.id && m.status === "running"
             );
-            pushLive(
-              index >= 0
-                ? liveMessages.map((m, i) => (i === index ? next : m))
-                : [...liveMessages, next],
-              `Tool done: ${data.name}`
-            );
-            pushLive(liveMessages.map((m) => m.id === assistantId
+            const updated = (index >= 0
+              ? liveMessages.map((m, i) => (i === index ? next : m))
+              : [...liveMessages, next]
+            ).map((m) => m.id === assistantId
               ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, content: data.content, status: "done" } : segment) }
-              : m));
+              : m);
+            pushLive(updated, `Tool done: ${data.name}`);
           } else if (event.type === "usage") {
             const used = Number(data.context_tokens || 0);
             const win = Number(data.context_window || 0);
@@ -2696,27 +2915,47 @@ export default function ChatPageClient() {
                       <div>
                         {!isUser && message.segments?.length ? (
                           <div className="space-y-3">
-                            {message.segments.map((segment, index) => segment.type === "reasoning" ? (
-                              showReasoning ? (
-                                <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}>
-                                  <summary className="cursor-pointer text-[11px] font-medium text-text-muted flex items-center justify-between">
-                                    <span>Reasoning</span>
-                                    {segment.timestamp ? <span className="font-mono text-[10px] opacity-70">{formatMessageTime(segment.timestamp)}</span> : null}
-                                  </summary>
-                                  <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">{segment.content}</div>
-                                </details>
-                              ) : null
-                            ) : segment.type === "tool" ? (
-                              viewMode === "raw" ? <ChatToolCard key={segment.callId || index} segment={segment} messageCreatedAt={message.createdAt} /> : null
-                            ) : (
-                              <ChatMarkdown key={`${segment.type}-${index}`} content={segment.content} />
-                            ))}
+                            {message.segments.map((segment, index) => {
+                              const isLast = index === message.segments.length - 1;
+                              const isStreamingHere = message.status === "streaming" && isLast;
+                              if (segment.type === "reasoning") {
+                                return showReasoning ? (
+                                  <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}>
+                                    <summary className="cursor-pointer text-[11px] font-medium text-text-muted flex items-center justify-between">
+                                      <span className="flex items-center gap-1.5">
+                                        <span className={`material-symbols-outlined text-[13px] ${isStreamingHere ? "animate-spin text-primary" : ""}`}>psychology</span>
+                                        <span>{isStreamingHere ? "Thinking…" : "Reasoning"}</span>
+                                      </span>
+                                      {segment.timestamp ? <span className="font-mono text-[10px] opacity-70">{formatMessageTime(segment.timestamp)}</span> : null}
+                                    </summary>
+                                    <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">
+                                      {segment.content}
+                                      {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
+                                    </div>
+                                  </details>
+                                ) : null;
+                              }
+                              if (segment.type === "tool") {
+                                return viewMode === "raw" ? <ChatToolCard key={segment.callId || index} segment={segment} messageCreatedAt={message.createdAt} /> : null;
+                              }
+                              return (
+                                <div key={`${segment.type}-${index}`} className="relative">
+                                  <ChatMarkdown content={segment.content} />
+                                  {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
+                                </div>
+                              );
+                            })}
                           </div>
-                        ) : isUser ? <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div> : <ChatMarkdown content={content} />}
-                        {(message.status === "streaming" || message.status === "tool_calls") &&
-                        !content ? (
-                          <span className="inline-block animate-pulse">▋</span>
-                        ) : null}
+                        ) : isUser ? (
+                          <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div>
+                        ) : (
+                          <div>
+                            <ChatMarkdown content={content} />
+                            {(message.status === "streaming" || message.status === "tool_calls") ? (
+                              <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span>
+                            ) : null}
+                          </div>
+                        )}
                       </div>
                       {message.tokenUsage ? (
                         <p className="mt-2 text-[10px] opacity-60">
