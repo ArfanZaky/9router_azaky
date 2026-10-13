@@ -24,6 +24,31 @@ globalThis.__chatServerRuns = liveRuns;
 
 const GATE_TIMEOUT_MS = 120_000;
 
+async function saveTeamState(run) {
+  if (!run?.sessionId) return;
+  const rosterList = Array.from(run.teamRoster?.values() || []);
+  let taskList = Array.from(run.teamTasks?.values() || []);
+  if (taskList.length === 0 && Array.isArray(run.tasks) && run.tasks.length > 0) {
+    taskList = run.tasks.map((t, idx) => ({
+      id: `task_${idx + 1}`,
+      title: t.content || `Task ${idx + 1}`,
+      description: t.content || "",
+      assignee: "orchestrator",
+      status: t.status === "in_progress" ? "in_progress" : t.status === "completed" ? "completed" : "pending",
+      dependsOn: idx > 0 ? [`task_${idx}`] : [],
+      updatedAt: new Date().toISOString(),
+    }));
+  }
+  const messageList = Array.isArray(run.teamMessages) ? run.teamMessages : [];
+  await updateChatSession(run.sessionId, {
+    teamState: {
+      roster: rosterList,
+      tasks: taskList,
+      messages: messageList,
+    },
+  }).catch(() => {});
+}
+
 async function openGate(run, kind, payload) {
   // Auto-approve mode: approvals for this run are granted instantly without a card.
   if (kind === "approval" && run.autoApprove) {
@@ -272,8 +297,6 @@ function finishRunningTools(run, stopped) {
 }
 
 async function runPlainChat(run) {
-  // Fusion combos fan out several models then judge — non-stream is more
-  // reliable than partial SSE (empty deltas often finished as "(No response)").
   const modelName = String(run.request.model || "");
   const preferJson =
     /fusion/i.test(modelName) || run.request.params?.stream === false;
@@ -421,7 +444,6 @@ async function runAgent(run) {
       return { ok: true, met: false, nextStep: next };
     },
     onEvent: async (type, data) => {
-      // execute() owns the authoritative done event after final persistence.
       if (type === "done") return;
       if (type === "text") {
         run.assistantText = data.content || run.assistantText;
@@ -456,6 +478,25 @@ async function runAgent(run) {
       run.tasks = items;
       await updateChatSession(run.sessionId, { tasks: items }).catch(() => {});
       await emit(run, "task_update", { items });
+      // If team tasks are uninitialized or track task_ indices, mirror todo items to teamTasks DAG
+      if (run.teamTasks.size === 0 || Array.from(run.teamTasks.keys()).every((k) => k.startsWith("task_"))) {
+        run.teamTasks.clear();
+        (items || []).forEach((item, idx) => {
+          const tid = `task_${idx + 1}`;
+          run.teamTasks.set(tid, {
+            id: tid,
+            title: item.content || `Task ${idx + 1}`,
+            description: item.content || "",
+            assignee: "orchestrator",
+            status: item.status === "in_progress" ? "in_progress" : item.status === "completed" ? "completed" : "pending",
+            dependsOn: idx > 0 ? [`task_${idx}`] : [],
+            updatedAt: new Date().toISOString(),
+          });
+        });
+        const list = Array.from(run.teamTasks.values());
+        await emit(run, "team_tasks_update", { tasks: list });
+      }
+      await saveTeamState(run);
     },
     onDelegate: async ({ role, task }) => runSubAgent(run, { role, task }),
     onTeamRoster: async (args) => {
@@ -474,13 +515,13 @@ async function runAgent(run) {
       }
       const list = Array.from(run.teamRoster.values());
       await emit(run, "team_roster_update", { roster: list });
+      await saveTeamState(run);
       return { ok: true, roster: list };
     },
     onTeamTask: async (args) => {
       const action = args?.action || "list";
       if (action === "create") {
         const taskId = args.taskId || `task_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`;
-        // Check dependency satisfaction for DSH state awareness
         const depends = Array.isArray(args.dependsOn) ? args.dependsOn : [];
         const isDepSatisfied = depends.every((d) => {
           const prior = run.teamTasks.get(d);
@@ -510,7 +551,6 @@ async function runAgent(run) {
         taskObj.updatedAt = new Date().toISOString();
         run.teamTasks.set(args.taskId, taskObj);
 
-        // Auto-unblock any dependent tasks if this task is completed
         if (taskObj.status === "completed") {
           for (const other of run.teamTasks.values()) {
             if (other.status === "blocked" && Array.isArray(other.dependsOn)) {
@@ -528,10 +568,10 @@ async function runAgent(run) {
       }
       const list = Array.from(run.teamTasks.values());
       await emit(run, "team_tasks_update", { tasks: list });
+      await saveTeamState(run);
       return { ok: true, tasks: list };
     },
     onTeamMessage: async ({ to, message, context: msgCtx }) => {
-      // Update roster member status to running
       const rosterMember = run.teamRoster.get(to);
       if (rosterMember) {
         rosterMember.status = "running";
@@ -542,10 +582,12 @@ async function runAgent(run) {
       const subId = `team_peer_${to}_${Date.now()}`;
       const sub = { id: subId, role: to, task: message, status: "running", events: [], seq: 0 };
       run.subAgents.set(subId, sub);
-      await emit(run, "subagent_start", { id: subId, role: to, task: message });
-      await emit(run, "team_message", { from: "peer", to, message, context: msgCtx || "" });
+      await emit(run, "subagent_start", { id: subId, role: to, task: message, sessionId: run.sessionId });
+      const msgObj = { id: subId, type: "message", from: "peer", to, message, context: msgCtx || "", timestamp: new Date().toISOString() };
+      run.teamMessages.push(msgObj);
+      await emit(run, "team_message", msgObj);
+      await saveTeamState(run);
 
-      // Run targeted sub-agent execution with peer role instructions and shared task board access
       let finalText = "";
       try {
         const targetMember = run.teamRoster.get(to);
@@ -585,7 +627,8 @@ async function runAgent(run) {
           const rosterList = Array.from(run.teamRoster.values());
           await emit(run, "team_roster_update", { roster: rosterList });
         }
-        await emit(run, "subagent_done", { id: subId, role: to, task: message, finalText });
+        await emit(run, "subagent_done", { id: subId, role: to, task: message, finalText, sessionId: run.sessionId });
+        await saveTeamState(run);
         return { ok: true, recipient: to, response: finalText };
       } catch (err) {
         sub.status = "failed";
@@ -594,12 +637,16 @@ async function runAgent(run) {
           const rosterList = Array.from(run.teamRoster.values());
           await emit(run, "team_roster_update", { roster: rosterList });
         }
-        await emit(run, "subagent_done", { id: subId, role: to, task: message, error: err?.message || String(err) });
+        await emit(run, "subagent_done", { id: subId, role: to, task: message, error: err?.message || String(err), sessionId: run.sessionId });
+        await saveTeamState(run);
         return { ok: false, recipient: to, error: err?.message || String(err) };
       }
     },
     onTeamBroadcast: async ({ topic, message }) => {
-      await emit(run, "team_broadcast", { topic, message, timestamp: new Date().toISOString() });
+      const bcObj = { id: `bc_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`, type: "broadcast", topic, message, timestamp: new Date().toISOString() };
+      run.teamMessages.push(bcObj);
+      await emit(run, "team_broadcast", bcObj);
+      await saveTeamState(run);
       return { ok: true, topic, message, broadcastedTo: Array.from(run.teamRoster.keys()) };
     },
     onApproval: async ({ name, arguments: args }) => {
@@ -626,7 +673,7 @@ async function runSubAgent(parent, { role, task }) {
   const id = randomUUID();
   const sub = { id, role, task, status: "running", events: [], seq: 0 };
   parent.subAgents.set(id, sub);
-  await emit(parent, "subagent_start", { id, role, task });
+  await emit(parent, "subagent_start", { id, role, task, sessionId: parent.sessionId });
   let finalText = "";
   try {
     const result = await runAgentLoop({
@@ -665,11 +712,11 @@ async function runSubAgent(parent, { role, task }) {
     });
     finalText = result.finalText || finalText;
     sub.status = "completed";
-    await emit(parent, "subagent_done", { id, role, task, finalText });
+    await emit(parent, "subagent_done", { id, role, task, finalText, sessionId: parent.sessionId });
     return { ok: true, id, role, result: finalText };
   } catch (error) {
     sub.status = "failed";
-    await emit(parent, "subagent_done", { id, role, task, error: error?.message || String(error) });
+    await emit(parent, "subagent_done", { id, role, task, error: error?.message || String(error), sessionId: parent.sessionId });
     return { ok: false, id, role, error: error?.message || String(error) };
   }
 }
@@ -706,6 +753,13 @@ async function execute(run) {
   const startedAt = new Date().toISOString();
   await updateChatRunRecord(run.id, { status: "running", startedAt });
   await emit(run, "status", { phase: "running" });
+
+  const orchestrator = run.teamRoster?.get("orchestrator");
+  if (orchestrator) {
+    orchestrator.status = "running";
+    emit(run, "team_roster_update", { roster: Array.from(run.teamRoster.values()) }).catch(() => {});
+  }
+
   try {
     if (run.mode === "agent") await runAgent(run); else await runPlainChat(run);
     const stopped = run.abortController.signal.aborted;
@@ -726,6 +780,15 @@ async function execute(run) {
     const session = await getChatSession(run.sessionId, { includeMessages: false });
     const title = !session?.title || session.title === "New chat" ? makeTitle(run.titleSeed) : session.title;
     await updateChatSession(run.sessionId, { title, model: run.request.model, providerId: run.providerId }).catch(() => {});
+    
+    // Normalize any roster member left in 'running' state so DB doesn't freeze them as running
+    if (run.teamRoster) {
+      for (const m of run.teamRoster.values()) {
+        if (m.status === "running") m.status = stopped ? "idle" : "completed";
+      }
+    }
+    await saveTeamState(run);
+
     const status = stopped ? "stopped" : "completed";
     run.status = status;
     const result = { messages: run.messages, finalText: content, title, tokenUsage: run.tokenUsage || null };
@@ -741,6 +804,14 @@ async function execute(run) {
     finishRunningTools(run, run.abortController.signal.aborted);
     patchAssistant(run, { content, status: run.abortController.signal.aborted ? "done" : "error", error: run.abortController.signal.aborted ? undefined : message });
     await checkpoint(run, true);
+
+    if (run.teamRoster) {
+      for (const m of run.teamRoster.values()) {
+        if (m.status === "running") m.status = run.abortController.signal.aborted ? "idle" : "failed";
+      }
+    }
+    await saveTeamState(run);
+
     const status = run.abortController.signal.aborted ? "stopped" : "failed";
     run.status = status;
     await updateChatRunRecord(run.id, { status, error: status === "failed" ? message : null, result: { messages: run.messages, finalText: content }, finishedAt: new Date().toISOString() });
@@ -769,6 +840,40 @@ export async function startServerChatRun(input) {
   const messages = Array.isArray(input.persistedMessages)
     ? input.persistedMessages
     : [...request.messages, { id: assistantId, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }];
+
+  const existingTeam = session.teamState || {};
+  const teamRoster = new Map([
+    ["orchestrator", { name: "orchestrator", role: "Team Lead & Captain", description: "Plans DAG tasks, assigns work, synthesizes results", status: "idle" }],
+    ["dev", { name: "dev", role: "Implementation Engineer", description: "Writes and updates code, runs tests", status: "idle" }],
+    ["qa", { name: "qa", role: "Quality & Security Reviewer", description: "Finds regressions, edge cases, vulnerabilities", status: "idle" }],
+    ["architect", { name: "architect", role: "System Architect", description: "Designs architecture, data flow, and boundaries", status: "idle" }],
+  ]);
+  if (Array.isArray(existingTeam.roster) && existingTeam.roster.length > 0) {
+    for (const m of existingTeam.roster) {
+      if (m?.name) teamRoster.set(m.name, { ...m, status: "idle" });
+    }
+  }
+  const teamTasks = new Map();
+  if (Array.isArray(existingTeam.tasks) && existingTeam.tasks.length > 0) {
+    for (const t of existingTeam.tasks) {
+      if (t?.id) teamTasks.set(t.id, t);
+    }
+  } else if (Array.isArray(session.tasks) && session.tasks.length > 0) {
+    session.tasks.forEach((t, idx) => {
+      const tid = `task_${idx + 1}`;
+      teamTasks.set(tid, {
+        id: tid,
+        title: t.content || `Task ${idx + 1}`,
+        description: t.content || "",
+        assignee: "orchestrator",
+        status: t.status === "in_progress" ? "in_progress" : t.status === "completed" ? "completed" : "pending",
+        dependsOn: idx > 0 ? [`task_${idx}`] : [],
+        updatedAt: new Date().toISOString(),
+      });
+    });
+  }
+  const teamMessages = Array.isArray(existingTeam.messages) ? [...existingTeam.messages] : [];
+
   const run = {
     id,
     sessionId: input.sessionId,
@@ -784,17 +889,12 @@ export async function startServerChatRun(input) {
     workspace,
     codebase,
     steering: [],
-    tasks: [],
+    tasks: Array.isArray(session.tasks) ? [...session.tasks] : [],
     subAgents: new Map(),
     gates: new Map(),
-    teamRoster: new Map([
-      ["orchestrator", { name: "orchestrator", role: "Team Lead & Captain", description: "Plans DAG tasks, assigns work, synthesizes results", status: "idle" }],
-      ["dev", { name: "dev", role: "Implementation Engineer", description: "Writes and updates code, runs tests", status: "idle" }],
-      ["qa", { name: "qa", role: "Quality & Security Reviewer", description: "Finds regressions, edge cases, vulnerabilities", status: "idle" }],
-      ["architect", { name: "architect", role: "System Architect", description: "Designs architecture, data flow, and boundaries", status: "idle" }],
-    ]),
-    teamTasks: new Map(),
-    teamMessages: [],  // DSH-style activity feed
+    teamRoster,
+    teamTasks,
+    teamMessages,
     goal: null,
     autoApprove: request.autoApprove,
     status: "queued",
@@ -829,12 +929,6 @@ export function getLiveRunForSession(sessionId) {
   return null;
 }
 
-/**
- * True only when a run for this session is genuinely executing in THIS process.
- * A DB row stuck in 'queued'/'running' after a server restart is stale and must
- * NOT block session edits — otherwise /clear, undo, fork, edit hang forever.
- * A finished run (status stopped/completed/failed) no longer counts as live.
- */
 export function isRunLiveForSession(sessionId) {
   return !!getLiveRunForSession(sessionId);
 }
@@ -942,8 +1036,6 @@ export function setChatAutoApprove(runId, enabled) {
 export function subscribeServerChatRun(id, listener, after = 0) {
   const run = liveRuns.get(id);
   if (!run) return null;
-  // Register first so events that arrive during replay are not lost, then
-  // replay history with a local cursor shared by the live path.
   let cursor = Number(after || 0);
   const wrapped = (event) => {
     if (!event || event.seq <= cursor) return;

@@ -16,6 +16,7 @@ function rowToSession(row) {
     projectMeta: parseJson(row.projectMeta, {}),
     tasks: parseJson(row.tasks, []),
     codebase: row.codebase || "",
+    teamState: parseJson(row.teamState, { roster: [], tasks: [], messages: [] }),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -116,12 +117,13 @@ export async function createChatSession(data = {}) {
     projectMeta: data.projectMeta || {},
     tasks: data.tasks || [],
     codebase: data.codebase || "",
+    teamState: data.teamState || { roster: [], tasks: [], messages: [] },
     createdAt: now,
     updatedAt: now,
   };
   db.run(
-    `INSERT INTO chatSessions(id, title, model, providerId, systemPrompt, params, pinned, workspacePath, projectMeta, tasks, codebase, createdAt, updatedAt)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO chatSessions(id, title, model, providerId, systemPrompt, params, pinned, workspacePath, projectMeta, tasks, codebase, teamState, createdAt, updatedAt)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       session.id,
       session.title,
@@ -134,6 +136,7 @@ export async function createChatSession(data = {}) {
       stringifyJson(session.projectMeta),
       stringifyJson(session.tasks),
       session.codebase,
+      stringifyJson(session.teamState),
       session.createdAt,
       session.updatedAt,
     ]
@@ -157,10 +160,11 @@ export async function updateChatSession(id, data = {}) {
       projectMeta: data.projectMeta !== undefined ? data.projectMeta : prev.projectMeta,
       tasks: data.tasks !== undefined ? data.tasks : prev.tasks,
       codebase: data.codebase !== undefined ? data.codebase : prev.codebase,
+      teamState: data.teamState !== undefined ? data.teamState : prev.teamState,
       updatedAt: new Date().toISOString(),
     };
     db.run(
-      `UPDATE chatSessions SET title = ?, model = ?, providerId = ?, systemPrompt = ?, params = ?, pinned = ?, workspacePath = ?, projectMeta = ?, tasks = ?, codebase = ?, updatedAt = ? WHERE id = ?`,
+      `UPDATE chatSessions SET title = ?, model = ?, providerId = ?, systemPrompt = ?, params = ?, pinned = ?, workspacePath = ?, projectMeta = ?, tasks = ?, codebase = ?, teamState = ?, updatedAt = ? WHERE id = ?`,
       [
         merged.title,
         merged.model,
@@ -172,6 +176,7 @@ export async function updateChatSession(id, data = {}) {
         stringifyJson(merged.projectMeta || {}),
         stringifyJson(merged.tasks || []),
         merged.codebase || "",
+        stringifyJson(merged.teamState || { roster: [], tasks: [], messages: [] }),
         merged.updatedAt,
         id,
       ]

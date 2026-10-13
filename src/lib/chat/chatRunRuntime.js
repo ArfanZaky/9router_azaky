@@ -21,7 +21,10 @@ let focusedSessionId = null;
  * @property {string} agentStatus
  * @property {string} error
  * @property {string} titleSeed
- * @property {object} sessionMeta */
+ * @property {object} sessionMeta
+ * @property {any[]} [teamRoster]
+ * @property {any[]} [teamTasks]
+ * @property {any[]} [teamMessages] */
 
 function runFor(sessionId) {
   if (!sessionId) return null;
@@ -44,10 +47,10 @@ export function subscribeChatRun(fn) {
   return () => listeners.delete(fn);
 }
 
-function notify() {
+function notify(specificRun) {
   for (const fn of listeners) {
     try {
-      fn(getChatRun());
+      fn(specificRun || getChatRun());
     } catch {
       // ignore subscriber errors
     }
@@ -67,10 +70,13 @@ export function startChatRun(snapshot) {
     error: "",
     titleSeed: snapshot.titleSeed || "",
     sessionMeta: snapshot.sessionMeta || {},
+    teamRoster: snapshot.teamRoster || [],
+    teamTasks: snapshot.teamTasks || [],
+    teamMessages: snapshot.teamMessages || [],
   };
   runs.set(snapshot.sessionId, state);
   focusedSessionId = snapshot.sessionId;
-  notify();
+  notify(state);
   return state;
 }
 
@@ -84,9 +90,12 @@ export function patchChatRun(sessionId, patch) {
   if (!state) return null;
   const next = { ...state, ...patch };
   if (patch.messages) next.messages = patch.messages;
+  if (patch.teamRoster) next.teamRoster = patch.teamRoster;
+  if (patch.teamTasks) next.teamTasks = patch.teamTasks;
+  if (patch.teamMessages) next.teamMessages = patch.teamMessages;
   runs.set(sessionId, next);
   focusedSessionId = sessionId;
-  notify();
+  notify(next);
   return next;
 }
 
@@ -107,7 +116,7 @@ export function clearChatRun(sessionId) {
   const snap = state ? { ...state, isSending: false, agentStatus: "", abortController: null } : null;
   runs.delete(sid);
   if (focusedSessionId === sid) focusedSessionId = null;
-  notify();
+  notify(snap);
   return snap;
 }
 

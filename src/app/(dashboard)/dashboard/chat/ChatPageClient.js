@@ -662,7 +662,13 @@ function AskWizard({ ask, onAnswer }) {
 
 export default function ChatPageClient() {
   const [sessions, setSessions] = useState([]);
-  const [activeSessionId, setActiveSessionId] = useState("");
+  const [activeSessionId, setActiveSessionId] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem("chat.activeSessionId") || "";
+    } catch {
+      return "";
+    }
+  });
   const [messages, setMessages] = useState([]);
   const messagesRef = useRef([]);
   useEffect(() => {
@@ -694,6 +700,22 @@ export default function ChatPageClient() {
       return "orchestrator";
     }
   });
+
+  const updateAgentRole = useCallback((newRole) => {
+    setAgentRole(newRole);
+    try {
+      globalThis.localStorage?.setItem("chat.agentRole", newRole);
+    } catch {}
+    if (activeSessionIdRef.current) {
+      fetch(`/api/chat/sessions/${activeSessionIdRef.current}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectMeta: { ...(activeSession?.projectMeta || {}), agentRole: newRole },
+        }),
+      }).catch(() => {});
+    }
+  }, [activeSession?.projectMeta]);
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
   const [agentStatus, setAgentStatus] = useState("");
   /** full = bash+write; sandbox = read-only host + web/image */
@@ -895,6 +917,11 @@ export default function ChatPageClient() {
     [sessions, activeSessionId]
   );
 
+  const activeSessionCodebase = useMemo(
+    () => activeSession?.codebase || activeSession?.workspacePath || codebase || "",
+    [activeSession?.codebase, activeSession?.workspacePath, codebase]
+  );
+
   const sortedSessions = useMemo(() => {
     const q = search.trim().toLowerCase();
     const list = q
@@ -906,19 +933,16 @@ export default function ChatPageClient() {
       : [...sessions];
 
     return list.sort((a, b) => {
-      const aRunning = runningSessionIds.has(a.id);
-      const bRunning = runningSessionIds.has(b.id);
-      if (aRunning !== bRunning) return aRunning ? -1 : 1;
-
       const aPinned = !!a.pinned;
       const bPinned = !!b.pinned;
       if (aPinned !== bPinned) return aPinned ? -1 : 1;
 
+      // Stable sorting by updated time (do NOT auto-jump running sessions to top)
       const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
       const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
       return bTime - aTime;
     });
-  }, [sessions, search, runningSessionIds]);
+  }, [sessions, search]);
 
   const params = { ...DEFAULT_PARAMS, ...(activeSession?.params || {}) };
   const canSend =
@@ -957,22 +981,56 @@ export default function ChatPageClient() {
     if (!res.ok) throw new Error(data.error || "Failed to load sessions");
     const list = data.sessions || [];
     setSessions(list);
-    const nextId = preferId || activeSessionId || list[0]?.id || "";
-    if (nextId) setActiveSessionId(nextId);
+    const storedId = (() => {
+      try {
+        return globalThis.localStorage?.getItem("chat.activeSessionId") || "";
+      } catch {
+        return "";
+      }
+    })();
+    const nextId = preferId || (storedId && list.some((s) => s.id === storedId) ? storedId : "") || activeSessionId || list[0]?.id || "";
+    if (nextId && (!activeSessionId || !list.some((s) => s.id === activeSessionId))) {
+      setActiveSessionId(nextId);
+      try {
+        globalThis.localStorage?.setItem("chat.activeSessionId", nextId);
+      } catch {}
+    }
     return list;
   }, [activeSessionId]);
 
   const loadSessionDetail = useCallback(async (id) => {
     if (!id) {
       setMessages([]);
+      setTasks([]);
+      setTeamRoster([]);
+      setTeamTasks([]);
+      setTeamMessages([]);
+      setSubAgents([]);
       return null;
     }
     const res = await fetch(`/api/chat/sessions/${id}?limit=1000`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Failed to load session");
+    if (activeSessionIdRef.current !== id) return data;
     setMessages(data.messages || []);
     setTasks(Array.isArray(data.tasks) ? data.tasks : []);
-    if (data.codebase) setCodebase(data.codebase);
+    const team = data.teamState || {};
+    const isLive = isRunActiveFor(id);
+    const rosterList = (Array.isArray(team.roster) ? team.roster : []).map((m) =>
+      !isLive && m.status === "running" ? { ...m, status: "idle" } : m
+    );
+    setTeamRoster(rosterList);
+    setTeamTasks(Array.isArray(team.tasks) ? team.tasks : []);
+    setTeamMessages(Array.isArray(team.messages) ? team.messages : []);
+    setSubAgents((prev) => prev.filter((a) => a.sessionId === id));
+    if (data.projectMeta?.agentRole) {
+      setAgentRole(data.projectMeta.agentRole);
+    } else {
+      const defaultRole = globalThis.localStorage?.getItem("chat.agentRole") || "orchestrator";
+      setAgentRole(defaultRole);
+    }
+    const effectiveCode = data.codebase || data.workspacePath || "";
+    setCodebase(effectiveCode);
     setSessions((prev) =>
       prev.map((s) => (s.id === id ? { ...s, ...data, messages: undefined } : s))
     );
@@ -991,12 +1049,7 @@ export default function ChatPageClient() {
         }
         return next;
       });
-      if (!run) {
-        setIsSending(false);
-        setAgentStatus("");
-        return;
-      }
-      if (run.sessionId !== activeSessionIdRef.current) return;
+      if (!run || run.sessionId !== activeSessionIdRef.current) return;
       setMessages(run.messages || []);
       setIsSending(!!run.isSending);
       setAgentStatus(run.agentStatus || "");
@@ -1056,27 +1109,56 @@ export default function ChatPageClient() {
               if (used > 0) setCtxUsed(used);
               if (win > 0) setCtxWindow(win);
             } else if (event.type === "task_update") {
-              setTasks(data.items || []);
+              patchChatRun(existingSessionId, { tasks: data.items || [] });
+              if (activeSessionIdRef.current === existingSessionId) {
+                setTasks(data.items || []);
+              }
             } else if (event.type === "team_roster_update") {
-              setTeamRoster(data.roster || []);
+              patchChatRun(existingSessionId, { teamRoster: data.roster || [] });
+              if (activeSessionIdRef.current === existingSessionId) {
+                setTeamRoster(data.roster || []);
+              }
             } else if (event.type === "team_tasks_update") {
-              setTeamTasks(data.tasks || []);
+              patchChatRun(existingSessionId, { teamTasks: data.tasks || [] });
+              if (activeSessionIdRef.current === existingSessionId) {
+                setTeamTasks(data.tasks || []);
+              }
             } else if (event.type === "team_message") {
-              setTeamMessages((prev) => [...prev, { ...data, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() }]);
+              const nextMsg = { ...data, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() };
+              const prevMsgs = getChatRun(existingSessionId)?.teamMessages || [];
+              patchChatRun(existingSessionId, { teamMessages: [...prevMsgs, nextMsg] });
+              if (activeSessionIdRef.current === existingSessionId) {
+                setTeamMessages((prev) => [...prev, nextMsg]);
+              }
             } else if (event.type === "team_broadcast") {
-              setTeamMessages((prev) => [...prev, { ...data, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: data.timestamp || event.createdAt || new Date().toISOString() }]);
+              const nextBc = { ...data, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: data.timestamp || event.createdAt || new Date().toISOString() };
+              const prevMsgs = getChatRun(existingSessionId)?.teamMessages || [];
+              patchChatRun(existingSessionId, { teamMessages: [...prevMsgs, nextBc] });
+              if (activeSessionIdRef.current === existingSessionId) {
+                setTeamMessages((prev) => [...prev, nextBc]);
+              }
             } else if (event.type === "approval") {
               setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
-              setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
+              if (activeSessionIdRef.current === existingSessionId) {
+                setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
+              }
             } else if (event.type === "ask") {
               setAsks((prev) => [...prev.filter((item) => item.id !== data.id), data]);
-              setAgentStatus("Waiting for your answer…");
+              if (activeSessionIdRef.current === existingSessionId) {
+                setAgentStatus("Waiting for your answer…");
+              }
             } else if (event.type === "subagent_start") {
-              setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
-              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
+              const subObj = { ...data, sessionId: existingSessionId, status: "running" };
+              setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), subObj]);
+              if (activeSessionIdRef.current === existingSessionId) {
+                setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
+              }
             } else if (event.type === "subagent_done") {
-              setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
-              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
+              const subDoneObj = { ...data, sessionId: existingSessionId, status: data.error ? "failed" : "completed" };
+              setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...subDoneObj } : item));
+              if (activeSessionIdRef.current === existingSessionId) {
+                setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
+              }
             } else if (event.type === "tool_start" || event.type === "tool_result") {
               loadSessionDetail(existingSessionId).catch(() => {});
               patchChatRun(existingSessionId, {
@@ -1159,15 +1241,31 @@ export default function ChatPageClient() {
             setActiveSessionId(created.id);
           }
         }
-        const preferRun = getChatRun();
-        const bootId = preferRun?.sessionId || list[0]?.id;
+        const storedId = (() => {
+          try {
+            return globalThis.localStorage?.getItem("chat.activeSessionId") || "";
+          } catch {
+            return "";
+          }
+        })();
+        const validStored = storedId && list.some((s) => s.id === storedId) ? storedId : null;
+        const bootId = validStored || (activeSessionId && list.some((s) => s.id === activeSessionId) ? activeSessionId : null) || list[0]?.id;
         fetch("/api/chat/mcp").then((r) => r.json()).then((d) => { if (!cancelled && d.servers) setMcpServers(d.servers); }).catch(() => {});
         if (!cancelled && bootId) {
           setActiveSessionId(bootId);
-          if (preferRun?.isSending && preferRun.sessionId === bootId) {
-            setMessages(preferRun.messages || []);
+          try {
+            globalThis.localStorage?.setItem("chat.activeSessionId", bootId);
+          } catch {}
+          const current = list.find((item) => item.id === bootId);
+          if (current) setCodebase(current.codebase || current.workspacePath || "");
+          const activeRun = getChatRun(bootId);
+          if (activeRun?.isSending && activeRun.sessionId === bootId) {
+            setMessages(activeRun.messages || []);
             setIsSending(true);
-            setAgentStatus(preferRun.agentStatus || "");
+            setAgentStatus(activeRun.agentStatus || "");
+            if (activeRun.teamRoster) setTeamRoster(activeRun.teamRoster);
+            if (activeRun.teamTasks) setTeamTasks(activeRun.teamTasks);
+            if (activeRun.teamMessages) setTeamMessages(activeRun.teamMessages);
           } else {
             await loadSessionDetail(bootId);
           }
@@ -1261,12 +1359,31 @@ export default function ChatPageClient() {
         assistantText: data.assistantText || "",
         messages: data.messages || [],
         agentStatus: statusText,
+        teamRoster: data.teamRoster || [],
+        teamTasks: data.teamTasks || [],
+        teamMessages: data.teamMessages || [],
       });
 
-      setMessages(data.messages || []);
-      setTasks(data.tasks || []);
-      setIsSending(true);
-      setAgentStatus(statusText);
+      if (activeSessionIdRef.current === sessionId) {
+        setMessages(data.messages || []);
+        if (Array.isArray(data.tasks) && data.tasks.length > 0) {
+          setTasks(data.tasks);
+        }
+        if (Array.isArray(data.teamRoster) && data.teamRoster.length > 0) {
+          setTeamRoster(data.teamRoster);
+        }
+        if (Array.isArray(data.teamTasks) && data.teamTasks.length > 0) {
+          setTeamTasks(data.teamTasks);
+        }
+        if (Array.isArray(data.teamMessages) && data.teamMessages.length > 0) {
+          setTeamMessages(data.teamMessages);
+        }
+        if (Array.isArray(data.subAgents)) {
+          setSubAgents(data.subAgents.map((s) => ({ ...s, sessionId })));
+        }
+        setIsSending(true);
+        setAgentStatus(statusText);
+      }
 
       if (!liveRunRef.current.get(data.runId)) {
         let lastSeq = 0;
@@ -1416,7 +1533,10 @@ export default function ChatPageClient() {
               if (used > 0) setCtxUsed(used);
               if (win > 0) setCtxWindow(win);
             } else if (event.type === "task_update") {
-              setTasks(eventData.items || []);
+              patchChatRun(sessionId, { tasks: eventData.items || [] });
+              if (activeSessionIdRef.current === sessionId) {
+                setTasks(eventData.items || []);
+              }
             } else if (event.type === "approval") {
               setApprovals((prev) => [...prev.filter((item) => item.id !== eventData.id), eventData]);
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
@@ -1428,23 +1548,45 @@ export default function ChatPageClient() {
                 setAgentStatus("Waiting for your answer…");
               }
             } else if (event.type === "subagent_start") {
-              setSubAgents((prev) => [...prev.filter((item) => item.id !== eventData.id), { ...eventData, status: "running" }]);
-              setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: "running" } : m));
+              const subStart = { ...eventData, sessionId, status: "running" };
+              setSubAgents((prev) => [...prev.filter((item) => item.id !== eventData.id), subStart]);
+              if (activeSessionIdRef.current === sessionId) {
+                setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: "running" } : m));
+              }
             } else if (event.type === "subagent_done") {
-              setSubAgents((prev) => prev.map((item) => item.id === eventData.id ? { ...item, ...eventData, status: eventData.error ? "failed" : "completed" } : item));
-              setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
+              const subDone = { ...eventData, sessionId, status: eventData.error ? "failed" : "completed" };
+              setSubAgents((prev) => prev.map((item) => item.id === eventData.id ? { ...item, ...subDone } : item));
+              if (activeSessionIdRef.current === sessionId) {
+                setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: eventData.error ? "failed" : "idle" } : m));
+              }
             } else if (event.type === "notice") {
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
                 setAgentStatus(eventData.message || "Working…");
               }
             } else if (event.type === "team_roster_update") {
-              setTeamRoster(eventData.roster || []);
+              patchChatRun(sessionId, { teamRoster: eventData.roster || [] });
+              if (activeSessionIdRef.current === sessionId) {
+                setTeamRoster(eventData.roster || []);
+              }
             } else if (event.type === "team_tasks_update") {
-              setTeamTasks(eventData.tasks || []);
+              patchChatRun(sessionId, { teamTasks: eventData.tasks || [] });
+              if (activeSessionIdRef.current === sessionId) {
+                setTeamTasks(eventData.tasks || []);
+              }
             } else if (event.type === "team_message") {
-              setTeamMessages((prev) => [...prev, { ...eventData, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() }]);
+              const nextMsg = { ...eventData, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() };
+              const prevMsgs = getChatRun(sessionId)?.teamMessages || [];
+              patchChatRun(sessionId, { teamMessages: [...prevMsgs, nextMsg] });
+              if (activeSessionIdRef.current === sessionId) {
+                setTeamMessages((prev) => [...prev, nextMsg]);
+              }
             } else if (event.type === "team_broadcast") {
-              setTeamMessages((prev) => [...prev, { ...eventData, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: eventData.timestamp || event.createdAt || new Date().toISOString() }]);
+              const nextBc = { ...eventData, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: eventData.timestamp || event.createdAt || new Date().toISOString() };
+              const prevMsgs = getChatRun(sessionId)?.teamMessages || [];
+              patchChatRun(sessionId, { teamMessages: [...prevMsgs, nextBc] });
+              if (activeSessionIdRef.current === sessionId) {
+                setTeamMessages((prev) => [...prev, nextBc]);
+              }
             } else if (event.type === "done" || event.type === "error") {
               const finalMessages = eventData.messages || getChatRun(sessionId)?.messages || [];
               patchChatRun(sessionId, {
@@ -1479,11 +1621,22 @@ export default function ChatPageClient() {
 
   useEffect(() => {
     if (!activeSessionId) return;
+    try {
+      globalThis.localStorage?.setItem("chat.activeSessionId", activeSessionId);
+    } catch {}
+    const current = sessions.find((s) => s.id === activeSessionId);
+    if (current) {
+      setCodebase(current.codebase || current.workspacePath || "");
+    }
     const run = getChatRun(activeSessionId);
     if (run?.isSending && run.sessionId === activeSessionId) {
       setMessages(run.messages || []);
       setIsSending(true);
       setAgentStatus(run.agentStatus || "");
+      if (Array.isArray(run.teamRoster) && run.teamRoster.length > 0) setTeamRoster(run.teamRoster);
+      if (Array.isArray(run.teamTasks) && run.teamTasks.length > 0) setTeamTasks(run.teamTasks);
+      if (Array.isArray(run.teamMessages) && run.teamMessages.length > 0) setTeamMessages(run.teamMessages);
+      setSubAgents((prev) => prev.filter((a) => a.sessionId === activeSessionId));
       return;
     }
     setIsSending(false);
@@ -1491,17 +1644,22 @@ export default function ChatPageClient() {
     loadSessionDetail(activeSessionId)
       .then(() => syncActiveSessionRunState(activeSessionId))
       .catch((e) => setError(textValue(e.message)));
-  }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState]);
+  }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState, sessions]);
 
   useEffect(() => {
-    const workspacePath = activeSession?.workspacePath;
-    if (!workspacePath) return;
+    const targetPath = activeSession?.workspacePath || (
+      activeSessionCodebase && /^[A-Za-z]:[\\/]|^[\\/]|^..?[\\/]/i.test(activeSessionCodebase) ? activeSessionCodebase : null
+    );
+    if (!targetPath) {
+      setProjectInfo(null);
+      return;
+    }
     fetch("/api/chat/projects/inspect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: workspacePath }),
+      body: JSON.stringify({ path: targetPath }),
     }).then((res) => res.json()).then(setProjectInfo).catch(() => setProjectInfo(null));
-  }, [activeSession?.workspacePath]);
+  }, [activeSession?.id, activeSession?.workspacePath, activeSessionCodebase]);
 
   useEffect(() => {
     if (visibleMessages.length > 120) {
@@ -1604,6 +1762,9 @@ export default function ChatPageClient() {
         setDraft("");
         setAttachments([]);
         setTasks([]);
+        setTeamRoster([]);
+        setTeamTasks([]);
+        setTeamMessages([]);
       }
       setSessionModalOpen(false);
     } catch (e) {
@@ -1634,21 +1795,33 @@ export default function ChatPageClient() {
       setDraft("");
       setAttachments([]);
       setTasks([]);
+      setTeamRoster([]);
+      setTeamTasks([]);
+      setTeamMessages([]);
     } catch (e) {
       setError(textValue(e.message));
     }
   };
 
   const handleSelectSession = useCallback((id) => {
-    if (id === activeSessionIdRef.current) return;
+    if (!id || id === activeSessionIdRef.current) return;
     setActiveSessionId(id);
+    try {
+      globalThis.localStorage?.setItem("chat.activeSessionId", id);
+    } catch {}
+    const targetSession = sessions.find((s) => s.id === id);
+    if (targetSession) {
+      setCodebase(targetSession.codebase || targetSession.workspacePath || "");
+    }
     setDraft("");
     setAttachments([]);
     setTasks([]);
     setSubAgents([]);
     setTeamTasks([]);
+    setTeamRoster([]);
+    setTeamMessages([]);
     setError("");
-  }, []);
+  }, [sessions]);
 
   const handleDeleteSession = useCallback(async (id) => {
     try {
@@ -2123,6 +2296,9 @@ export default function ChatPageClient() {
       agentStatus: `${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} starting…`,
       titleSeed,
       sessionMeta,
+      teamRoster,
+      teamTasks,
+      teamMessages,
     });
 
     const requestMessages = [];
@@ -2373,27 +2549,56 @@ export default function ChatPageClient() {
             if (used > 0) setCtxUsed(used);
             if (win > 0) setCtxWindow(win);
           } else if (event.type === "task_update") {
-            setTasks(data.items || []);
+            patchChatRun(sessionId, { tasks: data.items || [] });
+            if (activeSessionIdRef.current === sessionId) {
+              setTasks(data.items || []);
+            }
           } else if (event.type === "team_roster_update") {
-            setTeamRoster(data.roster || []);
+            patchChatRun(sessionId, { teamRoster: data.roster || [] });
+            if (activeSessionIdRef.current === sessionId) {
+              setTeamRoster(data.roster || []);
+            }
           } else if (event.type === "team_tasks_update") {
-            setTeamTasks(data.tasks || []);
+            patchChatRun(sessionId, { teamTasks: data.tasks || [] });
+            if (activeSessionIdRef.current === sessionId) {
+              setTeamTasks(data.tasks || []);
+            }
           } else if (event.type === "team_message") {
-              setTeamMessages((prev) => [...prev, { ...data, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() }]);
-            } else if (event.type === "team_broadcast") {
-              setTeamMessages((prev) => [...prev, { ...data, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: data.timestamp || event.createdAt || new Date().toISOString() }]);
-            } else if (event.type === "approval") {
+            const nextMsg = { ...data, type: "message", id: `msg_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: event.createdAt || new Date().toISOString() };
+            const prevMsgs = getChatRun(sessionId)?.teamMessages || [];
+            patchChatRun(sessionId, { teamMessages: [...prevMsgs, nextMsg] });
+            if (activeSessionIdRef.current === sessionId) {
+              setTeamMessages((prev) => [...prev, nextMsg]);
+            }
+          } else if (event.type === "team_broadcast") {
+            const nextBc = { ...data, type: "broadcast", id: `bc_${Date.now()}_${Math.random().toString(16).slice(2,6)}`, timestamp: data.timestamp || event.createdAt || new Date().toISOString() };
+            const prevMsgs = getChatRun(sessionId)?.teamMessages || [];
+            patchChatRun(sessionId, { teamMessages: [...prevMsgs, nextBc] });
+            if (activeSessionIdRef.current === sessionId) {
+              setTeamMessages((prev) => [...prev, nextBc]);
+            }
+          } else if (event.type === "approval") {
             setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
-            setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
+            if (activeSessionIdRef.current === sessionId) {
+              setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
+            }
           } else if (event.type === "ask") {
             setAsks((prev) => [...prev.filter((item) => item.id !== data.id), data]);
-            setAgentStatus("Waiting for your answer…");
+            if (activeSessionIdRef.current === sessionId) {
+              setAgentStatus("Waiting for your answer…");
+            }
           } else if (event.type === "subagent_start") {
-            setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
-            setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
+            const subStart = { ...data, sessionId, status: "running" };
+            setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), subStart]);
+            if (activeSessionIdRef.current === sessionId) {
+              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
+            }
           } else if (event.type === "subagent_done") {
-            setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
-            setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
+            const subDone = { ...data, sessionId, status: data.error ? "failed" : "completed" };
+            setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...subDone } : item));
+            if (activeSessionIdRef.current === sessionId) {
+              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
+            }
           } else if (event.type === "tool_progress") {
             pushLive(liveMessages.map((m) => m.id === assistantId
               ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, progress: (segment.progress || "") + (data.chunk || "") } : segment) }
@@ -2706,7 +2911,12 @@ export default function ChatPageClient() {
       else if (name === "agent") {
         const role = AGENT_ROLES.find((item) => item.id === value.toLowerCase());
         if (!role) throw new Error(`Usage: /agent ${AGENT_ROLES.map((item) => item.id).join("|")}`);
-        setAgentRole(role.id);
+        updateAgentRole(role.id);
+      } else if (name === "agent-teams") {
+        updateAgentRole("team");
+        if (value) {
+          await sendMessage({ userText: value });
+        }
       }
       else if (name === "retry") sendMessage({ regenerate: true });
       else if (name === "stop") handleStop();
@@ -2848,20 +3058,20 @@ export default function ChatPageClient() {
             </div>
           </button>
 
-          {codebase ? (
+          {activeSessionCodebase ? (
             <button
               type="button"
-              onClick={() => { setCodebaseValue(codebase); setCodebaseEdit(true); }}
+              onClick={() => { setCodebaseValue(activeSessionCodebase); setCodebaseEdit(true); }}
               className="hidden min-w-0 max-w-[16rem] items-center gap-1.5 rounded-xl border border-border bg-sidebar/50 px-3 py-2 text-left hover:bg-sidebar md:flex"
               title="Session codebase / repository URL — click to edit"
             >
               <span className="material-symbols-outlined text-[15px] text-primary">link</span>
-              <span className="truncate font-mono text-[11px] text-text-muted">{codebase}</span>
+              <span className="truncate font-mono text-[11px] text-text-muted">{activeSessionCodebase}</span>
             </button>
           ) : (
             <button
               type="button"
-              onClick={() => { setCodebaseValue(codebase); setCodebaseEdit(true); }}
+              onClick={() => { setCodebaseValue(activeSessionCodebase); setCodebaseEdit(true); }}
               className="hidden items-center gap-1.5 rounded-xl border border-dashed border-border px-3 py-2 text-[11px] text-text-muted hover:bg-sidebar md:flex"
               title="Set a codebase / repository URL for this session"
             >
@@ -2906,7 +3116,7 @@ export default function ChatPageClient() {
             <Button variant="ghost" size="sm" icon="extension" onClick={() => { loadMcpServers(); setMcpModalOpen(true); }}>
               MCP
             </Button>
-            {activeSession?.workspacePath ? (
+            {(activeSession?.workspacePath || activeSessionCodebase) ? (
               <>
                 <Button
                   variant={projectOpen && projectTab === "git" ? "secondary" : "ghost"}
@@ -3148,7 +3358,7 @@ export default function ChatPageClient() {
               ))}
             </div>
           ) : null}
-          {agentRole === "team" ? (
+          {agentRole === "team" || teamTasks.length > 0 || (teamRoster.length > 0 && teamRoster.some((r) => r.name !== "orchestrator" && r.status !== "idle")) ? (
             <TeamPanel
               roster={teamRoster.length > 0 ? teamRoster : [
                 { name: "orchestrator", role: "Team Lead", status: isSending ? "running" : "idle" },
@@ -3160,13 +3370,14 @@ export default function ChatPageClient() {
                 id: `task_${idx + 1}`,
                 title: t.content,
                 status: t.status === "in_progress" ? "in_progress" : t.status === "completed" ? "completed" : "pending",
-                assignee: "team",
+                assignee: "orchestrator",
+                dependsOn: idx > 0 ? [`task_${idx}`] : [],
               }))}
               messages={teamMessages}
-              subAgents={subAgents}
+              subAgents={subAgents.filter((s) => !s.sessionId || s.sessionId === activeSessionId)}
               onViewAgent={setViewingAgent}
             />
-          ) : (tasks.length > 0 || subAgents.length > 0) ? (
+          ) : (tasks.length > 0 || subAgents.filter((s) => !s.sessionId || s.sessionId === activeSessionId).length > 0) ? (
             <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-border bg-sidebar/35 px-3 py-2 space-y-1.5">
               {tasks.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -3325,7 +3536,7 @@ export default function ChatPageClient() {
                           key={role.id}
                           type="button"
                           onClick={() => {
-                            setAgentRole(role.id);
+                            updateAgentRole(role.id);
                             setRoleMenuOpen(false);
                           }}
                           className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${agentRole === role.id ? "border-primary/35 bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
@@ -3418,10 +3629,10 @@ export default function ChatPageClient() {
         </div>
       </section>
 
-      {projectOpen && activeSession?.workspacePath ? (
+      {projectOpen && (activeSession?.workspacePath || activeSessionCodebase) ? (
         <div className="hidden xl:block w-80 shrink-0 min-w-0">
           <ProjectSidebar
-            workspacePath={activeSession.workspacePath}
+            workspacePath={activeSession?.workspacePath || activeSessionCodebase}
             sessionId={activeSessionId}
             refreshKey={projectRefresh}
             messages={messages}

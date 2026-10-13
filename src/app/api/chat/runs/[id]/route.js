@@ -22,6 +22,16 @@ export async function GET(request, { params }) {
       assistantText: liveRun.assistantText || "",
       messages: liveRun.messages || [],
       tasks: liveRun.tasks || [],
+      subAgents: Array.from(liveRun.subAgents?.values() || []).map((s) => ({
+        id: s.id,
+        role: s.role,
+        task: s.task,
+        status: s.status,
+        sessionId: liveRun.sessionId,
+      })),
+      teamRoster: Array.from(liveRun.teamRoster?.values() || []),
+      teamTasks: Array.from(liveRun.teamTasks?.values() || []),
+      teamMessages: liveRun.teamMessages || [],
     });
   }
 
