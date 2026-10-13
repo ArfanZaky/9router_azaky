@@ -701,21 +701,6 @@ export default function ChatPageClient() {
     }
   });
 
-  const updateAgentRole = useCallback((newRole) => {
-    setAgentRole(newRole);
-    try {
-      globalThis.localStorage?.setItem("chat.agentRole", newRole);
-    } catch {}
-    if (activeSessionIdRef.current) {
-      fetch(`/api/chat/sessions/${activeSessionIdRef.current}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectMeta: { ...(activeSession?.projectMeta || {}), agentRole: newRole },
-        }),
-      }).catch(() => {});
-    }
-  }, [activeSession?.projectMeta]);
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
   const [agentStatus, setAgentStatus] = useState("");
   /** full = bash+write; sandbox = read-only host + web/image */
@@ -837,6 +822,28 @@ export default function ChatPageClient() {
 
   activeSessionIdRef.current = activeSessionId;
 
+  const activeSession = useMemo(
+    () => sessions.find((s) => s.id === activeSessionId) || null,
+    [sessions, activeSessionId]
+  );
+
+  const updateAgentRole = useCallback((newRole) => {
+    setAgentRole(newRole);
+    try {
+      globalThis.localStorage?.setItem("chat.agentRole", newRole);
+    } catch {}
+    if (activeSessionIdRef.current) {
+      const cur = sessions.find((s) => s.id === activeSessionIdRef.current);
+      fetch(`/api/chat/sessions/${activeSessionIdRef.current}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectMeta: { ...(cur?.projectMeta || {}), agentRole: newRole },
+        }),
+      }).catch(() => {});
+    }
+  }, [sessions]);
+
   // Stable callback for clicking images in transcripts (prevents Markdown re-render)
   const handleImageClick = useCallback((src, name) => {
     setImagePreview({ src, name });
@@ -912,14 +919,14 @@ export default function ChatPageClient() {
     return { list: visibleMessages.slice(start, end), start, end };
   }, [visibleMessages, windowIndex]);
 
-  const activeSession = useMemo(
-    () => sessions.find((s) => s.id === activeSessionId) || null,
-    [sessions, activeSessionId]
-  );
-
   const activeSessionCodebase = useMemo(
     () => activeSession?.codebase || activeSession?.workspacePath || codebase || "",
     [activeSession?.codebase, activeSession?.workspacePath, codebase]
+  );
+
+  const activeQueue = useMemo(
+    () => messageQueue.filter((item) => item.sessionId === activeSessionId),
+    [messageQueue, activeSessionId]
   );
 
   const sortedSessions = useMemo(() => {
@@ -1506,8 +1513,7 @@ export default function ChatPageClient() {
               const next = base.map((m) =>
                 m.id === data.assistantId
                   ? { ...m, segments: (m.segments || []).map((seg) => seg.type === "tool" && seg.callId === eventData.id ? { ...seg, content: eventData.content, status: "done" } : seg) }
-                  : m
-              );
+                  : m);
               const toolDoneStatus = `Tool done: ${eventData.name}`;
               patchChatRun(sessionId, { messages: next, agentStatus: toolDoneStatus });
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
@@ -1830,6 +1836,7 @@ export default function ChatPageClient() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to delete");
       }
+      setMessageQueue((prev) => prev.filter((item) => item.sessionId !== id));
       setSessions((prev) => {
         const next = prev.filter((s) => s.id !== id);
         if (activeSessionIdRef.current === id) {
@@ -2177,7 +2184,7 @@ export default function ChatPageClient() {
   };
 
   const clearQueue = () => {
-    setMessageQueue([]);
+    setMessageQueue((prev) => prev.filter((item) => item.sessionId !== activeSessionId));
   };
 
   const sendMessage = async ({ regenerate = false, sourceMessages = null, queuedItem = null } = {}) => {
@@ -2189,10 +2196,12 @@ export default function ChatPageClient() {
       setError("No API key. Create one in Endpoint & Key.");
       return;
     }
-    if (getChatRun(activeSessionId)?.isSending) {
+    const sessionId = queuedItem?.sessionId || activeSessionId;
+    if (getChatRun(sessionId)?.isSending) {
       if (!regenerate && !queuedItem && (draft.trim() || attachments.length > 0)) {
         const item = {
           id: createId(),
+          sessionId,
           text: draft.trim(),
           attachments: [...attachments],
           timestamp: new Date().toISOString(),
@@ -2211,7 +2220,6 @@ export default function ChatPageClient() {
       return;
     }
 
-    const sessionId = activeSessionId;
     const sessionMeta = {
       title: activeSession.title,
       model: activeSession.model,
@@ -2588,13 +2596,13 @@ export default function ChatPageClient() {
               setAgentStatus("Waiting for your answer…");
             }
           } else if (event.type === "subagent_start") {
-            const subStart = { ...data, sessionId, status: "running" };
+            const subStart = { ...eventData, sessionId, status: "running" };
             setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), subStart]);
             if (activeSessionIdRef.current === sessionId) {
               setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
             }
           } else if (event.type === "subagent_done") {
-            const subDone = { ...data, sessionId, status: data.error ? "failed" : "completed" };
+            const subDone = { ...eventData, sessionId, status: data.error ? "failed" : "completed" };
             setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...subDone } : item));
             if (activeSessionIdRef.current === sessionId) {
               setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
@@ -2636,19 +2644,27 @@ export default function ChatPageClient() {
   };
 
   useEffect(() => {
-    if (!isSending && messageQueue.length > 0 && activeSession?.model && apiKey) {
-      const timer = setTimeout(() => {
-        if (!getChatRun(activeSessionId)?.isSending && messageQueueRef.current.length > 0) {
-          const nextItem = messageQueueRef.current[0];
-          setMessageQueue((prev) => prev.slice(1));
-          if (nextItem && (nextItem.text || nextItem.attachments?.length)) {
-            sendMessage({ queuedItem: nextItem });
+    if (!isSending && activeSession?.model && apiKey) {
+      const hasQueued = messageQueueRef.current.some((item) => item.sessionId === activeSessionId);
+      if (hasQueued) {
+        const timer = setTimeout(() => {
+          if (!getChatRun(activeSessionId)?.isSending) {
+            let nextItem = null;
+            setMessageQueue((prev) => {
+              const idx = prev.findIndex((item) => item.sessionId === activeSessionId);
+              if (idx === -1) return prev;
+              nextItem = prev[idx];
+              return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+            });
+            if (nextItem && (nextItem.text || nextItem.attachments?.length)) {
+              sendMessage({ queuedItem: nextItem });
+            }
           }
-        }
-      }, 300);
-      return () => clearTimeout(timer);
+        }, 300);
+        return () => clearTimeout(timer);
+      }
     }
-  }, [isSending, messageQueue.length, activeSessionId, activeSession?.model, apiKey]);
+  }, [isSending, messageQueue, activeSessionId, activeSession?.model, apiKey]);
 
   const handleKeyDown = (event) => {
     if (commandOptions.length > 0) {
@@ -3413,12 +3429,12 @@ export default function ChatPageClient() {
           {asks.map((ask) => (
             <AskWizard key={ask.id} ask={ask} onAnswer={(answer) => resolveGate(ask, answer)} />
           ))}
-          {messageQueue.length > 0 && (
+          {activeQueue.length > 0 && (
             <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
               <div className="flex items-center justify-between font-medium text-primary">
                 <span className="flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[16px]">queue</span>
-                  Queued Messages ({messageQueue.length})
+                  Queued Messages ({activeQueue.length})
                 </span>
                 <button
                   type="button"
@@ -3429,7 +3445,7 @@ export default function ChatPageClient() {
                 </button>
               </div>
               <div className="mt-1.5 flex flex-col gap-1 max-h-28 overflow-y-auto custom-scrollbar">
-                {messageQueue.map((item, qIdx) => (
+                {activeQueue.map((item, qIdx) => (
                   <div
                     key={item.id}
                     className="flex items-center justify-between gap-2 rounded-lg bg-surface/90 px-2 py-1 border border-border text-[11px]"
