@@ -32,13 +32,14 @@ function parseFilePath(filePath = "") {
   return { name, dir };
 }
 
-function GitSourceControlComponent({ workspacePath, onStatusChange }) {
+function GitSourceControlComponent({ workspacePath, activeModel, onStatusChange }) {
   const [activeRepoPath, setActiveRepoPath] = useState(workspacePath);
   const [knownRepos, setKnownRepos] = useState([]);
   const [gitData, setGitData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [operating, setOperating] = useState(false);
   const [operationText, setOperationText] = useState("");
+  const [generatingMessage, setGeneratingMessage] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [notice, setNotice] = useState(null); // { type: 'success' | 'error', text: '' }
   const [stagedExpanded, setStagedExpanded] = useState(true);
@@ -210,6 +211,45 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
     runGitAction("commit", { message: msg, stageAll, label: "Committing changes" }).then(() => {
       setCommitMessage("");
     });
+  };
+
+  const handleGenerateCommitMessage = async () => {
+    if (generatingMessage || operating) return;
+    const stagedCount = gitData?.staged?.length || 0;
+    const unstagedCount = gitData?.unstaged?.length || 0;
+    if (stagedCount === 0 && unstagedCount === 0) {
+      setNotice({ type: "error", text: "No changes detected to generate commit message" });
+      return;
+    }
+
+    setGeneratingMessage(true);
+    setNotice(null);
+
+    try {
+      const res = await fetch("/api/chat/projects/git", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: targetPath,
+          rootPath: workspacePath,
+          action: "generate-commit-message",
+          model: activeModel || "",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to generate commit message");
+      }
+      if (data.message) {
+        setCommitMessage(data.message);
+        commitInputRef.current?.focus();
+        setNotice({ type: "success", text: "Generated commit message with AI" });
+      }
+    } catch (err) {
+      setNotice({ type: "error", text: err.message || "Failed to generate commit message" });
+    } finally {
+      setGeneratingMessage(false);
+    }
   };
 
   const handleUndoLastCommit = async () => {
@@ -424,6 +464,19 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
                   type="button"
                   onClick={() => {
                     setMoreMenuOpen(false);
+                    handleGenerateCommitMessage();
+                  }}
+                  disabled={generatingMessage || operating}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-primary hover:bg-sidebar transition-colors disabled:opacity-40"
+                >
+                  <span className="material-symbols-outlined text-[15px] text-primary">auto_awesome</span>
+                  <span className="font-medium">Generate Message (AI)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
                     handleUndoLastCommit();
                   }}
                   disabled={!gitData?.last}
@@ -531,7 +584,7 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
 
       {/* Commit Input Box (VS Code Style) */}
       <div className="p-3">
-        <div className="rounded-lg border border-border bg-background focus-within:border-primary/70 focus-within:ring-1 focus-within:ring-primary/40">
+        <div className="relative rounded-lg border border-border bg-background focus-within:border-primary/70 focus-within:ring-1 focus-within:ring-primary/40">
           <textarea
             ref={commitInputRef}
             rows={2}
@@ -544,8 +597,22 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
               }
             }}
             placeholder="Message (Ctrl+Enter to commit)"
-            className="w-full resize-none bg-transparent p-2 text-xs text-text-main outline-none placeholder:text-text-muted/60"
+            className="w-full resize-none bg-transparent p-2 pr-7 text-xs text-text-main outline-none placeholder:text-text-muted/60"
           />
+          {/* Sparkle shortcut button inside the textarea */}
+          <button
+            type="button"
+            onClick={handleGenerateCommitMessage}
+            disabled={generatingMessage || operating}
+            className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded text-text-muted hover:text-primary hover:bg-sidebar transition-colors disabled:opacity-40"
+            title="Generate commit message with AI (Message only)"
+          >
+            {generatingMessage ? (
+              <span className="material-symbols-outlined animate-spin text-[12px] text-primary">progress_activity</span>
+            ) : (
+              <span className="material-symbols-outlined text-[13px]">auto_awesome</span>
+            )}
+          </button>
         </div>
 
         {/* Commit Action Buttons */}
@@ -553,7 +620,7 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
           <button
             type="button"
             onClick={() => handleCommit(false)}
-            disabled={operating}
+            disabled={operating || generatingMessage}
             className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary py-1.5 text-xs font-semibold text-white transition hover:bg-primary/90 disabled:opacity-50"
           >
             {operating ? (
@@ -564,13 +631,28 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
             <span>{operating ? (operationText || "Working…") : "Commit"}</span>
           </button>
 
+          {/* AI Generate Commit Message Button (Beside Commit) */}
+          <button
+            type="button"
+            onClick={handleGenerateCommitMessage}
+            disabled={generatingMessage || operating}
+            className="flex items-center justify-center rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/20 hover:border-primary/60 disabled:opacity-40 transition-colors shadow-sm"
+            title="Generate commit message with AI (Message only - does not commit or push)"
+          >
+            {generatingMessage ? (
+              <span className="material-symbols-outlined animate-spin text-[15px]">progress_activity</span>
+            ) : (
+              <span className="material-symbols-outlined text-[15px]">auto_awesome</span>
+            )}
+          </button>
+
           <button
             type="button"
             onClick={() => {
               handleCommit(false);
               setTimeout(() => handlePush(), 800);
             }}
-            disabled={operating}
+            disabled={operating || generatingMessage}
             className="flex items-center gap-1 rounded-lg border border-border bg-sidebar/70 px-2.5 py-1.5 text-[11px] font-medium text-text-muted hover:bg-sidebar hover:text-text-main disabled:opacity-50"
             title="Commit & Push"
           >
@@ -580,7 +662,7 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
           <button
             type="button"
             onClick={handleUndoLastCommit}
-            disabled={operating || !gitData?.last}
+            disabled={operating || generatingMessage || !gitData?.last}
             className="flex items-center gap-1 rounded-lg border border-border bg-sidebar/70 px-2.5 py-1.5 text-[11px] font-medium text-text-muted hover:bg-sidebar hover:text-amber-500 hover:border-amber-500/40 disabled:opacity-40 transition-colors"
             title={gitData?.last ? `Undo Last Commit: ${gitData.last}` : "No commits to undo"}
           >
@@ -600,7 +682,7 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
             <button
               type="button"
               onClick={handleUndoLastCommit}
-              disabled={operating}
+              disabled={operating || generatingMessage}
               className="flex shrink-0 items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-500 hover:bg-amber-500/20 disabled:opacity-50 transition-colors"
               title="Undo last commit and keep changes staged"
             >

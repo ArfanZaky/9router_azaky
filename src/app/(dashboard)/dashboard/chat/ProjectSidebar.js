@@ -29,6 +29,7 @@ function ProjectSidebarComponent({
   sessionId,
   refreshKey,
   messages,
+  activeModel,
   onRun,
   onClose,
   initialTab = "info",
@@ -196,6 +197,7 @@ function ProjectSidebarComponent({
         <div className="min-h-0 flex-1 overflow-hidden">
           <GitSourceControl
             workspacePath={workspacePath}
+            activeModel={activeModel}
             onStatusChange={(updatedGit) => {
               setData((prev) => prev ? { ...prev, git: updatedGit } : prev);
             }}

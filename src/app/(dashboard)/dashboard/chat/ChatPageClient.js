@@ -3661,6 +3661,7 @@ export default function ChatPageClient() {
             refreshKey={projectRefresh}
             messages={messages}
             initialTab={projectTab}
+            activeModel={activeSession?.model}
             onRun={(cmd) => { setDraft(`Run: ${cmd}`); }}
             onClose={() => {
               setProjectOpen(false);

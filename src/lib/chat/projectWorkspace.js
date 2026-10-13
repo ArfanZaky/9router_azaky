@@ -512,6 +512,42 @@ export function gitDiffPath(value, targetPath, staged = false) {
   return res.out || "";
 }
 
+/**
+ * Collect git changes (staged and/or unstaged) formatted for AI commit message generation.
+ * Read-only operation that does not mutate git state.
+ */
+export function gitDiffForCommit(value) {
+  const workspacePath = resolveProjectWorkspace(value);
+  if (!workspacePath) throw new Error("Invalid workspace path");
+
+  const stagedRes = gitExec(workspacePath, ["diff", "--staged"]);
+  const unstagedRes = gitExec(workspacePath, ["diff"]);
+  const shortStatus = gitExec(workspacePath, ["status", "--short"]);
+
+  const hasStaged = Boolean(stagedRes.ok && stagedRes.out.trim());
+  const hasUnstaged = Boolean(unstagedRes.ok && unstagedRes.out.trim());
+  const statusSummary = shortStatus.ok ? shortStatus.out.trim() : "";
+
+  if (!hasStaged && !hasUnstaged && !statusSummary) {
+    throw new Error("No changes detected in repository");
+  }
+
+  let primaryDiff = hasStaged ? stagedRes.out : unstagedRes.out;
+  if (!primaryDiff.trim() && statusSummary) {
+    primaryDiff = `Changed files:\n${statusSummary}`;
+  }
+
+  if (primaryDiff.length > 8000) {
+    primaryDiff = primaryDiff.slice(0, 8000) + "\n\n... (diff truncated for brevity)";
+  }
+
+  return {
+    diff: primaryDiff,
+    statusSummary,
+    hasStaged,
+  };
+}
+
 export function readProjectPlan(value) {
   const workspacePath = resolveProjectWorkspace(value);
   if (!workspacePath) return { exists: false };
