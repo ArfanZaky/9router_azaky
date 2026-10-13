@@ -15,6 +15,7 @@ import {
   clearChatRun,
   getActiveRunSessions,
   getChatRun,
+  isRunActiveFor,
   makeSessionTitle as makeRunTitle,
   patchChatRun,
   patchChatSession as patchRunSession,
@@ -919,9 +920,10 @@ export default function ChatPageClient() {
     return { list: visibleMessages.slice(start, end), start, end };
   }, [visibleMessages, windowIndex]);
 
+  // Strictly bound to active session; never falls back to an unrelated previous session's path
   const activeSessionCodebase = useMemo(
-    () => activeSession?.codebase || activeSession?.workspacePath || codebase || "",
-    [activeSession?.codebase, activeSession?.workspacePath, codebase]
+    () => activeSession?.workspacePath || activeSession?.codebase || "",
+    [activeSession?.workspacePath, activeSession?.codebase]
   );
 
   const activeQueue = useMemo(
@@ -929,6 +931,7 @@ export default function ChatPageClient() {
     [messageQueue, activeSessionId]
   );
 
+  // Stable session ordering by pin and update time; does not jump running sessions to top
   const sortedSessions = useMemo(() => {
     const q = search.trim().toLowerCase();
     const list = q
@@ -944,7 +947,6 @@ export default function ChatPageClient() {
       const bPinned = !!b.pinned;
       if (aPinned !== bPinned) return aPinned ? -1 : 1;
 
-      // Stable sorting by updated time (do NOT auto-jump running sessions to top)
       const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
       const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
       return bTime - aTime;
@@ -1018,6 +1020,13 @@ export default function ChatPageClient() {
     const res = await fetch(`/api/chat/sessions/${id}?limit=1000`);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Failed to load session");
+
+    // Always update list record so codebase / workspacePath / title are fresh
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, ...data, messages: undefined } : s))
+    );
+
+    // Only update view state if user is still on this session
     if (activeSessionIdRef.current !== id) return data;
     setMessages(data.messages || []);
     setTasks(Array.isArray(data.tasks) ? data.tasks : []);
@@ -1036,11 +1045,8 @@ export default function ChatPageClient() {
       const defaultRole = globalThis.localStorage?.getItem("chat.agentRole") || "orchestrator";
       setAgentRole(defaultRole);
     }
-    const effectiveCode = data.codebase || data.workspacePath || "";
+    const effectiveCode = data.workspacePath || data.codebase || "";
     setCodebase(effectiveCode);
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, ...data, messages: undefined } : s))
-    );
     return data;
   }, []);
 
@@ -1056,6 +1062,7 @@ export default function ChatPageClient() {
         }
         return next;
       });
+      // Strict session isolation: background runs never hijack active UI view
       if (!run || run.sessionId !== activeSessionIdRef.current) return;
       setMessages(run.messages || []);
       setIsSending(!!run.isSending);
@@ -1264,7 +1271,7 @@ export default function ChatPageClient() {
             globalThis.localStorage?.setItem("chat.activeSessionId", bootId);
           } catch {}
           const current = list.find((item) => item.id === bootId);
-          if (current) setCodebase(current.codebase || current.workspacePath || "");
+          if (current) setCodebase(current.workspacePath || current.codebase || "");
           const activeRun = getChatRun(bootId);
           if (activeRun?.isSending && activeRun.sessionId === bootId) {
             setMessages(activeRun.messages || []);
@@ -1494,16 +1501,14 @@ export default function ChatPageClient() {
             } else if (event.type === "tool_result") {
               const toolTime = new Date().toISOString();
               const nextTool = {
-                id: eventData.id || createId(),
+                id: data.id || createId(),
                 role: "tool",
-                tool_call_id: eventData.id,
-                name: eventData.name,
-                content: eventData.content,
+                tool_call_id: data.id,
+                name: data.name,
+                content: data.content,
                 status: "done",
                 createdAt: toolTime,
               };
-              const currentRun = getChatRun(sessionId);
-              const currentMsgs = currentRun?.messages || messagesRef.current || [];
               const index = currentMsgs.findIndex(
                 (m) => m.role === "tool" && m.tool_call_id === eventData.id && m.status === "running"
               );
@@ -1631,9 +1636,9 @@ export default function ChatPageClient() {
       globalThis.localStorage?.setItem("chat.activeSessionId", activeSessionId);
     } catch {}
     const current = sessions.find((s) => s.id === activeSessionId);
-    if (current) {
-      setCodebase(current.codebase || current.workspacePath || "");
-    }
+    const currentPath = current?.workspacePath || current?.codebase || "";
+    setCodebase(currentPath);
+    setCodebaseValue(currentPath);
     const run = getChatRun(activeSessionId);
     if (run?.isSending && run.sessionId === activeSessionId) {
       setMessages(run.messages || []);
@@ -1653,9 +1658,7 @@ export default function ChatPageClient() {
   }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState, sessions]);
 
   useEffect(() => {
-    const targetPath = activeSession?.workspacePath || (
-      activeSessionCodebase && /^[A-Za-z]:[\\/]|^[\\/]|^..?[\\/]/i.test(activeSessionCodebase) ? activeSessionCodebase : null
-    );
+    const targetPath = activeSessionCodebase && /^[A-Za-z]:[\\/]|^[\\/]|^..?[\\/]/i.test(activeSessionCodebase) ? activeSessionCodebase : null;
     if (!targetPath) {
       setProjectInfo(null);
       return;
@@ -1665,7 +1668,7 @@ export default function ChatPageClient() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: targetPath }),
     }).then((res) => res.json()).then(setProjectInfo).catch(() => setProjectInfo(null));
-  }, [activeSession?.id, activeSession?.workspacePath, activeSessionCodebase]);
+  }, [activeSessionCodebase]);
 
   useEffect(() => {
     if (visibleMessages.length > 120) {
@@ -1707,7 +1710,7 @@ export default function ChatPageClient() {
   const openEditModal = useCallback((session) => {
     setSessionModalMode("edit");
     setSessionFormName(session.title || "");
-    setSessionFormUrl(session.codebase || "");
+    setSessionFormUrl(session.workspacePath || session.codebase || "");
     setSessionFormEditId(session.id);
     setSessionModalOpen(true);
   }, []);
@@ -1737,7 +1740,8 @@ export default function ChatPageClient() {
     try {
       if (sessionModalMode === "edit" && sessionFormEditId) {
         await patchSession(sessionFormEditId, { title: name || "New chat", codebase: url, workspacePath, projectMeta });
-        setCodebase(url);
+        setCodebase(workspacePath || url);
+        setCodebaseValue(workspacePath || url);
         setSessions((prev) => prev.map((s) => s.id === sessionFormEditId ? { ...s, title: name || "New chat", codebase: url, workspacePath, projectMeta } : s));
         if (workspacePath) {
           setProjectInfo({ workspacePath, name: projectMeta.name, scripts: {}, packageName: projectMeta.packageName });
@@ -1763,7 +1767,8 @@ export default function ChatPageClient() {
         if (!res.ok) throw new Error(data.error || "Failed to create session");
         setSessions((prev) => [data, ...prev]);
         setActiveSessionId(data.id);
-        setCodebase(url);
+        setCodebase(workspacePath || url);
+        setCodebaseValue(workspacePath || url);
         setMessages([]);
         setDraft("");
         setAttachments([]);
@@ -1790,13 +1795,16 @@ export default function ChatPageClient() {
           providerId: activeSession?.providerId || "",
           systemPrompt: activeSession?.systemPrompt || "",
           params: activeSession?.params || DEFAULT_PARAMS,
-          codebase: codebase || "",
+          codebase: "",
+          workspacePath: "",
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Failed to create session");
       setSessions((prev) => [data, ...prev]);
       setActiveSessionId(data.id);
+      setCodebase("");
+      setCodebaseValue("");
       setMessages([]);
       setDraft("");
       setAttachments([]);
@@ -1816,9 +1824,9 @@ export default function ChatPageClient() {
       globalThis.localStorage?.setItem("chat.activeSessionId", id);
     } catch {}
     const targetSession = sessions.find((s) => s.id === id);
-    if (targetSession) {
-      setCodebase(targetSession.codebase || targetSession.workspacePath || "");
-    }
+    const targetPath = targetSession?.workspacePath || targetSession?.codebase || "";
+    setCodebase(targetPath);
+    setCodebaseValue(targetPath);
     setDraft("");
     setAttachments([]);
     setTasks([]);
@@ -2433,7 +2441,7 @@ export default function ChatPageClient() {
           apiKey,
           accessMode,
           verify: verifyMode,
-          codebase: codebase || activeSession?.codebase || "",
+          codebase: activeSessionCodebase,
           autoApprove,
           params: {
             temperature: params.temperature,
@@ -2794,7 +2802,7 @@ export default function ChatPageClient() {
   const saveCodebase = async () => {
     const value = codebaseValue.trim();
     try {
-      await patchSession(activeSessionId, { codebase: value });
+      await patchSession(activeSessionId, { codebase: value, workspacePath: value });
       setCodebase(value);
       setCodebaseEdit(false);
       setError(value ? `Codebase set: ${value}` : "Codebase cleared");
@@ -2957,7 +2965,7 @@ export default function ChatPageClient() {
         const inspect = await fetch("/api/chat/projects/inspect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: value }) });
         const data = await inspect.json().catch(() => ({}));
         if (!inspect.ok) throw new Error(data.error || "Unable to inspect project");
-        await patchSession(activeSessionId, { workspacePath: data.workspacePath, projectMeta: { name: data.name, packageName: data.packageName } });
+        await patchSession(activeSessionId, { workspacePath: data.workspacePath, codebase: data.workspacePath, projectMeta: { name: data.name, packageName: data.packageName } });
         setProjectInfo(data);
         setProjectOpen(true);
         try { globalThis.localStorage?.setItem("chat.projectOpen", "true"); } catch {}
@@ -3087,7 +3095,7 @@ export default function ChatPageClient() {
           ) : (
             <button
               type="button"
-              onClick={() => { setCodebaseValue(activeSessionCodebase); setCodebaseEdit(true); }}
+              onClick={() => { setCodebaseValue(""); setCodebaseEdit(true); }}
               className="hidden items-center gap-1.5 rounded-xl border border-dashed border-border px-3 py-2 text-[11px] text-text-muted hover:bg-sidebar md:flex"
               title="Set a codebase / repository URL for this session"
             >
@@ -3132,7 +3140,7 @@ export default function ChatPageClient() {
             <Button variant="ghost" size="sm" icon="extension" onClick={() => { loadMcpServers(); setMcpModalOpen(true); }}>
               MCP
             </Button>
-            {(activeSession?.workspacePath || activeSessionCodebase) ? (
+            {activeSessionCodebase ? (
               <>
                 <Button
                   variant={projectOpen && projectTab === "git" ? "secondary" : "ghost"}
@@ -3645,10 +3653,10 @@ export default function ChatPageClient() {
         </div>
       </section>
 
-      {projectOpen && (activeSession?.workspacePath || activeSessionCodebase) ? (
+      {projectOpen && activeSessionCodebase ? (
         <div className="hidden xl:block w-80 shrink-0 min-w-0">
           <ProjectSidebar
-            workspacePath={activeSession?.workspacePath || activeSessionCodebase}
+            workspacePath={activeSessionCodebase}
             sessionId={activeSessionId}
             refreshKey={projectRefresh}
             messages={messages}
