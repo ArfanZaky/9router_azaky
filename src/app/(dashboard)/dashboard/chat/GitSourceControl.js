@@ -44,11 +44,13 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
   const [stagedExpanded, setStagedExpanded] = useState(true);
   const [unstagedExpanded, setUnstagedExpanded] = useState(true);
   const [repoDropdownOpen, setRepoDropdownOpen] = useState(false);
-  
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+
   // Diff viewer state
   const [diffModal, setDiffModal] = useState(null); // { file, staged, content, loading }
   const commitInputRef = useRef(null);
   const dropdownRef = useRef(null);
+  const moreMenuRef = useRef(null);
 
   // Sync activeRepoPath and reset knownRepos if workspacePath changes
   useEffect(() => {
@@ -56,17 +58,20 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
     setKnownRepos([]);
   }, [workspacePath]);
 
-  // Click outside listener for dropdown
+  // Click outside listener for dropdowns
   useEffect(() => {
-    if (!repoDropdownOpen) return;
+    if (!repoDropdownOpen && !moreMenuOpen) return;
     const handleClickOutside = (e) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
         setRepoDropdownOpen(false);
       }
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target)) {
+        setMoreMenuOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [repoDropdownOpen]);
+  }, [repoDropdownOpen, moreMenuOpen]);
 
   const targetPath = activeRepoPath || workspacePath;
 
@@ -112,7 +117,7 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
   }, [activeRepoPath]);
 
   const runGitAction = async (action, params = {}) => {
-    if (!targetPath || operating) return;
+    if (!targetPath || operating) return null;
     setOperating(true);
     setOperationText(params.label || action);
     setNotice(null);
@@ -151,8 +156,11 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
       if (data.message) {
         setNotice({ type: "success", text: data.message });
       }
+
+      return data;
     } catch (err) {
       setNotice({ type: "error", text: err.message || `Git ${action} failed` });
+      return null;
     } finally {
       setOperating(false);
       setOperationText("");
@@ -202,6 +210,19 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
     runGitAction("commit", { message: msg, stageAll, label: "Committing changes" }).then(() => {
       setCommitMessage("");
     });
+  };
+
+  const handleUndoLastCommit = async () => {
+    const lastSummary = gitData?.last || "the most recent commit";
+    const ok = globalThis.confirm?.(
+      `Undo last commit (${lastSummary})?\n\nChanges from this commit will be restored to Staged Changes. No work will be lost.`
+    );
+    if (!ok) return;
+
+    const data = await runGitAction("undo-commit", { label: "Undoing commit..." });
+    if (data?.undoneMessage && !commitMessage.trim()) {
+      setCommitMessage(data.undoneMessage);
+    }
   };
 
   const handlePush = () => runGitAction("push", { label: "Pushing commits..." });
@@ -377,6 +398,82 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
           >
             <span className="material-symbols-outlined text-[15px]">cloud_upload</span>
           </button>
+
+          {/* More Actions Menu (VS Code style ...) */}
+          <div className="relative" ref={moreMenuRef}>
+            <button
+              type="button"
+              onClick={() => setMoreMenuOpen((v) => !v)}
+              disabled={operating}
+              className="flex size-6 items-center justify-center rounded text-text-muted hover:bg-sidebar hover:text-text-main disabled:opacity-40"
+              title="Views and More Actions…"
+            >
+              <span className="material-symbols-outlined text-[15px]">more_horiz</span>
+            </button>
+
+            {moreMenuOpen && (
+              <div
+                className="absolute right-0 top-full z-50 mt-1 w-52 rounded-xl border border-border bg-surface p-1 shadow-2xl backdrop-blur-md"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                  Commit Actions
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    handleUndoLastCommit();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-text-main hover:bg-sidebar transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[15px] text-amber-500">undo</span>
+                  <div className="flex flex-col min-w-0">
+                    <span className="font-medium">Undo Last Commit</span>
+                    {gitData?.last && (
+                      <span className="truncate font-mono text-[9px] text-text-muted">{gitData.last}</span>
+                    )}
+                  </div>
+                </button>
+
+                <div className="my-1 border-t border-border/60" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    handleStageAll();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-text-main hover:bg-sidebar transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[15px] text-text-muted">done_all</span>
+                  <span>Stage All Changes</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    handleUnstageAll();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-text-main hover:bg-sidebar transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[15px] text-text-muted">remove_done</span>
+                  <span>Unstage All Changes</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    handleDiscardAll();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-red-500 hover:bg-red-500/10 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[15px]">delete_sweep</span>
+                  <span>Discard All Changes</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -476,6 +573,16 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
             title="Commit & Push"
           >
             <span className="material-symbols-outlined text-[14px]">publish</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleUndoLastCommit}
+            disabled={operating}
+            className="flex items-center gap-1 rounded-lg border border-border bg-sidebar/70 px-2.5 py-1.5 text-[11px] font-medium text-text-muted hover:bg-sidebar hover:text-amber-500 hover:border-amber-500/40 disabled:opacity-50 transition-colors"
+            title={gitData?.last ? `Undo Last Commit: ${gitData.last}` : "Undo Last Commit"}
+          >
+            <span className="material-symbols-outlined text-[14px]">undo</span>
           </button>
         </div>
       </div>

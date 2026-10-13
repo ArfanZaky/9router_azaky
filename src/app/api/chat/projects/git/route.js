@@ -6,6 +6,7 @@ import {
   gitUnstagePath,
   gitDiscardPath,
   gitCommitChanges,
+  gitUndoLastCommit,
   gitPushBranch,
   gitPullBranch,
   gitDiffPath,
@@ -62,6 +63,7 @@ export async function POST(request) {
     }
 
     let message = "";
+    let extraData = {};
 
     if (action === "stage") {
       message = gitStagePath(targetPath, body.file);
@@ -72,6 +74,10 @@ export async function POST(request) {
     } else if (action === "commit") {
       const commitRes = gitCommitChanges(targetPath, body.message, { stageAll: Boolean(body.stageAll) });
       message = commitRes.message;
+    } else if (action === "undo-commit") {
+      const undoRes = gitUndoLastCommit(targetPath);
+      message = undoRes.message;
+      extraData = { undoneMessage: undoRes.undoneMessage };
     } else if (action === "push") {
       message = gitPushBranch(targetPath, { remote: body.remote, branch: body.branch });
     } else if (action === "pull") {
@@ -86,6 +92,7 @@ export async function POST(request) {
       ok: true,
       message,
       status: updatedStatus,
+      ...extraData,
     });
   } catch (error) {
     return NextResponse.json(

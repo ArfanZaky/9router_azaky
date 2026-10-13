@@ -431,6 +431,35 @@ export function gitCommitChanges(value, message, { stageAll = false } = {}) {
   return { message: res.out, last };
 }
 
+export function gitUndoLastCommit(value) {
+  const workspacePath = resolveProjectWorkspace(value);
+  if (!workspacePath) throw new Error("Invalid workspace path");
+  invalidateGitCache(workspacePath);
+
+  const headCheck = gitExec(workspacePath, ["rev-parse", "--verify", "HEAD"]);
+  if (!headCheck.ok) throw new Error("No commits to undo");
+
+  const lastMsg = (git(workspacePath, "log", "-1", "--pretty=%B") || "").trim();
+  const lastHash = (git(workspacePath, "log", "-1", "--pretty=%h") || "").trim();
+  const lastSubject = (git(workspacePath, "log", "-1", "--pretty=%s") || "").trim();
+
+  // ponytail: fallback to update-ref when repository only has root commit
+  const parentCheck = gitExec(workspacePath, ["rev-parse", "--verify", "HEAD~1"]);
+  let res;
+  if (parentCheck.ok) {
+    res = gitExec(workspacePath, ["reset", "--soft", "HEAD~1"]);
+  } else {
+    res = gitExec(workspacePath, ["update-ref", "-d", "HEAD"]);
+  }
+
+  if (!res.ok) throw new Error(res.err);
+
+  return {
+    message: `Undid commit ${lastHash}${lastSubject ? ` (${lastSubject})` : ""}`,
+    undoneMessage: lastMsg.replace(/^["']|["']$/g, "").trim(),
+  };
+}
+
 export function gitPushBranch(value, { remote = "origin", branch = null } = {}) {
   const workspacePath = resolveProjectWorkspace(value);
   if (!workspacePath) throw new Error("Invalid workspace path");
