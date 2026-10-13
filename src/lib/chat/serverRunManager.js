@@ -839,6 +839,18 @@ export function isRunLiveForSession(sessionId) {
   return !!getLiveRunForSession(sessionId);
 }
 
+export function getActiveServerRunSessions() {
+  const activeSessionIds = [];
+  for (const run of liveRuns.values()) {
+    if (run.status === "stopped" || run.status === "completed" || run.status === "failed") continue;
+    if (run.abortController?.signal?.aborted) continue;
+    if (run.sessionId && !activeSessionIds.includes(run.sessionId)) {
+      activeSessionIds.push(run.sessionId);
+    }
+  }
+  return activeSessionIds;
+}
+
 /** Look up a sub-agent and its live events across all in-process runs. */
 export function getSubAgentInfo(subId) {
   for (const run of liveRuns.values()) {

@@ -28,7 +28,7 @@ export async function POST(request) {
       scripts: inspect.scripts,
       packageName: inspect.packageName,
       files: inspect.files,
-      git: gitProjectStatus(path),
+      git: body.includeGit ? gitProjectStatus(path) : null,
       plan: readProjectPlan(path),
       envFiles: projectEnvFiles(path),
     });

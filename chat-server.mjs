@@ -6,7 +6,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import next from "next";
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
-const hasBuild = fs.existsSync(path.join(projectRoot, ".next", "BUILD_ID"));
+const hasBuild =
+  fs.existsSync(path.join(projectRoot, ".next", "BUILD_ID")) &&
+  fs.existsSync(path.join(projectRoot, ".next", "prerender-manifest.json"));
 if (!process.env.NODE_ENV && hasBuild) process.env.NODE_ENV = "production";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -14,6 +16,51 @@ const hostname = process.env.HOSTNAME || "0.0.0.0";
 const port = Number(process.env.PORT || 2026);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
+
+const MIME_MAP = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
+  ".json": "application/json",
+  ".txt": "text/plain; charset=utf-8",
+  ".lua": "text/plain; charset=utf-8",
+};
+
+function serveWorkspaceFile(request, response, relativePath) {
+  try {
+    const raw = decodeURIComponent(String(relativePath || "")).replace(/^\/+/, "");
+    const safeTarget = path.resolve(projectRoot, raw);
+    const rel = path.relative(projectRoot, safeTarget);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      response.writeHead(403, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Access denied" }));
+      return;
+    }
+    if (!fs.existsSync(safeTarget) || !fs.statSync(safeTarget).isFile()) {
+      response.writeHead(404, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "File not found" }));
+      return;
+    }
+    const ext = path.extname(safeTarget).toLowerCase();
+    const contentType = MIME_MAP[ext] || "application/octet-stream";
+    const stat = fs.statSync(safeTarget);
+    response.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": stat.size,
+      "Cache-Control": "public, max-age=3600",
+      "Access-Control-Allow-Origin": "*",
+    });
+    fs.createReadStream(safeTarget).pipe(response);
+  } catch (err) {
+    response.writeHead(500, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: err?.message || "Internal error" }));
+  }
+}
 
 function send(socket, payload) {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
@@ -30,7 +77,19 @@ globalThis.__chatWsHub = {
 };
 
 await app.prepare();
-const server = http.createServer((request, response) => handle(request, response));
+const server = http.createServer((request, response) => {
+  const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+  if (url.pathname.startsWith("/output/")) {
+    return serveWorkspaceFile(request, response, url.pathname.slice(1));
+  }
+  if (url.pathname === "/api/chat/files") {
+    const requestedPath = url.searchParams.get("path") || "";
+    if (requestedPath) {
+      return serveWorkspaceFile(request, response, requestedPath);
+    }
+  }
+  return handle(request, response);
+});
 const wss = new WebSocketServer({ noServer: true });
 
 server.on("upgrade", (request, socket, head) => {

@@ -33,6 +33,7 @@ const PUBLIC_API_PATHS = [
   "/api/settings/require-login",
   "/api/image-gen/assets",
   "/api/chat/uploads",
+  "/api/chat/files",
 ];
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).

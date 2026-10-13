@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
-import { startServerChatRun } from "@/lib/chat/serverRunManager.js";
+import { startServerChatRun, getActiveServerRunSessions } from "@/lib/chat/serverRunManager.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+export async function GET() {
+  const activeSessions = getActiveServerRunSessions();
+  return NextResponse.json({ activeSessions });
+}
 
 export async function POST(request) {
   try {

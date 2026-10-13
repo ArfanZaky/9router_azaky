@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Button, ModelSelectModal } from "@/shared/components";
 import ChatMarkdown from "./ChatMarkdown";
@@ -8,10 +8,12 @@ import ChatToolCard from "./ChatToolCard";
 import TeamPanel from "./TeamPanel";
 import SlashCommandPalette, { CHAT_COMMANDS, commandMatches } from "./SlashCommandPalette";
 import ProjectSidebar from "./ProjectSidebar";
+import FolderPickerModal from "./FolderPickerModal";
 import {
   abortChatRun,
   buildStopSummary,
   clearChatRun,
+  getActiveRunSessions,
   getChatRun,
   makeSessionTitle as makeRunTitle,
   patchChatRun,
@@ -138,16 +140,6 @@ function buildUserContent(message) {
   return content.length > 0 ? content : text;
 }
 
-function readAssistantText(chunk) {
-  if (!chunk || typeof chunk !== "object") return "";
-  const choice = chunk.choices?.[0];
-  const delta = choice?.delta || {};
-  const pieces = [delta.content, choice?.message?.content, chunk.output_text, chunk.text]
-    .map(textValue)
-    .filter(Boolean);
-  return pieces[0] || "";
-}
-
 function exportSessionMarkdown(session) {
   const lines = [
     `# ${session.title || "Chat"}`,
@@ -189,6 +181,307 @@ function updateOrAppendSegment(segments, type, content, extra = {}) {
   next.push({ type, content, ...extra });
   return next;
 }
+
+// ── Memoized Message Row Component (Zero Re-render on Typing) ─────────────────
+const ChatMessageRow = memo(function ChatMessageRow({
+  message,
+  globalIndex,
+  activeSessionModel,
+  isSending,
+  viewMode,
+  showReasoning,
+  onCopy,
+  onEdit,
+  onRegenerate,
+  onImageClick,
+}) {
+  const isUser = message.role === "user";
+  const isTool = message.role === "tool";
+  const isSystem = message.role === "system";
+  const content = textValue(message.content);
+  const msgTime = formatMessageTime(message.createdAt);
+
+  if (isSystem) {
+    return (
+      <div data-chat-message-index={globalIndex} className="flex justify-start">
+        <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-border bg-background/40 px-3 py-2">
+          <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-text-muted">
+            <span className="flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-[13px]">terminal</span>
+              Command
+            </span>
+            {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
+          </div>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-muted">{content}</pre>
+        </div>
+      </div>
+    );
+  }
+
+  if (isTool) {
+    const preview = content.length > 1200 ? `${content.slice(0, 1200)}\n…` : content;
+    return (
+      <div data-chat-message-index={globalIndex} className="flex justify-start">
+        <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2">
+          <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+            <span className="material-symbols-outlined text-[14px]">
+              {message.status === "running" ? "progress_activity" : "build"}
+            </span>
+            <span>tool · {message.name || "unknown"}</span>
+            <span className="opacity-60 font-normal">
+              {message.status === "running" ? "running…" : "done"}
+            </span>
+            {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
+            <button
+              type="button"
+              className="ml-auto material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
+              onClick={() => onCopy(content)}
+            >
+              content_copy
+            </button>
+          </div>
+          <pre className="mt-1.5 max-h-48 overflow-auto custom-scrollbar whitespace-pre-wrap break-words text-[11px] leading-5 text-text-muted font-mono">
+            {preview}
+          </pre>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-chat-message-index={globalIndex} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+      <div
+        className={`max-w-[min(92%,42rem)] rounded-2xl px-4 py-3 ${
+          isUser
+            ? "bg-primary text-white"
+            : message.status === "error"
+              ? "bg-red-500/10 border border-red-500/20"
+              : "bg-sidebar border border-border"
+        }`}
+      >
+        <div className="mb-1 flex items-center justify-between gap-3">
+          <span className="text-[11px] font-semibold opacity-80 flex items-center gap-2">
+            <span>{isUser ? "You" : activeSessionModel || "Assistant"}</span>
+            {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
+              onClick={() => onCopy(content)}
+              title="Copy"
+            >
+              content_copy
+            </button>
+            {isUser ? (
+              <button
+                type="button"
+                className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
+                onClick={() => onEdit(message)}
+                title="Edit and resend"
+                disabled={isSending}
+              >
+                edit
+              </button>
+            ) : null}
+            {!isUser ? (
+              <button
+                type="button"
+                className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
+                onClick={onRegenerate}
+                title="Regenerate"
+                disabled={isSending}
+              >
+                refresh
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {message.attachments?.length ? (
+          <div className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {message.attachments.map((a) => (
+              <button
+                key={a.id || a.name}
+                type="button"
+                onClick={() => a.dataUrl && onImageClick(a.dataUrl, a.name || "Image")}
+                className="overflow-hidden rounded-lg border border-white/10 text-left hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                title="View image"
+              >
+                <img src={a.dataUrl} alt={a.name} className="h-24 w-full object-cover" />
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {viewMode === "raw" && message.tool_calls?.length ? (
+          <div className="mb-2 flex flex-wrap gap-1">
+            {message.tool_calls.map((tc) => (
+              <span
+                key={tc.id}
+                className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-text-muted"
+              >
+                {tc.function?.name || "tool"}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div>
+          {!isUser && message.segments?.length ? (
+            <div className="space-y-3">
+              {message.segments.map((segment, index) => {
+                const isLast = index === message.segments.length - 1;
+                const isStreamingHere = message.status === "streaming" && isLast;
+                if (segment.type === "reasoning") {
+                  return showReasoning ? (
+                    <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}>
+                      <summary className="cursor-pointer text-[11px] font-medium text-text-muted flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <span className={`material-symbols-outlined text-[13px] ${isStreamingHere ? "animate-spin text-primary" : ""}`}>psychology</span>
+                          <span>{isStreamingHere ? "Thinking…" : "Reasoning"}</span>
+                        </span>
+                        {segment.timestamp ? <span className="font-mono text-[10px] opacity-70">{formatMessageTime(segment.timestamp)}</span> : null}
+                      </summary>
+                      <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">
+                        {segment.content}
+                        {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
+                      </div>
+                    </details>
+                  ) : null;
+                }
+                if (segment.type === "tool") {
+                  return viewMode === "raw" ? <ChatToolCard key={segment.callId || index} segment={segment} messageCreatedAt={message.createdAt} /> : null;
+                }
+                return (
+                  <div key={`${segment.type}-${index}`} className="relative">
+                    <ChatMarkdown content={segment.content} onImageClick={onImageClick} />
+                    {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : isUser ? (
+            <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div>
+          ) : (
+            <div>
+              <ChatMarkdown content={content} onImageClick={onImageClick} />
+              {(message.status === "streaming" || message.status === "tool_calls") ? (
+                <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span>
+              ) : null}
+            </div>
+          )}
+        </div>
+        {message.tokenUsage ? (
+          <p className="mt-2 text-[10px] opacity-60">
+            tokens: {message.tokenUsage.total_tokens ||
+              (message.tokenUsage.prompt_tokens || 0) +
+                (message.tokenUsage.completion_tokens || 0)}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+});
+
+// ── Memoized Left Sidebar Session Item Component ─────────────────────────────
+const SessionRailItem = memo(function SessionRailItem({
+  session,
+  active,
+  isRunning,
+  renameId,
+  renameValue,
+  onSelect,
+  onTogglePin,
+  onEdit,
+  onDelete,
+  onRenameChange,
+  onRenameSubmit,
+  onRenameCancel,
+}) {
+  return (
+    <div
+      className={`group rounded-xl border px-2.5 py-2 cursor-pointer transition ${
+        active
+          ? "border-primary/40 bg-primary/10 shadow-sm"
+          : isRunning
+            ? "border-primary/35 bg-primary/5 hover:bg-primary/10"
+            : "border-transparent hover:bg-sidebar hover:border-border"
+      }`}
+      onClick={() => onSelect(session.id)}
+    >
+      <div className="flex items-start gap-2">
+        <button
+          type="button"
+          className={`mt-0.5 material-symbols-outlined text-[16px] ${
+            session.pinned ? "text-primary" : "text-text-muted opacity-0 group-hover:opacity-100"
+          }`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onTogglePin(session);
+          }}
+          title="Pin"
+        >
+          keep
+        </button>
+        <div className="min-w-0 flex-1">
+          {renameId === session.id ? (
+            <input
+              autoFocus
+              value={renameValue}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => onRenameChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onRenameSubmit(session.id);
+                if (e.key === "Escape") onRenameCancel();
+              }}
+              onBlur={() => onRenameSubmit(session.id)}
+              className="w-full rounded border border-border bg-background px-2 py-1 text-sm"
+            />
+          ) : (
+            <div className="flex items-center justify-between gap-1.5">
+              <p className="truncate text-sm font-medium">{session.title || "New chat"}</p>
+              {isRunning && (
+                <span
+                  className="shrink-0 inline-flex items-center gap-1 rounded-md bg-primary/20 border border-primary/30 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
+                  title="Session is actively running"
+                >
+                  <span className="relative flex size-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                    <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
+                  </span>
+                  Running
+                </span>
+              )}
+            </div>
+          )}
+          <p className="truncate text-[11px] text-text-muted mt-0.5">
+            {session.model || "No model"} · {formatRelativeTime(session.updatedAt)}
+          </p>
+        </div>
+        <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100">
+          <button
+            type="button"
+            className="material-symbols-outlined text-[15px] text-text-muted hover:text-primary"
+            onClick={(e) => {
+              e.stopPropagation();
+              onEdit(session);
+            }}
+          >
+            edit
+          </button>
+          <button
+            type="button"
+            className="material-symbols-outlined text-[15px] text-text-muted hover:text-red-500"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(session.id);
+            }}
+          >
+            delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 function SubAgentOverlay({ agent, onClose }) {
   const [info, setInfo] = useState(null);
@@ -385,6 +678,7 @@ export default function ChatPageClient() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
+  const [runningSessionIds, setRunningSessionIds] = useState(() => new Set(getActiveRunSessions()));
   const [messageQueue, setMessageQueue] = useState([]);
   const messageQueueRef = useRef([]);
   useEffect(() => {
@@ -445,7 +739,32 @@ export default function ChatPageClient() {
   const [liveInfo, setLiveInfo] = useState({ turn: 0, tool: null, waiting: false, notice: "", elapsed: 0 });
   const [approvals, setApprovals] = useState([]);
   const [asks, setAsks] = useState([]);
-  const [projectOpen, setProjectOpen] = useState(true);
+  const [projectOpen, setProjectOpen] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem("chat.projectOpen") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [projectTab, setProjectTab] = useState("info");
+
+  const toggleProject = useCallback((tabName) => {
+    setProjectOpen((prev) => {
+      let next;
+      if (prev && projectTab === tabName) {
+        next = false;
+      } else {
+        setProjectTab(tabName);
+        next = true;
+      }
+      try {
+        globalThis.localStorage?.setItem("chat.projectOpen", next ? "true" : "false");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, [projectTab]);
   const [projectInfo, setProjectInfo] = useState(null);
   const [projectRefresh, setProjectRefresh] = useState(0);
   const [pendingProject, setPendingProject] = useState(null);
@@ -457,6 +776,8 @@ export default function ChatPageClient() {
   const [sessionFormName, setSessionFormName] = useState("");
   const [sessionFormUrl, setSessionFormUrl] = useState("");
   const [sessionFormEditId, setSessionFormEditId] = useState("");
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [folderPickerTarget, setFolderPickerTarget] = useState("sessionModal"); // sessionModal | codebaseModal
   const [mcpServers, setMcpServers] = useState([]);
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [mcpForm, setMcpForm] = useState({ name: "", url: "", transport: "sse", command: "", args: "" });
@@ -492,9 +813,20 @@ export default function ChatPageClient() {
   const pollTimerRef = useRef(new Map()); // runId → polling timer
   const liveRunRef = useRef(new Map()); // runId → live run context
 
-  // Transport callbacks need the latest session without reconnecting on every selection.
-  // eslint-disable-next-line react-hooks/refs
   activeSessionIdRef.current = activeSessionId;
+
+  // Stable callback for clicking images in transcripts (prevents Markdown re-render)
+  const handleImageClick = useCallback((src, name) => {
+    setImagePreview({ src, name });
+  }, []);
+
+  const handleCopy = useCallback(async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -550,8 +882,6 @@ export default function ChatPageClient() {
     return messages.filter((m) => m.role !== "tool" || (viewMode === "raw" && !embeddedTools.has(m.tool_call_id)));
   }, [messages, viewMode]);
 
-  // Windowing for very long transcripts: render a ±50 window around an anchor
-  // index. windowIndex stays -1 (render all) until the list passes 120 messages.
   const WINDOW = 50;
   const windowed = useMemo(() => {
     if (visibleMessages.length <= 120 || windowIndex < 0) return { list: visibleMessages, start: 0, end: visibleMessages.length };
@@ -565,15 +895,30 @@ export default function ChatPageClient() {
     [sessions, activeSessionId]
   );
 
-  const filteredSessions = useMemo(() => {
+  const sortedSessions = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
-      (s) =>
-        (s.title || "").toLowerCase().includes(q) ||
-        (s.model || "").toLowerCase().includes(q)
-    );
-  }, [sessions, search]);
+    const list = q
+      ? sessions.filter(
+          (s) =>
+            (s.title || "").toLowerCase().includes(q) ||
+            (s.model || "").toLowerCase().includes(q)
+        )
+      : [...sessions];
+
+    return list.sort((a, b) => {
+      const aRunning = runningSessionIds.has(a.id);
+      const bRunning = runningSessionIds.has(b.id);
+      if (aRunning !== bRunning) return aRunning ? -1 : 1;
+
+      const aPinned = !!a.pinned;
+      const bPinned = !!b.pinned;
+      if (aPinned !== bPinned) return aPinned ? -1 : 1;
+
+      const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return bTime - aTime;
+    });
+  }, [sessions, search, runningSessionIds]);
 
   const params = { ...DEFAULT_PARAMS, ...(activeSession?.params || {}) };
   const canSend =
@@ -634,11 +979,18 @@ export default function ChatPageClient() {
     return data;
   }, []);
 
-  // Keep stream alive across menu navigation — only explicit Stop aborts.
   useEffect(() => {
     mountedRef.current = true;
     const unsub = subscribeChatRun((run) => {
       if (!mountedRef.current) return;
+      setRunningSessionIds((prev) => {
+        const clientIds = getActiveRunSessions();
+        const next = new Set([...prev, ...clientIds]);
+        if (run && !run.isSending && run.sessionId) {
+          next.delete(run.sessionId);
+        }
+        return next;
+      });
       if (!run) {
         setIsSending(false);
         setAgentStatus("");
@@ -650,7 +1002,7 @@ export default function ChatPageClient() {
       setAgentStatus(run.agentStatus || "");
       if (run.error) setError(run.error);
     });
-    // Reattach transport if a server run is still active after remount.
+
     const existing = getChatRun();
     if (existing?.isSending && existing.runId) {
       const existingSessionId = existing.sessionId;
@@ -721,14 +1073,11 @@ export default function ChatPageClient() {
               setAgentStatus("Waiting for your answer…");
             } else if (event.type === "subagent_start") {
               setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
-              // Update roster member status
               setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
             } else if (event.type === "subagent_done") {
               setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
-              // Update roster member status
               setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
             } else if (event.type === "tool_start" || event.type === "tool_result") {
-              // Reload session messages on tool boundaries after remount.
               loadSessionDetail(existingSessionId).catch(() => {});
               patchChatRun(existingSessionId, {
                 agentStatus:
@@ -752,7 +1101,6 @@ export default function ChatPageClient() {
                 error: event.type === "error" ? data.message || "Chat failed" : "",
               });
               clearChatRun(existingSessionId);
-              // eslint-disable-next-line react-hooks/immutability
               stopRunTransport(existing.runId);
               liveRunRef.current.delete(existing.runId);
               setApprovals([]);
@@ -768,13 +1116,11 @@ export default function ChatPageClient() {
         };
         liveRunRef.current.set(existing.runId, liveCtx);
       }
-      // eslint-disable-next-line react-hooks/immutability
       connectRunSocket(existing.runId, 0, liveRunRef.current.get(existing.runId));
     }
     return () => {
       mountedRef.current = false;
       unsub();
-      // do NOT abort — chat continues in background; transport reattaches on remount
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -838,8 +1184,35 @@ export default function ChatPageClient() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    // Fallback status pulse: keep the agent status visible even when a model
-    // call is silent for a while (non-stream reasoning, long tool runs).
+    let alive = true;
+    const fetchActiveRuns = async () => {
+      try {
+        const res = await fetch("/api/chat/runs");
+        if (!res.ok) return;
+        const data = await res.json().catch(() => null);
+        if (alive && Array.isArray(data?.activeSessions)) {
+          setRunningSessionIds((prev) => {
+            const clientActive = getActiveRunSessions();
+            const merged = new Set([...clientActive, ...data.activeSessions]);
+            if (merged.size !== prev.size || [...merged].some((id) => !prev.has(id))) {
+              return merged;
+            }
+            return prev;
+          });
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchActiveRuns();
+    const interval = setInterval(fetchActiveRuns, 3000);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
     const id = setInterval(() => {
       const run = getChatRun(activeSessionId);
       if (run?.isSending && !agentStatus) {
@@ -848,13 +1221,10 @@ export default function ChatPageClient() {
       }
     }, 15_000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Elapsed-seconds ticker for the streaming indicator while a run is sending.
   useEffect(() => {
     if (!isSending) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLiveInfo((s) => ({ ...s, elapsed: 0 }));
       return undefined;
     }
@@ -872,13 +1242,18 @@ export default function ChatPageClient() {
       if (!res.ok || !data.active) {
         setIsSending(false);
         setAgentStatus("");
+        setRunningSessionIds((prev) => {
+          const next = new Set(prev);
+          next.delete(sessionId);
+          return next;
+        });
         return;
       }
+      setRunningSessionIds((prev) => new Set([...prev, sessionId]));
 
       const roleLabel = AGENT_ROLES.find((r) => r.id === agentRole)?.label || "Agent";
       const statusText = `${roleLabel} running…`;
 
-      // Update client runtime singleton
       startChatRun({
         sessionId,
         runId: data.runId,
@@ -893,7 +1268,6 @@ export default function ChatPageClient() {
       setIsSending(true);
       setAgentStatus(statusText);
 
-      // Reattach WebSocket listener for streaming events
       if (!liveRunRef.current.get(data.runId)) {
         let lastSeq = 0;
         let assistantText = data.assistantText || "";
@@ -1029,7 +1403,7 @@ export default function ChatPageClient() {
               const currentMsgs = currentRun?.messages || messagesRef.current || [];
               const next = currentMsgs.map((m) =>
                 m.id === data.assistantId
-                  ? { ...m, segments: (m.segments || []).map((seg) => seg.type === "tool" && seg.callId === eventData.id ? { ...seg, progress: (seg.progress || "") + (eventData.chunk || "") } : seg) }
+                  ? { ...m, segments: (m.segments || []).map((seg) => seg.type === "tool" && seg.callId === eventData.id ? { ...seg, progress: (seg.progress || "") + (eventData.chunk || "") } : segment) }
                   : m
               );
               patchChatRun(sessionId, { messages: next });
@@ -1058,7 +1432,7 @@ export default function ChatPageClient() {
               setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: "running" } : m));
             } else if (event.type === "subagent_done") {
               setSubAgents((prev) => prev.map((item) => item.id === eventData.id ? { ...item, ...eventData, status: eventData.error ? "failed" : "completed" } : item));
-              setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: eventData.error ? "failed" : "idle" } : m));
+              setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
             } else if (event.type === "notice") {
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
                 setAgentStatus(eventData.message || "Working…");
@@ -1083,6 +1457,7 @@ export default function ChatPageClient() {
               clearChatRun(sessionId);
               stopRunTransport(data.runId);
               liveRunRef.current.delete(data.runId);
+              setRunningSessionIds((prev) => { const n = new Set(prev); n.delete(sessionId); return n; });
               setApprovals([]);
               setAsks([]);
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
@@ -1106,25 +1481,21 @@ export default function ChatPageClient() {
     if (!activeSessionId) return;
     const run = getChatRun(activeSessionId);
     if (run?.isSending && run.sessionId === activeSessionId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages(run.messages || []);
       setIsSending(true);
       setAgentStatus(run.agentStatus || "");
       return;
     }
-    // Other session (or idle): don't show Stop for a background run elsewhere
     setIsSending(false);
     setAgentStatus("");
     loadSessionDetail(activeSessionId)
       .then(() => syncActiveSessionRunState(activeSessionId))
       .catch((e) => setError(textValue(e.message)));
-  }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState]);
 
   useEffect(() => {
     const workspacePath = activeSession?.workspacePath;
-    if (!workspacePath) {
-      return;
-    }
+    if (!workspacePath) return;
     fetch("/api/chat/projects/inspect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1133,9 +1504,7 @@ export default function ChatPageClient() {
   }, [activeSession?.workspacePath]);
 
   useEffect(() => {
-    // Keep the streaming tail in view; when windowed, anchor the window to the end.
     if (visibleMessages.length > 120) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setWindowIndex(visibleMessages.length - 1);
     }
     scrollToBottom(false);
@@ -1171,19 +1540,17 @@ export default function ChatPageClient() {
     }
   };
 
-  const openEditModal = (session) => {
+  const openEditModal = useCallback((session) => {
     setSessionModalMode("edit");
     setSessionFormName(session.title || "");
     setSessionFormUrl(session.codebase || "");
     setSessionFormEditId(session.id);
     setSessionModalOpen(true);
-  };
+  }, []);
 
   const saveSessionModal = async () => {
     const name = sessionFormName.trim();
     const url = sessionFormUrl.trim();
-    // If the URL looks like a local folder path, resolve it into a project workspace
-    // (so the agent runs `cd`/tools inside it, not the 9Router root).
     let workspacePath = "";
     let projectMeta = {};
     const isLocalPath = /^[A-Za-z]:[\\/]|^[\\/]|^\.\.?[\\/]/i.test(url);
@@ -1200,7 +1567,7 @@ export default function ChatPageClient() {
           projectMeta = { name: inspData.name, packageName: inspData.packageName };
         }
       } catch {
-        // ignore — keep codebase-only if inspect fails
+        // ignore
       }
     }
     try {
@@ -1208,7 +1575,11 @@ export default function ChatPageClient() {
         await patchSession(sessionFormEditId, { title: name || "New chat", codebase: url, workspacePath, projectMeta });
         setCodebase(url);
         setSessions((prev) => prev.map((s) => s.id === sessionFormEditId ? { ...s, title: name || "New chat", codebase: url, workspacePath, projectMeta } : s));
-        if (workspacePath) { setProjectInfo({ workspacePath, name: projectMeta.name, scripts: {}, packageName: projectMeta.packageName }); setProjectOpen(true); }
+        if (workspacePath) {
+          setProjectInfo({ workspacePath, name: projectMeta.name, scripts: {}, packageName: projectMeta.packageName });
+          setProjectOpen(true);
+          try { globalThis.localStorage?.setItem("chat.projectOpen", "true"); } catch {}
+        }
       } else {
         const res = await fetch("/api/chat/sessions", {
           method: "POST",
@@ -1268,8 +1639,8 @@ export default function ChatPageClient() {
     }
   };
 
-  const handleSelectSession = (id) => {
-    if (id === activeSessionId) return;
+  const handleSelectSession = useCallback((id) => {
+    if (id === activeSessionIdRef.current) return;
     setActiveSessionId(id);
     setDraft("");
     setAttachments([]);
@@ -1277,28 +1648,30 @@ export default function ChatPageClient() {
     setSubAgents([]);
     setTeamTasks([]);
     setError("");
-  };
+  }, []);
 
-  const handleDeleteSession = async (id) => {
+  const handleDeleteSession = useCallback(async (id) => {
     try {
       const res = await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to delete");
       }
-      const next = sessions.filter((s) => s.id !== id);
-      setSessions(next);
-      if (activeSessionId === id) {
-        const fallback = next[0]?.id || "";
-        setActiveSessionId(fallback);
-        if (!fallback) setMessages([]);
-      }
+      setSessions((prev) => {
+        const next = prev.filter((s) => s.id !== id);
+        if (activeSessionIdRef.current === id) {
+          const fallback = next[0]?.id || "";
+          setActiveSessionId(fallback);
+          if (!fallback) setMessages([]);
+        }
+        return next;
+      });
     } catch (e) {
       setError(textValue(e.message));
     }
-  };
+  }, []);
 
-  const handleRename = async (id) => {
+  const handleRename = useCallback(async (id) => {
     const title = renameValue.trim();
     if (!title) return;
     try {
@@ -1308,15 +1681,15 @@ export default function ChatPageClient() {
     } catch (e) {
       setError(textValue(e.message));
     }
-  };
+  }, [renameValue]);
 
-  const handleTogglePin = async (session) => {
+  const handleTogglePin = useCallback(async (session) => {
     try {
       await patchSession(session.id, { pinned: !session.pinned });
     } catch (e) {
       setError(textValue(e.message));
     }
-  };
+  }, []);
 
   const handleSelectModel = async (model) => {
     const value = model?.value || model?.name || "";
@@ -1406,10 +1779,6 @@ export default function ChatPageClient() {
     await addDocFiles(others);
   };
 
-  const persistMessages = async (sessionId, nextMessages) => {
-    await persistChatMessages(sessionId, nextMessages);
-  };
-
   const handleStop = () => {
     abortChatRun(activeSessionId);
     abortRef.current?.abort();
@@ -1428,7 +1797,6 @@ export default function ChatPageClient() {
       }
       return;
     }
-    // Stop all transports (full teardown).
     for (const timer of pollTimerRef.current.values()) clearTimeout(timer);
     pollTimerRef.current.clear();
     for (const timer of reconnectTimerRef.current.values()) clearTimeout(timer);
@@ -1441,7 +1809,6 @@ export default function ChatPageClient() {
 
   const connectRunSocket = (runId, after = 0, ctx = null) => {
     if (!runId) return;
-    // Do NOT close other runs' sockets — each active run keeps its own WS.
     stopRunTransport(runId);
     const live = ctx || liveRunRef.current.get(runId);
     if (!live) return;
@@ -1469,7 +1836,7 @@ export default function ChatPageClient() {
             }
           }
         } catch {
-          // ignore network hiccups
+          // ignore
         }
         if (live.isActive()) {
           const timer = setTimeout(poll, 1000);
@@ -1533,7 +1900,6 @@ export default function ChatPageClient() {
     fn();
   };
 
-  // Keep the live streaming indicator in sync with run events.
   const updateLiveFromEvent = (event, data) => {
     if (event.type === "status") {
       const notice = data.phase === "thinking" ? "Thinking…" : "";
@@ -1611,8 +1977,8 @@ export default function ChatPageClient() {
       error: errorText || "",
     });
     clearChatRun(sessionId);
+    setRunningSessionIds((prev) => { const n = new Set(prev); n.delete(sessionId); return n; });
 
-    // session list always refresh; transcript only if viewing this session
     if (mountedRef.current) {
       setSessions((prev) =>
         prev.map((s) =>
@@ -1747,6 +2113,7 @@ export default function ChatPageClient() {
       workingMessages.find((m) => m.role === "user")?.content || activeSession.title
     );
 
+    setRunningSessionIds((prev) => new Set([...prev, sessionId]));
     startChatRun({
       sessionId,
       abortController: abortRef.current,
@@ -1758,8 +2125,6 @@ export default function ChatPageClient() {
       sessionMeta,
     });
 
-    // Build request history. Agent loop sanitizes tool pairing again server-side.
-    // Client-side: drop orphan tool rows early so plain chat path is clean too.
     const requestMessages = [];
     const pending = [];
     for (const msg of workingMessages) {
@@ -1784,7 +2149,6 @@ export default function ChatPageClient() {
       }
       pending.push(entry);
     }
-    // Pair tools only with preceding assistant.tool_calls ids
     {
       let openIds = new Set();
       for (const msg of pending) {
@@ -1805,7 +2169,6 @@ export default function ChatPageClient() {
             });
             openIds.delete(callId);
           }
-          // else drop orphan
           continue;
         }
         openIds = new Set();
@@ -1846,6 +2209,7 @@ export default function ChatPageClient() {
       });
       clearChatRun(sessionId);
       if (currentRunId) liveRunRef.current.delete(currentRunId);
+      setRunningSessionIds((prev) => { const n = new Set(prev); n.delete(sessionId); return n; });
       setApprovals([]);
       setAsks([]);
       stopRunTransport(currentRunId || undefined);
@@ -2026,12 +2390,10 @@ export default function ChatPageClient() {
             setAgentStatus("Waiting for your answer…");
           } else if (event.type === "subagent_start") {
             setSubAgents((prev) => [...prev.filter((item) => item.id !== data.id), { ...data, status: "running" }]);
-              // Update roster member status
-              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
+            setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
           } else if (event.type === "subagent_done") {
             setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...data, status: data.error ? "failed" : "completed" } : item));
-              // Update roster member status
-              setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
+            setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
           } else if (event.type === "tool_progress") {
             pushLive(liveMessages.map((m) => m.id === assistantId
               ? { ...m, segments: (m.segments || []).map((segment) => segment.type === "tool" && segment.callId === data.id ? { ...segment, progress: (segment.progress || "") + (data.chunk || "") } : segment) }
@@ -2068,7 +2430,6 @@ export default function ChatPageClient() {
     }
   };
 
-  // Queue worker: automatically pops and sends the next queued message when AI turns idle
   useEffect(() => {
     if (!isSending && messageQueue.length > 0 && activeSession?.model && apiKey) {
       const timer = setTimeout(() => {
@@ -2152,7 +2513,6 @@ export default function ChatPageClient() {
 
   const resolveGate = async (gate, outcome, always = false) => {
     let runId = gate.runId || getChatRun(activeSessionId)?.runId;
-    // Fallback: scan liveRunRef for any active run
     if (!runId) {
       for (const [id, ctx] of liveRunRef.current.entries()) {
         if (ctx.isActive?.()) { runId = id; break; }
@@ -2190,14 +2550,6 @@ export default function ChatPageClient() {
         `${(activeSession.title || "chat").replace(/\s+/g, "-")}.json`,
         JSON.stringify(payload, null, 2)
       );
-    }
-  };
-
-  const handleCopy = async (text) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // ignore
     }
   };
 
@@ -2319,7 +2671,7 @@ export default function ChatPageClient() {
     }
   };
 
-  const handleEditMessage = async (message) => {
+  const handleEditMessage = useCallback(async (message) => {
     const nextText = globalThis.prompt?.("Edit message", textValue(message.content));
     if (nextText == null || !nextText.trim() || nextText.trim() === textValue(message.content).trim()) return;
     try {
@@ -2328,7 +2680,11 @@ export default function ChatPageClient() {
     } catch (e) {
       setError(textValue(e.message));
     }
-  };
+  }, []);
+
+  const handleRegenerate = useCallback(() => {
+    sendMessage({ regenerate: true });
+  }, [activeSession?.model, apiKey]);
 
   const runCommand = async (line) => {
     const [rawName, ...parts] = line.trim().slice(1).split(/\s+/);
@@ -2362,7 +2718,7 @@ export default function ChatPageClient() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "Unable to steer run");
         setAgentStatus("Steering queued");
-      }       else if (name === "approve") {
+      } else if (name === "approve") {
         if (approvals.length === 0) throw new Error("No pending approval");
         await resolveGate(approvals[0], "allow");
         setError("Approval granted");
@@ -2378,6 +2734,7 @@ export default function ChatPageClient() {
         await patchSession(activeSessionId, { workspacePath: data.workspacePath, projectMeta: { name: data.name, packageName: data.packageName } });
         setProjectInfo(data);
         setProjectOpen(true);
+        try { globalThis.localStorage?.setItem("chat.projectOpen", "true"); } catch {}
         setPendingProject({ path: data.workspacePath, name: data.name });
       } else if (name === "codebase") {
         const current = sessions.find((s) => s.id === activeSessionId);
@@ -2409,7 +2766,7 @@ export default function ChatPageClient() {
         setError(verifyMode ? "Verification disabled for next run" : "Verification enabled for next run");
       } else if (name === "compact") {
         try {
-          const keepLastN = 20; // auto-compaction preserves last 20 messages
+          const keepLastN = 20;
           const res = await fetch(`/api/chat/sessions/${activeSessionId}/compact`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -2417,10 +2774,7 @@ export default function ChatPageClient() {
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || "Failed to compact session");
-          
-          // Reload session after compaction
-          const detailRes = await loadSessionDetail(activeSessionId);
-          
+          await loadSessionDetail(activeSessionId);
           setError(`Session compacted: deleted ${data.deletedCount || 0} old messages, kept ${data.keepLastN} recent (${data.totalCount} → ${data.totalCount - data.deletedCount})`);
         } catch (e) {
           setError(textValue(e.message));
@@ -2455,82 +2809,26 @@ export default function ChatPageClient() {
           />
         </div>
         <div ref={listRef} className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-          {filteredSessions.length === 0 ? (
+          {sortedSessions.length === 0 ? (
             <p className="text-xs text-text-muted p-3">No sessions yet.</p>
           ) : (
-            filteredSessions.map((session) => {
-              const active = session.id === activeSessionId;
-              return (
-                <div
-                  key={session.id}
-                  className={`group rounded-xl border px-2.5 py-2 cursor-pointer transition ${
-                    active
-                      ? "border-primary/40 bg-primary/10"
-                      : "border-transparent hover:bg-sidebar hover:border-border"
-                  }`}
-                  onClick={() => handleSelectSession(session.id)}
-                >
-                  <div className="flex items-start gap-2">
-                    <button
-                      type="button"
-                      className={`mt-0.5 material-symbols-outlined text-[16px] ${
-                        session.pinned ? "text-primary" : "text-text-muted opacity-0 group-hover:opacity-100"
-                      }`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleTogglePin(session);
-                      }}
-                      title="Pin"
-                    >
-                      keep
-                    </button>
-                    <div className="min-w-0 flex-1">
-                      {renameId === session.id ? (
-                        <input
-                          autoFocus
-                          value={renameValue}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") handleRename(session.id);
-                            if (e.key === "Escape") setRenameId("");
-                          }}
-                          onBlur={() => handleRename(session.id)}
-                          className="w-full rounded border border-border bg-background px-2 py-1 text-sm"
-                        />
-                      ) : (
-                        <p className="truncate text-sm font-medium">{session.title || "New chat"}</p>
-                      )}
-                      <p className="truncate text-[11px] text-text-muted mt-0.5">
-                        {session.model || "No model"} · {formatRelativeTime(session.updatedAt)}
-                      </p>
-                    </div>
-                    <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100">
-                      <button
-                        type="button"
-                        className="material-symbols-outlined text-[15px] text-text-muted hover:text-primary"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openEditModal(session);
-                        }}
-                      >
-                        edit
-                      </button>
-                      <button
-                        type="button"
-                        className="material-symbols-outlined text-[15px] text-text-muted hover:text-red-500"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteSession(session.id);
-                        }}
-                      >
-                        delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })
+            sortedSessions.map((session) => (
+              <SessionRailItem
+                key={session.id}
+                session={session}
+                active={session.id === activeSessionId}
+                isRunning={runningSessionIds.has(session.id)}
+                renameId={renameId}
+                renameValue={renameValue}
+                onSelect={handleSelectSession}
+                onTogglePin={handleTogglePin}
+                onEdit={openEditModal}
+                onDelete={handleDeleteSession}
+                onRenameChange={setRenameValue}
+                onRenameSubmit={handleRename}
+                onRenameCancel={() => setRenameId("")}
+              />
+            ))
           )}
         </div>
       </aside>
@@ -2609,9 +2907,26 @@ export default function ChatPageClient() {
               MCP
             </Button>
             {activeSession?.workspacePath ? (
-              <Button variant="ghost" size="sm" icon="folder_open" onClick={() => setProjectOpen((value) => !value)}>
-                Project
-              </Button>
+              <>
+                <Button
+                  variant={projectOpen && projectTab === "git" ? "secondary" : "ghost"}
+                  size="sm"
+                  icon="fork_right"
+                  onClick={() => toggleProject("git")}
+                  title="Source Control (Git)"
+                >
+                  Git
+                </Button>
+                <Button
+                  variant={projectOpen && projectTab !== "git" ? "secondary" : "ghost"}
+                  size="sm"
+                  icon="folder_open"
+                  onClick={() => toggleProject("info")}
+                  title="Project Workspace"
+                >
+                  Project
+                </Button>
+              </>
             ) : null}
             <Button variant="ghost" size="sm" icon="download" onClick={() => handleExport("md")}>
               MD
@@ -2780,194 +3095,21 @@ export default function ChatPageClient() {
           ) : (
             <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
               {windowed.start > 0 ? <div className="py-2 text-center text-[11px] text-text-muted">Earlier messages hidden · scroll up to reveal</div> : null}
-              {windowed.list.map((message, wi) => {
-                const isUser = message.role === "user";
-                const isTool = message.role === "tool";
-                const isSystem = message.role === "system";
-                const content = textValue(message.content);
-                const globalIndex = windowed.start + wi;
-                const msgTime = formatMessageTime(message.createdAt);
-
-                if (isSystem) {
-                  return (
-                    <div key={message.id} data-chat-message-index={globalIndex} className="flex justify-start">
-                      <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-border bg-background/40 px-3 py-2">
-                        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-text-muted">
-                          <span className="flex items-center gap-1.5">
-                            <span className="material-symbols-outlined text-[13px]">terminal</span>
-                            Command
-                          </span>
-                          {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
-                        </div>
-                        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-muted">{content}</pre>
-                      </div>
-                    </div>
-                  );
-                }
-
-                if (isTool) {
-                  const preview =
-                    content.length > 1200 ? `${content.slice(0, 1200)}\n…` : content;
-                  return (
-                    <div key={message.id} data-chat-message-index={globalIndex} className="flex justify-start">
-                      <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2">
-                        <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
-                          <span className="material-symbols-outlined text-[14px]">
-                            {message.status === "running" ? "progress_activity" : "build"}
-                          </span>
-                          <span>tool · {message.name || "unknown"}</span>
-                          <span className="opacity-60 font-normal">
-                            {message.status === "running" ? "running…" : "done"}
-                          </span>
-                          {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
-                          <button
-                            type="button"
-                            className="ml-auto material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
-                            onClick={() => handleCopy(content)}
-                          >
-                            content_copy
-                          </button>
-                        </div>
-                        <pre className="mt-1.5 max-h-48 overflow-auto custom-scrollbar whitespace-pre-wrap break-words text-[11px] leading-5 text-text-muted font-mono">
-                          {preview}
-                        </pre>
-                      </div>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div key={message.id} data-chat-message-index={globalIndex} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-                    <div
-                      className={`max-w-[min(92%,42rem)] rounded-2xl px-4 py-3 ${
-                        isUser
-                          ? "bg-primary text-white"
-                          : message.status === "error"
-                            ? "bg-red-500/10 border border-red-500/20"
-                            : "bg-sidebar border border-border"
-                      }`}
-                    >
-                      <div className="mb-1 flex items-center justify-between gap-3">
-                        <span className="text-[11px] font-semibold opacity-80 flex items-center gap-2">
-                          <span>{isUser ? "You" : activeSession?.model || "Assistant"}</span>
-                          {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
-                            onClick={() => handleCopy(content)}
-                            title="Copy"
-                          >
-                            content_copy
-                          </button>
-                          {isUser ? (
-                            <button
-                              type="button"
-                              className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
-                              onClick={() => handleEditMessage(message)}
-                              title="Edit and resend"
-                              disabled={isSending}
-                            >
-                              edit
-                            </button>
-                          ) : null}
-                          {!isUser ? (
-                            <button
-                              type="button"
-                              className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
-                              onClick={() => sendMessage({ regenerate: true })}
-                              title="Regenerate"
-                              disabled={isSending}
-                            >
-                              refresh
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                      {message.attachments?.length ? (
-                        <div className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                          {message.attachments.map((a) => (
-                            <button
-                              key={a.id || a.name}
-                              type="button"
-                              onClick={() => a.dataUrl && setImagePreview({ src: a.dataUrl, name: a.name || "Image" })}
-                              className="overflow-hidden rounded-lg border border-white/10 text-left hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                              title="View image"
-                            >
-                              <img src={a.dataUrl} alt={a.name} className="h-24 w-full object-cover" />
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                      {viewMode === "raw" && message.tool_calls?.length ? (
-                        <div className="mb-2 flex flex-wrap gap-1">
-                          {message.tool_calls.map((tc) => (
-                            <span
-                              key={tc.id}
-                              className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-text-muted"
-                            >
-                              {tc.function?.name || "tool"}
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-                      <div>
-                        {!isUser && message.segments?.length ? (
-                          <div className="space-y-3">
-                            {message.segments.map((segment, index) => {
-                              const isLast = index === message.segments.length - 1;
-                              const isStreamingHere = message.status === "streaming" && isLast;
-                              if (segment.type === "reasoning") {
-                                return showReasoning ? (
-                                  <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}>
-                                    <summary className="cursor-pointer text-[11px] font-medium text-text-muted flex items-center justify-between">
-                                      <span className="flex items-center gap-1.5">
-                                        <span className={`material-symbols-outlined text-[13px] ${isStreamingHere ? "animate-spin text-primary" : ""}`}>psychology</span>
-                                        <span>{isStreamingHere ? "Thinking…" : "Reasoning"}</span>
-                                      </span>
-                                      {segment.timestamp ? <span className="font-mono text-[10px] opacity-70">{formatMessageTime(segment.timestamp)}</span> : null}
-                                    </summary>
-                                    <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">
-                                      {segment.content}
-                                      {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
-                                    </div>
-                                  </details>
-                                ) : null;
-                              }
-                              if (segment.type === "tool") {
-                                return viewMode === "raw" ? <ChatToolCard key={segment.callId || index} segment={segment} messageCreatedAt={message.createdAt} /> : null;
-                              }
-                              return (
-                                <div key={`${segment.type}-${index}`} className="relative">
-                                  <ChatMarkdown content={segment.content} />
-                                  {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : isUser ? (
-                          <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div>
-                        ) : (
-                          <div>
-                            <ChatMarkdown content={content} />
-                            {(message.status === "streaming" || message.status === "tool_calls") ? (
-                              <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span>
-                            ) : null}
-                          </div>
-                        )}
-                      </div>
-                      {message.tokenUsage ? (
-                        <p className="mt-2 text-[10px] opacity-60">
-                          tokens: {message.tokenUsage.total_tokens ||
-                            (message.tokenUsage.prompt_tokens || 0) +
-                              (message.tokenUsage.completion_tokens || 0)}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
+              {windowed.list.map((message, wi) => (
+                <ChatMessageRow
+                  key={message.id}
+                  message={message}
+                  globalIndex={windowed.start + wi}
+                  activeSessionModel={activeSession?.model}
+                  isSending={isSending}
+                  viewMode={viewMode}
+                  showReasoning={showReasoning}
+                  onCopy={handleCopy}
+                  onEdit={handleEditMessage}
+                  onRegenerate={handleRegenerate}
+                  onImageClick={handleImageClick}
+                />
+              ))}
               {windowed.end < visibleMessages.length ? <div className="py-2 text-center text-[11px] text-text-muted">Scroll down for newer messages</div> : null}
               <div ref={bottomRef} />
             </div>
@@ -2985,7 +3127,7 @@ export default function ChatPageClient() {
                   {a.dataUrl ? (
                     <button
                       type="button"
-                      onClick={() => setImagePreview({ src: a.dataUrl, name: a.name || "Image" })}
+                      onClick={() => handleImageClick(a.dataUrl, a.name || "Image")}
                       className="shrink-0"
                       title="View image"
                     >
@@ -3283,8 +3425,12 @@ export default function ChatPageClient() {
             sessionId={activeSessionId}
             refreshKey={projectRefresh}
             messages={messages}
+            initialTab={projectTab}
             onRun={(cmd) => { setDraft(`Run: ${cmd}`); }}
-            onClose={() => setProjectOpen(false)}
+            onClose={() => {
+              setProjectOpen(false);
+              try { globalThis.localStorage?.setItem("chat.projectOpen", "false"); } catch {}
+            }}
           />
         </div>
       ) : null}
@@ -3471,17 +3617,31 @@ export default function ChatPageClient() {
               className="mb-3 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
             />
             <label className="mb-1 block text-[11px] font-medium text-text-muted">Project URL / path</label>
-            <input
-              type="text"
-              value={sessionFormUrl}
-              onChange={(e) => setSessionFormUrl(e.target.value)}
-              placeholder="https://github.com/org/repo  or  F:\\project\\my-app"
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveSessionModal();
-                if (e.key === "Escape") setSessionModalOpen(false);
-              }}
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={sessionFormUrl}
+                onChange={(e) => setSessionFormUrl(e.target.value)}
+                placeholder="https://github.com/org/repo  or  F:\\project\\my-app"
+                className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveSessionModal();
+                  if (e.key === "Escape") setSessionModalOpen(false);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setFolderPickerTarget("sessionModal");
+                  setFolderPickerOpen(true);
+                }}
+                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-sidebar px-2.5 py-2 text-xs font-medium text-text-main hover:bg-surface-2 hover:border-primary/50 transition shadow-sm"
+                title="Open file manager / browse local project folder"
+              >
+                <span className="material-symbols-outlined text-[17px] text-primary">folder_open</span>
+                <span className="whitespace-nowrap">Open project</span>
+              </button>
+            </div>
             <div className="mt-4 flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setSessionModalOpen(false)}>Cancel</Button>
               <Button size="sm" onClick={saveSessionModal}>
@@ -3508,18 +3668,32 @@ export default function ChatPageClient() {
               <span className="material-symbols-outlined text-[20px] text-primary">link</span>
               <p className="text-sm font-semibold">Session codebase / repository URL</p>
             </div>
-            <input
-              autoFocus
-              type="text"
-              value={codebaseValue}
-              onChange={(e) => setCodebaseValue(e.target.value)}
-              placeholder="https://github.com/org/repo or git@host:org/repo.git"
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveCodebase();
-                if (e.key === "Escape") setCodebaseEdit(false);
-              }}
-            />
+            <div className="flex items-center gap-2">
+              <input
+                autoFocus
+                type="text"
+                value={codebaseValue}
+                onChange={(e) => setCodebaseValue(e.target.value)}
+                placeholder="https://github.com/org/repo or git@host:org/repo.git"
+                className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono outline-none focus:border-primary"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveCodebase();
+                  if (e.key === "Escape") setCodebaseEdit(false);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setFolderPickerTarget("codebaseModal");
+                  setFolderPickerOpen(true);
+                }}
+                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-sidebar px-2.5 py-2 text-xs font-medium text-text-main hover:bg-surface-2 hover:border-primary/50 transition shadow-sm"
+                title="Open file manager / browse local project folder"
+              >
+                <span className="material-symbols-outlined text-[17px] text-primary">folder_open</span>
+                <span className="whitespace-nowrap">Open project</span>
+              </button>
+            </div>
             <p className="mt-2 text-[11px] text-text-muted">Leave empty to clear. Applies to this session only.</p>
             <div className="mt-4 flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setCodebaseEdit(false)}>Cancel</Button>
@@ -3528,6 +3702,27 @@ export default function ChatPageClient() {
           </div>
         </div>
       ) : null}
+
+      <FolderPickerModal
+        isOpen={folderPickerOpen}
+        initialPath={
+          folderPickerTarget === "sessionModal"
+            ? sessionFormUrl
+            : codebaseValue
+        }
+        onSelect={(pickedPath) => {
+          if (folderPickerTarget === "sessionModal") {
+            setSessionFormUrl(pickedPath);
+            if (!sessionFormName.trim()) {
+              const baseName = pickedPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+              if (baseName) setSessionFormName(baseName);
+            }
+          } else {
+            setCodebaseValue(pickedPath);
+          }
+        }}
+        onClose={() => setFolderPickerOpen(false)}
+      />
 
       {viewingAgent ? (
         <SubAgentOverlay agent={viewingAgent} onClose={() => setViewingAgent(null)} />
@@ -3570,7 +3765,7 @@ export default function ChatPageClient() {
             <img
               src={imagePreview.src}
               alt={imagePreview.name || "Preview"}
-              className="max-h-[75vh] w-full rounded-xl object-contain bg-black/10"
+              className="max-h-[75vh] w-full rounded-xl object-contain bg-black/10 [image-rendering:pixelated]"
             />
           </div>
         </div>

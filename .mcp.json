@@ -9,6 +9,17 @@
         "browser-use==0.1.43",
         "mcp-browser-use"
       ]
+    },
+    "aseprite": {
+      "transport": "stdio",
+      "enabled": true,
+      "command": "npx",
+      "args": [
+        "-y",
+        "@pebbly/aseprite-ai-artist@latest",
+        "serve"
+      ],
+      "description": "Agent control layer for Aseprite — draw, look, shade, animate, rig, palette, and export directly in Aseprite"
     }
   }
 }

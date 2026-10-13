@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 
 const STATUS_COLORS = {
   idle: "text-text-muted bg-surface",
@@ -42,7 +42,7 @@ const TASK_COLUMNS = [
  * - Roster with Active Agent Badges & Transcript Inspection
  * - Chronological P2P Mailbox & Broadcast Activity Feed
  */
-export default function TeamPanel({
+function TeamPanelComponent({
   roster = [],
   tasks = [],
   messages = [],
@@ -487,7 +487,9 @@ export default function TeamPanel({
   );
 }
 
-function TaskCard({ task, completedIds, isSelected, onSelect }) {
+export default memo(TeamPanelComponent);
+
+const TaskCard = memo(function TaskCard({ task, completedIds, isSelected, onSelect }) {
   const isBlocked =
     Array.isArray(task.dependsOn) &&
     task.dependsOn.some((d) => !completedIds?.has(d));
@@ -527,4 +529,4 @@ function TaskCard({ task, completedIds, isSelected, onSelect }) {
       </div>
     </div>
   );
-}
+});
