@@ -686,11 +686,11 @@ export default function ChatPageClient() {
   const [loading, setLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [runningSessionIds, setRunningSessionIds] = useState(() => new Set(getActiveRunSessions()));
-  const [messageQueue, setMessageQueue] = useState([]);
-  const messageQueueRef = useRef([]);
+  const [sessionQueues, setSessionQueues] = useState({});
+  const sessionQueuesRef = useRef({});
   useEffect(() => {
-    messageQueueRef.current = messageQueue;
-  }, [messageQueue]);
+    sessionQueuesRef.current = sessionQueues;
+  }, [sessionQueues]);
   const [error, setError] = useState("");
   const [renameId, setRenameId] = useState("");
   const [renameValue, setRenameValue] = useState("");
@@ -845,6 +845,18 @@ export default function ChatPageClient() {
     }
   }, [sessions]);
 
+  const persistSessionQueue = useCallback((sid, q) => {
+    if (!sid) return;
+    const cur = sessions.find((s) => s.id === sid);
+    fetch(`/api/chat/sessions/${sid}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectMeta: { ...(cur?.projectMeta || {}), queuedMessages: q },
+      }),
+    }).catch(() => {});
+  }, [sessions]);
+
   // Stable callback for clicking images in transcripts (prevents Markdown re-render)
   const handleImageClick = useCallback((src, name) => {
     setImagePreview({ src, name });
@@ -927,8 +939,8 @@ export default function ChatPageClient() {
   );
 
   const activeQueue = useMemo(
-    () => messageQueue.filter((item) => item.sessionId === activeSessionId),
-    [messageQueue, activeSessionId]
+    () => sessionQueues[activeSessionId] || [],
+    [sessionQueues, activeSessionId]
   );
 
   // Stable session ordering by pin and update time; does not jump running sessions to top
@@ -1047,6 +1059,13 @@ export default function ChatPageClient() {
     }
     const effectiveCode = data.workspacePath || data.codebase || "";
     setCodebase(effectiveCode);
+    const savedQueue = Array.isArray(data.projectMeta?.queuedMessages) ? data.projectMeta.queuedMessages : [];
+    if (savedQueue.length > 0) {
+      setSessionQueues((prev) => ({
+        ...prev,
+        [id]: prev[id]?.length ? prev[id] : savedQueue,
+      }));
+    }
     return data;
   }, []);
 
@@ -1835,6 +1854,9 @@ export default function ChatPageClient() {
     setTeamRoster([]);
     setTeamMessages([]);
     setError("");
+    const run = getChatRun(id);
+    setIsSending(!!(run?.isSending));
+    setAgentStatus(run?.agentStatus || "");
   }, [sessions]);
 
   const handleDeleteSession = useCallback(async (id) => {
@@ -1844,7 +1866,11 @@ export default function ChatPageClient() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to delete");
       }
-      setMessageQueue((prev) => prev.filter((item) => item.sessionId !== id));
+      setSessionQueues((prev) => {
+        const copy = { ...prev };
+        delete copy[id];
+        return copy;
+      });
       setSessions((prev) => {
         const next = prev.filter((s) => s.id !== id);
         if (activeSessionIdRef.current === id) {
@@ -2188,11 +2214,19 @@ export default function ChatPageClient() {
   };
 
   const removeFromQueue = (id) => {
-    setMessageQueue((prev) => prev.filter((item) => item.id !== id));
+    setSessionQueues((prev) => {
+      const cur = prev[activeSessionId] || [];
+      const next = cur.filter((item) => item.id !== id);
+      persistSessionQueue(activeSessionId, next);
+      return { ...prev, [activeSessionId]: next };
+    });
   };
 
   const clearQueue = () => {
-    setMessageQueue((prev) => prev.filter((item) => item.sessionId !== activeSessionId));
+    setSessionQueues((prev) => {
+      persistSessionQueue(activeSessionId, []);
+      return { ...prev, [activeSessionId]: [] };
+    });
   };
 
   const sendMessage = async ({ regenerate = false, sourceMessages = null, queuedItem = null } = {}) => {
@@ -2205,6 +2239,7 @@ export default function ChatPageClient() {
       return;
     }
     const sessionId = queuedItem?.sessionId || activeSessionId;
+    const targetSession = sessions.find((s) => s.id === sessionId) || activeSession;
     if (getChatRun(sessionId)?.isSending) {
       if (!regenerate && !queuedItem && (draft.trim() || attachments.length > 0)) {
         const item = {
@@ -2214,14 +2249,24 @@ export default function ChatPageClient() {
           attachments: [...attachments],
           timestamp: new Date().toISOString(),
         };
-        setMessageQueue((prev) => [...prev, item]);
+        setSessionQueues((prev) => {
+          const cur = prev[sessionId] || [];
+          const next = [...cur, item];
+          persistSessionQueue(sessionId, next);
+          return { ...prev, [sessionId]: next };
+        });
         setDraft("");
         setAttachments([]);
-        setError("Message queued. Will send automatically when current response finishes.");
+        setError("Message queued for this session. Will send automatically when current response finishes.");
         return;
       }
       if (queuedItem) {
-        setMessageQueue((prev) => [queuedItem, ...prev]);
+        setSessionQueues((prev) => {
+          const cur = prev[sessionId] || [];
+          const next = [queuedItem, ...cur];
+          persistSessionQueue(sessionId, next);
+          return { ...prev, [sessionId]: next };
+        });
         return;
       }
       setError("This session is already running. Stop it first or wait.");
@@ -2229,9 +2274,9 @@ export default function ChatPageClient() {
     }
 
     const sessionMeta = {
-      title: activeSession.title,
-      model: activeSession.model,
-      providerId: activeSession.providerId,
+      title: targetSession?.title || "Chat",
+      model: targetSession?.model || activeSession?.model,
+      providerId: targetSession?.providerId || activeSession?.providerId,
     };
 
     let workingMessages = [...(sourceMessages || messagesRef.current || messages)];
@@ -2652,17 +2697,19 @@ export default function ChatPageClient() {
   };
 
   useEffect(() => {
-    if (!isSending && activeSession?.model && apiKey) {
-      const hasQueued = messageQueueRef.current.some((item) => item.sessionId === activeSessionId);
-      if (hasQueued) {
+    if (!isSending && activeSession?.model && apiKey && activeSessionId) {
+      const q = sessionQueuesRef.current[activeSessionId] || [];
+      if (q.length > 0) {
         const timer = setTimeout(() => {
           if (!getChatRun(activeSessionId)?.isSending) {
             let nextItem = null;
-            setMessageQueue((prev) => {
-              const idx = prev.findIndex((item) => item.sessionId === activeSessionId);
-              if (idx === -1) return prev;
-              nextItem = prev[idx];
-              return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+            setSessionQueues((prev) => {
+              const cur = prev[activeSessionId] || [];
+              if (cur.length === 0) return prev;
+              nextItem = cur[0];
+              const next = cur.slice(1);
+              persistSessionQueue(activeSessionId, next);
+              return { ...prev, [activeSessionId]: next };
             });
             if (nextItem && (nextItem.text || nextItem.attachments?.length)) {
               sendMessage({ queuedItem: nextItem });
@@ -2672,7 +2719,7 @@ export default function ChatPageClient() {
         return () => clearTimeout(timer);
       }
     }
-  }, [isSending, messageQueue, activeSessionId, activeSession?.model, apiKey]);
+  }, [isSending, sessionQueues, activeSessionId, activeSession?.model, apiKey, persistSessionQueue]);
 
   const handleKeyDown = (event) => {
     if (commandOptions.length > 0) {
