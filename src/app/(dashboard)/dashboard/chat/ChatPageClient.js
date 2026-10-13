@@ -3143,6 +3143,15 @@ export default function ChatPageClient() {
             {activeSessionCodebase ? (
               <>
                 <Button
+                  variant={projectOpen && projectTab === "scripts" ? "secondary" : "ghost"}
+                  size="sm"
+                  icon="terminal"
+                  onClick={() => toggleProject("scripts")}
+                  title="Running Scripts & Processes"
+                >
+                  Scripts
+                </Button>
+                <Button
                   variant={projectOpen && projectTab === "git" ? "secondary" : "ghost"}
                   size="sm"
                   icon="fork_right"
@@ -3152,7 +3161,7 @@ export default function ChatPageClient() {
                   Git
                 </Button>
                 <Button
-                  variant={projectOpen && projectTab !== "git" ? "secondary" : "ghost"}
+                  variant={projectOpen && projectTab !== "git" && projectTab !== "scripts" ? "secondary" : "ghost"}
                   size="sm"
                   icon="folder_open"
                   onClick={() => toggleProject("info")}

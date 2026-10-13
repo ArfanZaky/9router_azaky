@@ -251,6 +251,7 @@ export async function runAgentLoop({
   codebase = "",
   apiKey = "",
   workspace = process.cwd(),
+  sessionId = "",
   origin = "http://127.0.0.1:20128",
   accessMode = "sandbox",
   maxSteps = 0, // 0 = unlimited (natural end / Stop / repetition guard still apply)
@@ -557,6 +558,7 @@ export async function runAgentLoop({
       } else {
         result = await executeTool(call.name, call.arguments, {
           workspace,
+          sessionId,
           apiKey,
           origin,
           accessMode: mode,

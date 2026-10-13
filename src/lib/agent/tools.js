@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { DATA_DIR } from "../dataDir.js";
 import { getSkillByName, loadAllSkillIndex } from "./skills.js";
+import { registerProcess, startBackgroundProcess } from "../chat/processManager.js";
 
 const MAX_READ = 200_000;
 const MAX_LIST = 500;
@@ -124,7 +125,7 @@ function resolveShell(shell, cmd, isWin) {
     : { shell: "/bin/sh", args: ["-c", cmd] };
 }
 
-async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress, shell } = {}) {
+async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress, shell, workspace, sessionId } = {}) {
   const cmd = String(command || "").trim();
   if (!cmd) return { ok: false, error: "Empty command" };
   for (const re of DENY_CMD) {
@@ -138,6 +139,18 @@ async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress, 
       env: process.env,
       windowsHide: true,
     });
+
+    // Register active process into processManager so it's trackable and killable via UI
+    registerProcess({
+      pid: child.pid,
+      command: cmd,
+      cwd: cwd || process.cwd(),
+      workspace: workspace || cwd,
+      sessionId,
+      child,
+      background: false,
+    });
+
     let stdout = "";
     let stderr = "";
     const pushProgress = (chunk) => {
@@ -409,13 +422,14 @@ export const TOOL_DEFS = [
     function: {
       name: "bash",
       description:
-        "Run a shell command on the host machine. Choose the shell via the optional `shell` arg (auto/cmd/powershell/pwsh/bash/sh; default auto picks cmd on Windows, sh elsewhere). Use for git, npm, builds, diagnostics, PowerShell one-liners. Prefer non-interactive commands.",
+        "Run a shell command on the host machine. Choose the shell via the optional `shell` arg (auto/cmd/powershell/pwsh/bash/sh; default auto picks cmd on Windows, sh elsewhere). Use for git, npm, builds, diagnostics, PowerShell one-liners. For long-running dev servers, services, or background tasks (e.g. npm run dev, dotnet run, python app.py), pass `background: true` so the process runs continuously in the background and appears in the project Scripts tab with a Kill button.",
       parameters: {
         type: "object",
         properties: {
           command: { type: "string", description: "Shell command to run" },
           cwd: { type: "string", description: "Working directory (must be under workspace)" },
           shell: { type: "string", description: "Shell to use: auto | cmd | powershell | pwsh | bash | sh. Default auto." },
+          background: { type: "boolean", description: "Set to true to run process in background (for dev servers, services, watchers). Returns immediately with processId and pid." },
         },
         required: ["command"],
       },
@@ -618,8 +632,33 @@ export async function executeTool(name, args = {}, ctx = {}) {
         const cwd = args.cwd
           ? resolveSafePath(args.cwd, workspace, accessMode)
           : path.resolve(workspace || process.cwd());
-        // sandbox never reaches here; full still denies dangerous patterns
-        const result = await runBash(args.command, { cwd, shell: args.shell, onProgress: ctx.onProgress });
+
+        if (args.background === true) {
+          const started = startBackgroundProcess({
+            command: args.command,
+            cwd,
+            workspace,
+            sessionId: ctx.sessionId,
+            shell: args.shell,
+          });
+          return JSON.stringify({
+            ok: true,
+            background: true,
+            processId: started.id,
+            pid: started.pid,
+            command: started.command,
+            status: "running",
+            message: `Process started in background (PID: ${started.pid}). Live status, logs, and Kill button are available in the project Scripts tab.`,
+          });
+        }
+
+        const result = await runBash(args.command, {
+          cwd,
+          shell: args.shell,
+          onProgress: ctx.onProgress,
+          workspace,
+          sessionId: ctx.sessionId,
+        });
         return JSON.stringify(result);
       }
       case "read_file": {
