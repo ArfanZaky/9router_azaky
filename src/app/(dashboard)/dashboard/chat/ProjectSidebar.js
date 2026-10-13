@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import GitSourceControl from "./GitSourceControl";
+import GitGraphView from "./GitGraphView";
 
 function GitBranchIcon({ className = "h-3.5 w-3.5" }) {
   return (
@@ -18,6 +19,7 @@ const TABS = [
   { id: "info", label: "Info", icon: "info" },
   { id: "plan", label: "Plan", icon: "list_alt" },
   { id: "git", label: "Git", icon: "git" },
+  { id: "graph", label: "Graph", icon: "schema" },
   { id: "changes", label: "Changes", icon: "edit" },
   { id: "files", label: "Files", icon: "folder" },
   { id: "scripts", label: "Scripts", icon: "terminal" },
@@ -51,6 +53,15 @@ function ProjectSidebarComponent({
   const [data, setData] = useState(null);
   const [tree, setTree] = useState({});
   const [openDirs, setOpenDirs] = useState({});
+
+  // Shared Git & Multi-repo state across Git and Graph tabs
+  const [activeRepoPath, setActiveRepoPath] = useState(workspacePath);
+  const [knownRepos, setKnownRepos] = useState([]);
+
+  useEffect(() => {
+    setActiveRepoPath(workspacePath);
+    setKnownRepos([]);
+  }, [workspacePath]);
 
   // Process manager state
   const [processes, setProcesses] = useState([]);
@@ -314,6 +325,12 @@ function ProjectSidebarComponent({
                 </span>
               ) : null}
 
+              {t.id === "graph" && git?.ahead > 0 ? (
+                <span className="ml-0.5 rounded-full bg-sky-500/20 px-1.5 py-0.2 text-[9px] font-bold text-sky-400 ring-1 ring-sky-500/30">
+                  ↑{git.ahead}
+                </span>
+              ) : null}
+
               {t.id === "changes" && changedFiles.length > 0 ? (
                 <span className="ml-0.5 rounded-full bg-primary/20 px-1.5 py-0.2 text-[9px] font-bold text-primary ring-1 ring-primary/30">
                   {changedFiles.length}
@@ -336,9 +353,32 @@ function ProjectSidebarComponent({
         <div className="min-h-0 flex-1 overflow-hidden">
           <GitSourceControl
             workspacePath={workspacePath}
+            activeRepoPath={activeRepoPath}
+            onSelectRepoPath={setActiveRepoPath}
+            knownRepos={knownRepos}
+            onUpdateRepos={setKnownRepos}
             activeModel={activeModel}
+            onViewGraph={() => setTab("graph")}
             onStatusChange={(updatedGit) => {
               setData((prev) => prev ? { ...prev, git: updatedGit } : prev);
+            }}
+          />
+        </div>
+      ) : tab === "graph" ? (
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <GitGraphView
+            workspacePath={workspacePath}
+            activeRepoPath={activeRepoPath}
+            onSelectRepoPath={setActiveRepoPath}
+            knownRepos={knownRepos}
+            onUpdateRepos={setKnownRepos}
+            onViewGit={() => setTab("git")}
+            onPushSuccess={() => {
+              fetch("/api/chat/projects/detail", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: workspacePath }),
+              }).then((r) => r.json()).then((d) => { if (!d.error) setData(d); }).catch(() => {});
             }}
           />
         </div>

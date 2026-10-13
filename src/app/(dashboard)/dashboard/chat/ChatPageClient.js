@@ -3208,7 +3208,16 @@ export default function ChatPageClient() {
                   Git
                 </Button>
                 <Button
-                  variant={projectOpen && projectTab !== "git" && projectTab !== "scripts" ? "secondary" : "ghost"}
+                  variant={projectOpen && projectTab === "graph" ? "secondary" : "ghost"}
+                  size="sm"
+                  icon="schema"
+                  onClick={() => toggleProject("graph")}
+                  title="Git Graph & History"
+                >
+                  Graph
+                </Button>
+                <Button
+                  variant={projectOpen && projectTab !== "git" && projectTab !== "scripts" && projectTab !== "graph" ? "secondary" : "ghost"}
                   size="sm"
                   icon="folder_open"
                   onClick={() => toggleProject("info")}

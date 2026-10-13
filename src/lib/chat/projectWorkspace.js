@@ -127,7 +127,7 @@ function gitExec(cwd, args) {
 }
 
 /**
- * Scan workspace directory and immediate child folders for git repositories.
+ * Scan workspace directory and immediate child/sibling folders for git repositories.
  * Pure filesystem check without spawning external git child processes.
  */
 export function listGitRepositories(value) {
@@ -183,6 +183,23 @@ export function listGitRepositories(value) {
       const subPath = path.join(workspacePath, ent.name);
       if (fs.existsSync(path.join(subPath, ".git"))) {
         addIfRepo(subPath, ent.name);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 4. Scan sibling directories in parent folder for sibling git repos
+  try {
+    const parent = path.dirname(workspacePath);
+    if (parent && parent !== workspacePath && parent !== path.dirname(parent)) {
+      const entries = fs.readdirSync(parent, { withFileTypes: true });
+      for (const ent of entries) {
+        if (!ent.isDirectory() || ent.name.startsWith(".") || ent.name === "node_modules") continue;
+        const subPath = path.join(parent, ent.name);
+        if (fs.existsSync(path.join(subPath, ".git"))) {
+          addIfRepo(subPath, ent.name);
+        }
       }
     }
   } catch {
@@ -546,6 +563,187 @@ export function gitDiffForCommit(value) {
     statusSummary,
     hasStaged,
   };
+}
+
+/**
+ * High performance Git Graph & History Parser (Antigravity style).
+ * Returns outgoing commits (unpushed ahead of upstream), incoming counts,
+ * branches list, remote refs, and topological history with tags/heads.
+ */
+export function gitLogGraph(value, { maxCount = 80, branch = null } = {}) {
+  const workspacePath = resolveProjectWorkspace(value);
+  if (!workspacePath) return { repo: false, commits: [], outgoingCommits: [] };
+
+  const isRepo = Boolean((git(workspacePath, "rev-parse", "--is-inside-work-tree") || "").trim());
+  if (!isRepo) {
+    return { repo: false, commits: [], outgoingCommits: [], branches: [] };
+  }
+
+  // 1. Current branch
+  const currentBranch = (git(workspacePath, "rev-parse", "--abbrev-ref", "HEAD") || "").trim() || "HEAD";
+
+  // 2. Upstream tracking branch
+  const upstream = (git(workspacePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}") || "").trim();
+
+  // 3. Ahead / behind count
+  let ahead = 0;
+  let behind = 0;
+  if (upstream) {
+    const revCount = (git(workspacePath, "rev-list", "--left-right", "--count", `${upstream}...HEAD`) || "").trim();
+    const parts = revCount.split(/\s+/);
+    if (parts.length >= 2) {
+      behind = parseInt(parts[0], 10) || 0;
+      ahead = parseInt(parts[1], 10) || 0;
+    }
+  }
+
+  // 4. Outgoing commit hashes (HEAD commits ahead of upstream)
+  const outgoingHashes = new Set();
+  if (upstream) {
+    const outLog = git(workspacePath, "log", `${upstream}..HEAD`, "--pretty=format:%H");
+    for (const h of outLog.split(/\r?\n/).filter(Boolean)) {
+      outgoingHashes.add(h.trim());
+    }
+  }
+
+  // 5. Branches list
+  const branches = [];
+  const branchLines = (git(workspacePath, "branch", "-a", "--format=%(refname:short)|%(HEAD)|%(upstream:short)") || "").split(/\r?\n/).filter(Boolean);
+  for (const bLine of branchLines) {
+    const [name, isHead, up] = bLine.split("|");
+    if (name) {
+      branches.push({
+        name: name.trim(),
+        current: isHead?.trim() === "*",
+        upstream: up?.trim() || "",
+        isRemote: name.trim().startsWith("origin/") || name.trim().startsWith("remotes/"),
+      });
+    }
+  }
+
+  // 6. Commits log with %H|%h|%p|%an|%ae|%at|%s|%D
+  const logFormat = "%H|%h|%p|%an|%ae|%at|%s|%D";
+  const logArgs = ["log", `-n`, String(maxCount || 80), `--pretty=format:${logFormat}`];
+  if (branch) {
+    logArgs.push(branch);
+  }
+  const logRaw = git(workspacePath, ...logArgs);
+  const commits = [];
+
+  for (const line of logRaw.split(/\r?\n/).filter(Boolean)) {
+    const parts = line.split("|");
+    if (parts.length < 7) continue;
+    const [hash, shortHash, parentsRaw, author, email, at, subject, ...refParts] = parts;
+    const refString = refParts.join("|");
+
+    const refTokens = (refString || "").split(",").map((s) => s.trim()).filter(Boolean);
+    let isHead = false;
+    const localBranches = [];
+    const remoteBranches = [];
+    const tags = [];
+
+    for (const token of refTokens) {
+      if (token.startsWith("HEAD -> ")) {
+        isHead = true;
+        localBranches.push(token.replace("HEAD -> ", "").trim());
+      } else if (token === "HEAD") {
+        isHead = true;
+      } else if (token.startsWith("tag: ")) {
+        tags.push(token.replace("tag: ", "").trim());
+      } else if (token.includes("/")) {
+        remoteBranches.push(token);
+      } else {
+        localBranches.push(token);
+      }
+    }
+
+    const isOutgoing = outgoingHashes.has(hash.trim());
+
+    commits.push({
+      hash: hash.trim(),
+      shortHash: shortHash.trim(),
+      parentHashes: (parentsRaw || "").split(/\s+/).filter(Boolean),
+      author: author.trim(),
+      email: email.trim(),
+      timestamp: Number(at) * 1000,
+      subject: subject.trim(),
+      isHead,
+      localBranches,
+      remoteBranches,
+      tags,
+      isOutgoing,
+    });
+  }
+
+  const outgoingCommits = commits.filter((c) => c.isOutgoing);
+
+  return {
+    repo: true,
+    branch: currentBranch,
+    upstream,
+    ahead,
+    behind,
+    outgoingCommits,
+    commits,
+    branches,
+  };
+}
+
+export function gitCommitDetail(value, hash) {
+  const workspacePath = resolveProjectWorkspace(value);
+  if (!workspacePath) throw new Error("Invalid workspace path");
+  if (!hash) throw new Error("Commit hash is required");
+
+  const metaRaw = git(workspacePath, "show", "-s", "--pretty=format:%H|%h|%an|%ae|%at|%B", hash);
+  const metaParts = metaRaw.split("|");
+  const fullHash = metaParts[0]?.trim() || hash;
+  const shortHash = metaParts[1]?.trim() || hash.slice(0, 8);
+  const author = metaParts[2]?.trim() || "";
+  const email = metaParts[3]?.trim() || "";
+  const timestamp = Number(metaParts[4]) * 1000 || Date.now();
+  const body = metaParts.slice(5).join("|").trim();
+
+  const filesRaw = git(workspacePath, "diff-tree", "--no-commit-id", "--name-status", "-r", hash);
+  const files = [];
+  for (const line of filesRaw.split(/\r?\n/).filter(Boolean)) {
+    const fParts = line.split(/\t+/);
+    if (fParts.length >= 2) {
+      const statusLetter = fParts[0].trim()[0] || "M";
+      const filePath = fParts.slice(1).join(" -> ").trim();
+      files.push({
+        status: statusLetter,
+        path: filePath,
+      });
+    }
+  }
+
+  return {
+    hash: fullHash,
+    shortHash,
+    author,
+    email,
+    timestamp,
+    message: body,
+    files,
+  };
+}
+
+export function gitCommitFileDiff(value, hash, targetFile) {
+  const workspacePath = resolveProjectWorkspace(value);
+  if (!workspacePath) throw new Error("Invalid workspace path");
+  if (!hash || !targetFile) return "";
+
+  const res = gitExec(workspacePath, ["show", hash, "--", targetFile]);
+  return res.ok ? res.out : "";
+}
+
+export function gitCheckoutBranch(value, branchName) {
+  const workspacePath = resolveProjectWorkspace(value);
+  if (!workspacePath) throw new Error("Invalid workspace path");
+  invalidateGitCache(workspacePath);
+  const res = gitExec(workspacePath, ["checkout", branchName]);
+  if (!res.ok) throw new Error(res.err);
+  return res.out || `Switched to branch '${branchName}'`;
 }
 
 export function readProjectPlan(value) {

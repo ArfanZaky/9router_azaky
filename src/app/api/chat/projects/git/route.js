@@ -11,6 +11,10 @@ import {
   gitPullBranch,
   gitDiffPath,
   gitDiffForCommit,
+  gitLogGraph,
+  gitCommitDetail,
+  gitCommitFileDiff,
+  gitCheckoutBranch,
   listGitRepositories,
   resolveProjectWorkspace,
 } from "@/lib/chat/projectWorkspace.js";
@@ -94,6 +98,44 @@ export async function POST(request) {
 
     if (action === "status") {
       return NextResponse.json(gitProjectStatus(targetPath, rootPath || null));
+    }
+
+    if (action === "graph") {
+      const maxCount = Number(body.maxCount) || 80;
+      const branch = body.branch ? String(body.branch).trim() : null;
+      const graphData = gitLogGraph(targetPath, { maxCount, branch });
+      const scanTarget = rootPath ? resolveProjectWorkspace(rootPath) || targetPath : targetPath;
+      const repos = listGitRepositories(scanTarget);
+      return NextResponse.json({ ...graphData, repos });
+    }
+
+    if (action === "commit-detail") {
+      const hash = String(body.hash || "").trim();
+      if (!hash) {
+        return NextResponse.json({ error: "Commit hash is required" }, { status: 400 });
+      }
+      const detail = gitCommitDetail(targetPath, hash);
+      return NextResponse.json(detail);
+    }
+
+    if (action === "commit-diff") {
+      const hash = String(body.hash || "").trim();
+      const file = String(body.file || "").trim();
+      if (!hash || !file) {
+        return NextResponse.json({ error: "Commit hash and file are required" }, { status: 400 });
+      }
+      const diff = gitCommitFileDiff(targetPath, hash, file);
+      return NextResponse.json({ diff });
+    }
+
+    if (action === "checkout") {
+      const branch = String(body.branch || "").trim();
+      if (!branch) {
+        return NextResponse.json({ error: "Branch name is required" }, { status: 400 });
+      }
+      const message = gitCheckoutBranch(targetPath, branch);
+      const graphData = gitLogGraph(targetPath, { maxCount: 80 });
+      return NextResponse.json({ ok: true, message, ...graphData });
     }
 
     if (action === "diff") {

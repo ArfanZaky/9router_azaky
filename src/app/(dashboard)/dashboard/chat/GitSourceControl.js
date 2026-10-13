@@ -32,9 +32,18 @@ function parseFilePath(filePath = "") {
   return { name, dir };
 }
 
-function GitSourceControlComponent({ workspacePath, activeModel, onStatusChange }) {
-  const [activeRepoPath, setActiveRepoPath] = useState(workspacePath);
-  const [knownRepos, setKnownRepos] = useState([]);
+function GitSourceControlComponent({
+  workspacePath,
+  activeRepoPath: parentActiveRepoPath,
+  onSelectRepoPath,
+  knownRepos: parentKnownRepos,
+  onUpdateRepos,
+  activeModel,
+  onStatusChange,
+  onViewGraph,
+}) {
+  const [internalRepoPath, setInternalRepoPath] = useState(parentActiveRepoPath || workspacePath);
+  const [internalKnownRepos, setInternalKnownRepos] = useState([]);
   const [gitData, setGitData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [operating, setOperating] = useState(false);
@@ -53,11 +62,32 @@ function GitSourceControlComponent({ workspacePath, activeModel, onStatusChange 
   const dropdownRef = useRef(null);
   const moreMenuRef = useRef(null);
 
-  // Sync activeRepoPath and reset knownRepos if workspacePath changes
+  const activeRepoPath = parentActiveRepoPath || internalRepoPath;
+
+  const setActiveRepoPath = (p) => {
+    setInternalRepoPath(p);
+    onSelectRepoPath?.(p);
+  };
+
+  // Sync activeRepoPath if workspacePath changes
   useEffect(() => {
-    setActiveRepoPath(workspacePath);
-    setKnownRepos([]);
-  }, [workspacePath]);
+    if (!parentActiveRepoPath) {
+      setInternalRepoPath(workspacePath);
+    }
+  }, [workspacePath, parentActiveRepoPath]);
+
+  const repos = useMemo(() => {
+    const list = [
+      ...(parentKnownRepos || []),
+      ...internalKnownRepos,
+      ...(gitData?.repos || []),
+    ];
+    const map = new Map();
+    for (const r of list) {
+      if (r?.path) map.set(r.path, r);
+    }
+    return Array.from(map.values());
+  }, [parentKnownRepos, internalKnownRepos, gitData?.repos]);
 
   // Click outside listener for dropdowns
   useEffect(() => {
@@ -93,11 +123,17 @@ function GitSourceControlComponent({ workspacePath, activeModel, onStatusChange 
       if (res.ok && !data.error) {
         setGitData(data);
         if (data.repos?.length) {
-          setKnownRepos((prev) => {
-            const map = new Map();
-            for (const r of [...prev, ...data.repos]) map.set(r.path, r);
-            return Array.from(map.values());
-          });
+          const map = new Map();
+          for (const r of data.repos) {
+            if (r?.path) map.set(r.path, r);
+          }
+          const combined = Array.from(map.values());
+          setInternalKnownRepos(combined);
+          onUpdateRepos?.(combined);
+
+          if (data.repo === false && data.repos.length > 0 && !parentActiveRepoPath) {
+            setActiveRepoPath(data.repos[0].path);
+          }
         }
         onStatusChange?.(data);
       } else {
@@ -143,11 +179,13 @@ function GitSourceControlComponent({ workspacePath, activeModel, onStatusChange 
       if (data.status) {
         setGitData(data.status);
         if (data.status.repos?.length) {
-          setKnownRepos((prev) => {
-            const map = new Map();
-            for (const r of [...prev, ...data.status.repos]) map.set(r.path, r);
-            return Array.from(map.values());
-          });
+          const map = new Map();
+          for (const r of data.status.repos) {
+            if (r?.path) map.set(r.path, r);
+          }
+          const combined = Array.from(map.values());
+          setInternalKnownRepos(combined);
+          onUpdateRepos?.(combined);
         }
         onStatusChange?.(data.status);
       } else {
@@ -294,7 +332,6 @@ function GitSourceControlComponent({ workspacePath, activeModel, onStatusChange 
   const branchName = gitData?.branch || "HEAD";
   const aheadCount = gitData?.ahead || 0;
   const behindCount = gitData?.behind || 0;
-  const repos = knownRepos.length > 0 ? knownRepos : gitData?.repos || [];
 
   if (loading) {
     return (
@@ -410,6 +447,18 @@ function GitSourceControlComponent({ workspacePath, activeModel, onStatusChange 
         </div>
 
         <div className="flex items-center gap-0.5">
+          {/* Quick Jump to Graph View */}
+          {onViewGraph && (
+            <button
+              type="button"
+              onClick={onViewGraph}
+              className="flex size-6 items-center justify-center rounded text-text-muted hover:bg-sidebar hover:text-primary transition-colors"
+              title="Open Git Graph & History (Antigravity style)"
+            >
+              <span className="material-symbols-outlined text-[15px]">schema</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => fetchStatus()}
@@ -460,6 +509,21 @@ function GitSourceControlComponent({ workspacePath, activeModel, onStatusChange 
                 <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-text-muted">
                   Commit Actions
                 </div>
+
+                {onViewGraph && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreMenuOpen(false);
+                      onViewGraph();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-text-main hover:bg-sidebar transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[15px] text-purple-400">schema</span>
+                    <span className="font-medium">View Git Graph</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => {
