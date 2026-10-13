@@ -215,13 +215,14 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
   const handleUndoLastCommit = async () => {
     const lastSummary = gitData?.last || "the most recent commit";
     const ok = globalThis.confirm?.(
-      `Undo last commit (${lastSummary})?\n\nChanges from this commit will be restored to Staged Changes. No work will be lost.`
+      `Undo commit terakhir (${lastSummary})?\n\nPerubahan commit ini akan dikembalikan ke Staged Changes (aman, tidak ada data yang hilang).`
     );
     if (!ok) return;
 
     const data = await runGitAction("undo-commit", { label: "Undoing commit..." });
-    if (data?.undoneMessage && !commitMessage.trim()) {
+    if (data?.undoneMessage) {
       setCommitMessage(data.undoneMessage);
+      commitInputRef.current?.focus();
     }
   };
 
@@ -413,7 +414,7 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
 
             {moreMenuOpen && (
               <div
-                className="absolute right-0 top-full z-50 mt-1 w-52 rounded-xl border border-border bg-surface p-1 shadow-2xl backdrop-blur-md"
+                className="absolute right-0 top-full z-50 mt-1 w-56 rounded-xl border border-border bg-surface p-1 shadow-2xl backdrop-blur-md"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-text-muted">
@@ -425,7 +426,8 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
                     setMoreMenuOpen(false);
                     handleUndoLastCommit();
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-text-main hover:bg-sidebar transition-colors"
+                  disabled={!gitData?.last}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-text-main hover:bg-sidebar transition-colors disabled:opacity-40"
                 >
                   <span className="material-symbols-outlined text-[15px] text-amber-500">undo</span>
                   <div className="flex flex-col min-w-0">
@@ -578,13 +580,35 @@ function GitSourceControlComponent({ workspacePath, onStatusChange }) {
           <button
             type="button"
             onClick={handleUndoLastCommit}
-            disabled={operating}
-            className="flex items-center gap-1 rounded-lg border border-border bg-sidebar/70 px-2.5 py-1.5 text-[11px] font-medium text-text-muted hover:bg-sidebar hover:text-amber-500 hover:border-amber-500/40 disabled:opacity-50 transition-colors"
-            title={gitData?.last ? `Undo Last Commit: ${gitData.last}` : "Undo Last Commit"}
+            disabled={operating || !gitData?.last}
+            className="flex items-center gap-1 rounded-lg border border-border bg-sidebar/70 px-2.5 py-1.5 text-[11px] font-medium text-text-muted hover:bg-sidebar hover:text-amber-500 hover:border-amber-500/40 disabled:opacity-40 transition-colors"
+            title={gitData?.last ? `Undo Last Commit: ${gitData.last}` : "No commits to undo"}
           >
             <span className="material-symbols-outlined text-[14px]">undo</span>
           </button>
         </div>
+
+        {/* Last Commit Info & Undo action (VS Code Source Control style) */}
+        {gitData?.last && (
+          <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-border/70 bg-sidebar/50 px-2.5 py-1.5 text-[11px]">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="material-symbols-outlined text-[13px] text-text-muted shrink-0">history</span>
+              <span className="truncate font-mono text-[10px] text-text-muted" title={gitData.last}>
+                {gitData.last}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleUndoLastCommit}
+              disabled={operating}
+              className="flex shrink-0 items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-500 hover:bg-amber-500/20 disabled:opacity-50 transition-colors"
+              title="Undo last commit and keep changes staged"
+            >
+              <span className="material-symbols-outlined text-[12px]">undo</span>
+              <span>Undo Commit</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Scrollable Changes Section */}
