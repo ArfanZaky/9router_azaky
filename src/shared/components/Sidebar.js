@@ -22,6 +22,7 @@ const navItems = [
   { href: "/dashboard/providers", label: "Providers", icon: "dns" },
   { href: "/dashboard/chat", label: "Chat", icon: "chat" },
   { href: "/dashboard/knowledge", label: "Knowledge Base (RAG)", icon: "menu_book" },
+  { href: "/dashboard/redmine", label: "Redmine Tasks", icon: "task_alt" },
   { href: "/dashboard/image-gen", label: "Image Gen", icon: "image" },
   { href: "/dashboard/video-prompt", label: "Video Prompts", icon: "movie_edit" },
   { href: "/dashboard/combos", label: "Combo & Vision Adapter", icon: "layers" },
