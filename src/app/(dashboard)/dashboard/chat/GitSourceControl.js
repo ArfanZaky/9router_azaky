@@ -69,11 +69,12 @@ function GitSourceControlComponent({
     onSelectRepoPath?.(p);
   };
 
-  // Sync activeRepoPath if workspacePath changes
+  // Reset internal state and active path when workspacePath changes
   useEffect(() => {
-    if (!parentActiveRepoPath) {
-      setInternalRepoPath(workspacePath);
-    }
+    setInternalKnownRepos([]);
+    setGitData(null);
+    setNotice(null);
+    setInternalRepoPath(parentActiveRepoPath || workspacePath);
   }, [workspacePath, parentActiveRepoPath]);
 
   const repos = useMemo(() => {
@@ -83,11 +84,18 @@ function GitSourceControlComponent({
       ...(gitData?.repos || []),
     ];
     const map = new Map();
+    const normWorkspace = (workspacePath || "").replace(/[/\\]+/g, "/").toLowerCase().replace(/\/+$/, "");
     for (const r of list) {
-      if (r?.path) map.set(r.path, r);
+      if (!r?.path) continue;
+      const normPath = r.path.replace(/[/\\]+/g, "/").toLowerCase().replace(/\/+$/, "");
+      // Strictly only keep repos that are inside workspacePath, or if workspacePath is inside the repo
+      if (normWorkspace && !normPath.startsWith(normWorkspace) && !normWorkspace.startsWith(normPath)) {
+        continue;
+      }
+      map.set(r.path, r);
     }
     return Array.from(map.values());
-  }, [parentKnownRepos, internalKnownRepos, gitData?.repos]);
+  }, [parentKnownRepos, internalKnownRepos, gitData?.repos, workspacePath]);
 
   // Click outside listener for dropdowns
   useEffect(() => {

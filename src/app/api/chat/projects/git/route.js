@@ -68,8 +68,12 @@ function validateWorkspaceBoundary(targetPath, rootPath) {
     const resolvedTarget = resolveProjectWorkspace(targetPath);
     const resolvedRoot = resolveProjectWorkspace(rootPath);
     if (!resolvedTarget || !resolvedRoot) return false;
-    const rel = path.relative(resolvedRoot, resolvedTarget);
-    return !rel.startsWith("..") && !path.isAbsolute(rel) || resolvedTarget === resolvedRoot;
+    if (resolvedTarget === resolvedRoot) return true;
+    const relChild = path.relative(resolvedRoot, resolvedTarget);
+    if (!relChild.startsWith("..") && !path.isAbsolute(relChild)) return true;
+    const relParent = path.relative(resolvedTarget, resolvedRoot);
+    if (!relParent.startsWith("..") && !path.isAbsolute(relParent)) return true;
+    return false;
   } catch {
     return false;
   }

@@ -127,8 +127,9 @@ function gitExec(cwd, args) {
 }
 
 /**
- * Scan workspace directory and immediate child/sibling folders for git repositories.
+ * Scan workspace directory strictly within its boundary for git repositories.
  * Pure filesystem check without spawning external git child processes.
+ * Never scans sibling directories in the parent folder.
  */
 export function listGitRepositories(value) {
   const workspacePath = resolveProjectWorkspace(value);
@@ -160,50 +161,49 @@ export function listGitRepositories(value) {
   // 1. Check workspacePath itself
   addIfRepo(workspacePath, `${path.basename(workspacePath)} (root)`);
 
-  // 2. Check parent directories (up to 3 levels) via pure fs (no processes spawned)
-  try {
-    let cur = path.dirname(workspacePath);
-    for (let i = 0; i < 3; i++) {
-      if (!cur || cur === path.dirname(cur)) break;
-      if (fs.existsSync(path.join(cur, ".git"))) {
-        addIfRepo(cur, `${path.basename(cur)} (root repo)`);
-        break;
-      }
-      cur = path.dirname(cur);
-    }
-  } catch {
-    // ignore
-  }
-
-  // 3. Scan 1-level subdirectories for nested git repos
+  // 2. Scan child directories strictly inside workspacePath (depth 1 and depth 2 for monorepos)
   try {
     const entries = fs.readdirSync(workspacePath, { withFileTypes: true });
     for (const ent of entries) {
-      if (!ent.isDirectory() || ent.name.startsWith(".") || ent.name === "node_modules") continue;
+      if (!ent.isDirectory() || ent.name.startsWith(".") || ent.name === "node_modules" || ent.name === "backup") continue;
       const subPath = path.join(workspacePath, ent.name);
       if (fs.existsSync(path.join(subPath, ".git"))) {
         addIfRepo(subPath, ent.name);
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  // 4. Scan sibling directories in parent folder for sibling git repos
-  try {
-    const parent = path.dirname(workspacePath);
-    if (parent && parent !== workspacePath && parent !== path.dirname(parent)) {
-      const entries = fs.readdirSync(parent, { withFileTypes: true });
-      for (const ent of entries) {
-        if (!ent.isDirectory() || ent.name.startsWith(".") || ent.name === "node_modules") continue;
-        const subPath = path.join(parent, ent.name);
-        if (fs.existsSync(path.join(subPath, ".git"))) {
-          addIfRepo(subPath, ent.name);
+      } else {
+        // Scan 1 level deeper (e.g. packages/* or apps/*)
+        try {
+          const subEntries = fs.readdirSync(subPath, { withFileTypes: true });
+          for (const subEnt of subEntries) {
+            if (!subEnt.isDirectory() || subEnt.name.startsWith(".") || subEnt.name === "node_modules") continue;
+            const nestedPath = path.join(subPath, subEnt.name);
+            if (fs.existsSync(path.join(nestedPath, ".git"))) {
+              addIfRepo(nestedPath, `${ent.name}/${subEnt.name}`);
+            }
+          }
+        } catch {
+          // ignore
         }
       }
     }
   } catch {
     // ignore
+  }
+
+  // 3. If no repos found inside workspacePath, check if workspacePath itself is a subdirectory of a parent git repo
+  if (repos.length === 0) {
+    try {
+      let cur = path.dirname(workspacePath);
+      for (let i = 0; i < 4; i++) {
+        if (!cur || cur === path.dirname(cur)) break;
+        if (fs.existsSync(path.join(cur, ".git"))) {
+          addIfRepo(cur, `${path.basename(cur)} (root repo)`);
+          break;
+        }
+        cur = path.dirname(cur);
+      }
+    } catch {
+      // ignore
+    }
   }
 
   return repos;

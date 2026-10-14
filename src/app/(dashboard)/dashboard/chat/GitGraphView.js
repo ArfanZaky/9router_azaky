@@ -78,14 +78,17 @@ function GitGraphViewComponent({
 
   const activeRepoPath = parentActiveRepoPath || internalRepoPath;
 
-  // Sync with workspace changes
+  // Reset internal state and active path when workspacePath changes
   useEffect(() => {
-    if (!parentActiveRepoPath) {
-      setInternalRepoPath(workspacePath);
-    }
+    setInternalKnownRepos([]);
+    setGraphData(null);
+    setSelectedCommitHash(null);
+    setCommitDetail(null);
+    setNotice(null);
+    setInternalRepoPath(parentActiveRepoPath || workspacePath);
   }, [workspacePath, parentActiveRepoPath]);
 
-  // Combined repos list from parent, internal state, and graph API response
+  // Combined repos list strictly bounded to current workspacePath
   const repos = useMemo(() => {
     const list = [
       ...(parentKnownRepos || []),
@@ -93,11 +96,18 @@ function GitGraphViewComponent({
       ...(graphData?.repos || []),
     ];
     const map = new Map();
+    const normWorkspace = (workspacePath || "").replace(/[/\\]+/g, "/").toLowerCase().replace(/\/+$/, "");
     for (const r of list) {
-      if (r?.path) map.set(r.path, r);
+      if (!r?.path) continue;
+      const normPath = r.path.replace(/[/\\]+/g, "/").toLowerCase().replace(/\/+$/, "");
+      // Strictly only keep repos that are inside workspacePath, or if workspacePath is inside the repo
+      if (normWorkspace && !normPath.startsWith(normWorkspace) && !normWorkspace.startsWith(normPath)) {
+        continue;
+      }
+      map.set(r.path, r);
     }
     return Array.from(map.values());
-  }, [parentKnownRepos, internalKnownRepos, graphData?.repos]);
+  }, [parentKnownRepos, internalKnownRepos, graphData?.repos, workspacePath]);
 
   // Click outside listener for dropdowns
   useEffect(() => {
