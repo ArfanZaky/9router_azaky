@@ -793,7 +793,8 @@ export default function ChatPageClient() {
   const [commandIndex, setCommandIndex] = useState(0);
   const [ctxUsed, setCtxUsed] = useState(0);
   const [ctxWindow, setCtxWindow] = useState(0);
-  const [windowIndex, setWindowIndex] = useState(-1);
+  const isAtBottomRef = useRef(true);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
   const [verifyMode, setVerifyMode] = useState(false);
   const [autoApprove, setAutoApprove] = useState(false);
   const [inputHistory, setInputHistory] = useState(() => {
@@ -924,13 +925,7 @@ export default function ChatPageClient() {
     return messages.filter((m) => m.role !== "tool" || (viewMode === "raw" && !embeddedTools.has(m.tool_call_id)));
   }, [messages, viewMode]);
 
-  const WINDOW = 50;
-  const windowed = useMemo(() => {
-    if (visibleMessages.length <= 120 || windowIndex < 0) return { list: visibleMessages, start: 0, end: visibleMessages.length };
-    const start = Math.max(0, windowIndex - WINDOW);
-    const end = Math.min(visibleMessages.length, windowIndex + WINDOW + 1);
-    return { list: visibleMessages.slice(start, end), start, end };
-  }, [visibleMessages, windowIndex]);
+
 
   // Strictly bound to active session; never falls back to an unrelated previous session's path
   const activeSessionCodebase = useMemo(
@@ -973,28 +968,23 @@ export default function ChatPageClient() {
   const commandOptions = useMemo(() => commandMatches(draft), [draft]);
 
   const scrollToBottom = useCallback((smooth = false) => {
-    bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
+    bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
   }, []);
 
   const handleTranscriptScroll = useCallback((event) => {
     const el = event.currentTarget;
-    if (visibleMessages.length <= 120) return;
-    const rect = el.getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    const rows = Array.from(el.querySelectorAll("[data-chat-message-index]"));
-    let best = -1;
-    let bestDist = Infinity;
-    for (const row of rows) {
-      const index = Number(row.getAttribute("data-chat-message-index") || -1);
-      const r = row.getBoundingClientRect();
-      const dist = Math.abs(r.top + r.height / 2 - midY);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = index;
-      }
-    }
-    if (best >= 0) setWindowIndex(best);
-  }, [visibleMessages.length]);
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceFromBottom < 80;
+    isAtBottomRef.current = atBottom;
+    setShowScrollBottomBtn(!atBottom);
+  }, []);
+
+  const handleJumpToBottom = useCallback(() => {
+    isAtBottomRef.current = true;
+    setShowScrollBottomBtn(false);
+    scrollToBottom(true);
+  }, [scrollToBottom]);
 
   const loadSessions = useCallback(async (preferId) => {
     const res = await fetch("/api/chat/sessions?limit=200");
@@ -1690,11 +1680,19 @@ export default function ChatPageClient() {
   }, [activeSessionCodebase]);
 
   useEffect(() => {
-    if (visibleMessages.length > 120) {
-      setWindowIndex(visibleMessages.length - 1);
+    if (isAtBottomRef.current) {
+      scrollToBottom(false);
     }
-    scrollToBottom(false);
-  }, [messages, isSending, scrollToBottom, visibleMessages.length]);
+  }, [messages, scrollToBottom]);
+
+  useEffect(() => {
+    isAtBottomRef.current = true;
+    setShowScrollBottomBtn(false);
+    const timer = setTimeout(() => {
+      scrollToBottom(false);
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [activeSessionId, scrollToBottom]);
 
   const patchSession = async (id, patch) => {
     const res = await fetch(`/api/chat/sessions/${id}`, {
@@ -1838,6 +1836,8 @@ export default function ChatPageClient() {
 
   const handleSelectSession = useCallback((id) => {
     if (!id || id === activeSessionIdRef.current) return;
+    isAtBottomRef.current = true;
+    setShowScrollBottomBtn(false);
     setActiveSessionId(id);
     try {
       globalThis.localStorage?.setItem("chat.activeSessionId", id);
@@ -2340,6 +2340,9 @@ export default function ChatPageClient() {
     setMessages(workingMessages);
     setIsSending(true);
     setError("");
+    isAtBottomRef.current = true;
+    setShowScrollBottomBtn(false);
+    setTimeout(() => scrollToBottom(true), 30);
     abortRef.current?.abort();
     abortRef.current = new AbortController();
 
@@ -3362,55 +3365,74 @@ export default function ChatPageClient() {
           </div>
         ) : null}
 
-        <div ref={transcriptScrollRef} onScroll={handleTranscriptScroll} className="flex-1 overflow-y-auto custom-scrollbar px-3 py-4 lg:px-6">
-          {messages.length === 0 ? (
-            <div className="flex min-h-[50vh] flex-col items-center justify-center text-center gap-4">
-              <div className="size-14 rounded-2xl border border-border bg-sidebar flex items-center justify-center">
-                <span className="material-symbols-outlined text-[28px] text-primary">chat</span>
+        <div className="relative flex-1 min-h-0 flex flex-col">
+          <div ref={transcriptScrollRef} onScroll={handleTranscriptScroll} className="flex-1 overflow-y-auto custom-scrollbar px-3 py-4 lg:px-6">
+            {messages.length === 0 ? (
+              <div className="flex min-h-[50vh] flex-col items-center justify-center text-center gap-4">
+                <div className="size-14 rounded-2xl border border-border bg-sidebar flex items-center justify-center">
+                  <span className="material-symbols-outlined text-[28px] text-primary">chat</span>
+                </div>
+                <div>
+                  <h2 className="text-xl font-semibold">Start a conversation</h2>
+                  <p className="mt-1 text-sm text-text-muted max-w-md">
+                    Multi-session chat over your connected providers. History is stored in SQLite.
+                  </p>
+                </div>
+                <div className="flex flex-wrap justify-center gap-2 max-w-xl">
+                  {[
+                    "Explain this error and propose a fix",
+                    "Write a unit test for this function",
+                    "Review this design for hidden risks",
+                  ].map((chip) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      onClick={() => setDraft(chip)}
+                      className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-sidebar"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div>
-                <h2 className="text-xl font-semibold">Start a conversation</h2>
-                <p className="mt-1 text-sm text-text-muted max-w-md">
-                  Multi-session chat over your connected providers. History is stored in SQLite.
-                </p>
-              </div>
-              <div className="flex flex-wrap justify-center gap-2 max-w-xl">
-                {[
-                  "Explain this error and propose a fix",
-                  "Write a unit test for this function",
-                  "Review this design for hidden risks",
-                ].map((chip) => (
-                  <button
-                    key={chip}
-                    type="button"
-                    onClick={() => setDraft(chip)}
-                    className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-sidebar"
-                  >
-                    {chip}
-                  </button>
+            ) : (
+              <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+                {visibleMessages.map((message, idx) => (
+                  <ChatMessageRow
+                    key={message.id}
+                    message={message}
+                    globalIndex={idx}
+                    activeSessionModel={activeSession?.model}
+                    isSending={isSending}
+                    viewMode={viewMode}
+                    showReasoning={showReasoning}
+                    onCopy={handleCopy}
+                    onEdit={handleEditMessage}
+                    onRegenerate={handleRegenerate}
+                    onImageClick={handleImageClick}
+                  />
                 ))}
+                <div ref={bottomRef} />
               </div>
-            </div>
-          ) : (
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
-              {windowed.start > 0 ? <div className="py-2 text-center text-[11px] text-text-muted">Earlier messages hidden · scroll up to reveal</div> : null}
-              {windowed.list.map((message, wi) => (
-                <ChatMessageRow
-                  key={message.id}
-                  message={message}
-                  globalIndex={windowed.start + wi}
-                  activeSessionModel={activeSession?.model}
-                  isSending={isSending}
-                  viewMode={viewMode}
-                  showReasoning={showReasoning}
-                  onCopy={handleCopy}
-                  onEdit={handleEditMessage}
-                  onRegenerate={handleRegenerate}
-                  onImageClick={handleImageClick}
-                />
-              ))}
-              {windowed.end < visibleMessages.length ? <div className="py-2 text-center text-[11px] text-text-muted">Scroll down for newer messages</div> : null}
-              <div ref={bottomRef} />
+            )}
+          </div>
+          {showScrollBottomBtn && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
+              <button
+                type="button"
+                onClick={handleJumpToBottom}
+                className="flex items-center gap-1.5 rounded-full border border-primary/35 bg-surface/95 backdrop-blur-md px-3.5 py-1.5 text-xs font-medium text-text-main shadow-lg hover:bg-surface-2 hover:border-primary/60 transition-all cursor-pointer"
+                title="Scroll to bottom"
+              >
+                <span className="material-symbols-outlined text-[16px] text-primary">arrow_downward</span>
+                <span>Latest messages</span>
+                {isSending && (
+                  <span className="relative flex size-2 ml-0.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                    <span className="relative inline-flex size-2 rounded-full bg-primary" />
+                  </span>
+                )}
+              </button>
             </div>
           )}
         </div>
