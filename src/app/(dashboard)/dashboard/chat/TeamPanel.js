@@ -37,7 +37,7 @@ const TASK_COLUMNS = [
  * Enhanced DSH-Style Agent Teams Native Workspace Panel (DeepSeek Harness).
  * Includes:
  * - Segmented Progress Bar & Team Statistics
- * - Kanban Task Board with Dependency Links
+ * - Kanban Task Board with Dependency Links & Column Scrollbars
  * - Interactive Dependency Flow (DAG Graph / Stages)
  * - Roster with Active Agent Badges & Transcript Inspection
  * - Chronological P2P Mailbox & Broadcast Activity Feed
@@ -226,7 +226,8 @@ function TeamPanelComponent({
                             {colTasks.length}
                           </span>
                         </div>
-                        <div className="space-y-1.5">
+                        {/* Scrollable Column Container (max 220px to prevent page stretching) */}
+                        <div className="flex-1 space-y-1.5 max-h-52 sm:max-h-60 overflow-y-auto pr-1 custom-scrollbar">
                           {colTasks.map((task) => (
                             <TaskCard
                               key={task.id}
@@ -253,7 +254,7 @@ function TeamPanelComponent({
                     <span className="material-symbols-outlined text-[12px]">block</span>
                     Blocked / Failed Tasks
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
                     {tasks
                       .filter((t) => t.status === "blocked" || t.status === "failed")
                       .map((task) => (
@@ -281,7 +282,7 @@ function TeamPanelComponent({
               {dagStages.length === 0 ? (
                 <p className="py-4 text-center text-[11px] text-text-muted italic">No tasks created yet.</p>
               ) : (
-                <div className="flex flex-wrap gap-3 overflow-x-auto p-1 custom-scrollbar">
+                <div className="flex flex-wrap gap-3 overflow-x-auto p-1 custom-scrollbar max-h-[380px] overflow-y-auto">
                   {dagStages.map((stageGroup) => (
                     <div
                       key={stageGroup.stage}
@@ -291,7 +292,7 @@ function TeamPanelComponent({
                         <span className="material-symbols-outlined text-[12px]">step</span>
                         Stage {stageGroup.stage}
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="space-y-1.5 max-h-52 sm:max-h-60 overflow-y-auto pr-1 custom-scrollbar">
                         {stageGroup.tasks.map((task) => {
                           const isBlocked =
                             Array.isArray(task.dependsOn) &&
@@ -331,7 +332,7 @@ function TeamPanelComponent({
 
           {/* TAB 3: ROSTER */}
           {tab === "roster" && (
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-2 max-h-64 overflow-y-auto pr-1 custom-scrollbar">
               {roster.map((member) => {
                 const agent = subAgents.find(
                   (a) => a.role === member.name || a.id?.includes(member.name)
