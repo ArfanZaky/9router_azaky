@@ -633,6 +633,36 @@ export async function executeTool(name, args = {}, ctx = {}) {
           ? resolveSafePath(args.cwd, workspace, accessMode)
           : path.resolve(workspace || process.cwd());
 
+        const cmdTrimmed = String(args.command || "").trim();
+
+        // Self-Preservation Guard:
+        // When running inside 9Router under PM2, executing direct self-restart/kill commands
+        // terminates the host process mid-turn, severing the active SSE connection, interrupting
+        // tool calls, and killing concurrent sessions.
+        // Intercept self-restart commands and route them through the detached safe-reload worker.
+        const isSelfRestart =
+          /(^|\s|&&|;|\|)((npx\s+)?pm2\s+(restart|reload)\s+(0|9router|all)|(npm|pnpm|yarn|bun)\s+run\s+reload(:safe)?)\b/i.test(cmdTrimmed);
+
+        if (isSelfRestart) {
+          const safeReloadScript = path.resolve(process.cwd(), "scripts", "safe-reload.mjs");
+          if (fs.existsSync(safeReloadScript)) {
+            const child = spawn(process.execPath, [safeReloadScript, "--delay", "4000", "--pm2-id", "0"], {
+              cwd: process.cwd(),
+              detached: true,
+              stdio: "ignore",
+              windowsHide: true,
+            });
+            child.unref();
+
+            return JSON.stringify({
+              ok: true,
+              scheduled: true,
+              safeReload: true,
+              message: "Direct host termination intercepted: PM2 reload scheduled safely via detached supervisor. Current turn will stream and complete cleanly before server drains and reloads.",
+            });
+          }
+        }
+
         if (args.background === true) {
           const started = startBackgroundProcess({
             command: args.command,

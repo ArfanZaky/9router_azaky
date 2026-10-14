@@ -54,6 +54,13 @@ export const SKILLS = [
     icon: "scatter_plot",
   },
   {
+    id: "safe-server-reload",
+    name: "Safe Server Reload",
+    description: "Safe zero-downtime server reload protocol for PM2 without terminating active sessions or interrupting chat turns.",
+    endpoint: null,
+    icon: "restart_alt",
+  },
+  {
     id: "archify",
     name: "Archify",
     description: "Create validated architecture, workflow, sequence, data-flow, and lifecycle diagrams as standalone HTML.",

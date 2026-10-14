@@ -9,6 +9,8 @@
     "build": "node ./scripts/build-next.mjs",
     "postbuild": "node scripts/copy-standalone-assets.mjs",
     "start": "node chat-server.mjs",
+    "reload": "node scripts/safe-reload.mjs",
+    "reload:safe": "node scripts/safe-reload.mjs",
     "dev:bun": "bun --hot chat-server.mjs",
     "build:bun": "bun --minify ./scripts/build-next.mjs",
     "start:bun": "bun ./.next/standalone/server.js",

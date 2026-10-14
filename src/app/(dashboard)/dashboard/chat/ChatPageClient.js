@@ -9,6 +9,7 @@ import TeamPanel from "./TeamPanel";
 import SlashCommandPalette, { CHAT_COMMANDS, commandMatches } from "./SlashCommandPalette";
 import ProjectSidebar from "./ProjectSidebar";
 import FolderPickerModal from "./FolderPickerModal";
+import SkillsModal from "./SkillsModal";
 import {
   abortChatRun,
   buildStopSummary,
@@ -30,21 +31,21 @@ const AGENT_ROLES = [
     label: "Orchestrator",
     icon: "hub",
     description: "Plan, delegate, coordinate",
-    prompt: "Act as the lead orchestrator. For multi-step work, publish a todo_update checklist, delegate focused read-only research or review with delegate_task, integrate the results, execute the remaining work, verify it, then report one coherent outcome. Do not delegate trivial work.",
+    prompt: "Act as the lead orchestrator. For multi-step work, publish a todo_update checklist, delegate focused read-only research or review with delegate_task, integrate the results, execute the remaining work, verify it, then report one coherent outcome. Enforce the Anti-Slop standard (https://github.com/miqdadbadjuber/anti-slop): no dead controls, real data/states, no em dashes, and rigorous verification. Do not delegate trivial work.",
   },
   {
     id: "team",
     label: "Agent Team",
     icon: "groups",
     description: "DSH collaborative multi-agent team",
-    prompt: "Act as a Native Agent Team orchestrator (DeepSeek Harness style). You operate a collaborative multi-agent system with a shared Task Board, Agent Roster (dev, qa, architect, reviewer), and P2P messaging. Post/claim tasks with team_post_task, inspect or register members with team_roster, dispatch peer work or reviews with team_send_message, and broadcast discoveries with team_broadcast. Keep the shared task board updated as milestones complete.",
+    prompt: "Act as a Native Agent Team orchestrator (DeepSeek Harness style). You operate a collaborative multi-agent system with a shared Task Board, Agent Roster (dev, qa, architect, reviewer), and P2P messaging. Post/claim tasks with team_post_task, inspect or register members with team_roster, dispatch peer work or reviews with team_send_message, and broadcast discoveries with team_broadcast. Strictly enforce Anti-Slop rules (https://github.com/miqdadbadjuber/anti-slop) across all team output: purposeful code, verified facts, no generic UI slop.",
   },
   {
     id: "coder",
     label: "Coder",
     icon: "code",
     description: "Implement and verify",
-    prompt: "Act as a senior implementation agent. Inspect the code first, make the smallest correct changes, run relevant verification, then summarize changed files and evidence.",
+    prompt: "Act as a senior implementation agent. Inspect the code first, make the smallest correct changes, run relevant verification, then summarize changed files and evidence. Strictly follow the Anti-Slop standard (https://github.com/miqdadbadjuber/anti-slop): purposeful implementation, no broken states, no script patching, full responsive and accessible code.",
   },
   {
     id: "researcher",
@@ -58,14 +59,14 @@ const AGENT_ROLES = [
     label: "Reviewer",
     icon: "fact_check",
     description: "Find bugs and risks",
-    prompt: "Act as a strict code reviewer. Prioritize correctness bugs, security risks, regressions, race conditions, and missing tests. Lead with findings and file references. Do not modify files unless explicitly requested.",
+    prompt: "Act as a strict code reviewer. Prioritize correctness bugs, security risks, regressions, race conditions, missing tests, and Anti-Slop violations (https://github.com/miqdadbadjuber/anti-slop). Lead with findings and file references. Do not modify files unless explicitly requested.",
   },
   {
     id: "planner",
     label: "Planner",
     icon: "account_tree",
     description: "Design execution steps",
-    prompt: "Act as a technical planner. Inspect current architecture, identify dependencies and risks, then produce an actionable phased plan with acceptance criteria. Do not modify files.",
+    prompt: "Act as a technical planner. Inspect current architecture, identify dependencies and risks, then produce an actionable phased plan with acceptance criteria. Adhere to the Anti-Slop standard (https://github.com/miqdadbadjuber/anti-slop). Do not modify files.",
   },
 ];
 
@@ -788,6 +789,7 @@ export default function ChatPageClient() {
   const [folderPickerTarget, setFolderPickerTarget] = useState("sessionModal"); // sessionModal | codebaseModal
   const [mcpServers, setMcpServers] = useState([]);
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [skillsModalOpen, setSkillsModalOpen] = useState(false);
   const [mcpForm, setMcpForm] = useState({ name: "", url: "", transport: "sse", command: "", args: "" });
   const [mcpProbe, setMcpProbe] = useState(null);
   const [commandIndex, setCommandIndex] = useState(0);
@@ -3023,7 +3025,8 @@ export default function ChatPageClient() {
       } else if (name === "codebase") {
         const current = sessions.find((s) => s.id === activeSessionId);
         if (current) openEditModal(current);
-      } else if (name === "mcp") {
+      } else if (name === "skills" || name === "skill") setSkillsModalOpen(true);
+      else if (name === "mcp") {
         await loadMcpServers();
         setMcpModalOpen(true);
       } else if (name === "goal") {
@@ -3189,6 +3192,9 @@ export default function ChatPageClient() {
             </Button>
             <Button variant="ghost" size="sm" icon="extension" onClick={() => { loadMcpServers(); setMcpModalOpen(true); }}>
               MCP
+            </Button>
+            <Button variant={skillsModalOpen ? "secondary" : "ghost"} size="sm" icon="auto_awesome" onClick={() => setSkillsModalOpen(true)} title="Agent Skills Hub & Anti-Slop Standard">
+              Skills
             </Button>
             {activeSessionCodebase ? (
               <>
@@ -3626,6 +3632,15 @@ export default function ChatPageClient() {
                   <span className="material-symbols-outlined text-[15px]">{autoApprove ? "task_alt" : "shield"}</span>
                   {autoApprove ? "Auto" : "Approve"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setSkillsModalOpen(true)}
+                  className="hidden sm:inline-flex items-center gap-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 px-2 py-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15 transition cursor-pointer"
+                  title="Anti-Slop standard (https://github.com/miqdadbadjuber/anti-slop) is mandatory & active for all development & integration"
+                >
+                  <span className="material-symbols-outlined text-[14px]">verified</span>
+                  <span>Anti-Slop</span>
+                </button>
                 <div className="relative">
                   <button
                     type="button"
@@ -3757,6 +3772,12 @@ export default function ChatPageClient() {
           />
         </div>
       ) : null}
+
+      <SkillsModal
+        isOpen={skillsModalOpen}
+        onClose={() => setSkillsModalOpen(false)}
+        onInsertPrompt={(p) => setDraft((d) => d ? `${d}\n\n${p}` : p)}
+      />
 
       <ModelSelectModal
         isOpen={modelModalOpen}

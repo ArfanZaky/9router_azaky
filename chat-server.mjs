@@ -181,3 +181,36 @@ wss.on("connection", (socket) => {
 server.listen(port, hostname, () => {
   console.log(`> Ready on http://${hostname}:${port}${dev ? " (dev)" : ""}`);
 });
+
+// Graceful shutdown handler for PM2 / container restart
+let isShuttingDown = false;
+async function handleShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[chat-server] Received ${signal}. Draining connections for clean restart...`);
+
+  // Close HTTP listener so no new requests are accepted
+  try {
+    server.close();
+  } catch {}
+
+  // Notify and close active WebSockets cleanly (code 1001: Going Away)
+  for (const set of socketsByRun.values()) {
+    for (const ws of set) {
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          send(ws, { type: "notice", message: "Server is reloading (auto-reconnecting)..." });
+          ws.close(1001, "Server restarting");
+        }
+      } catch {}
+    }
+  }
+
+  // Allow short grace period for active writes/buffers to flush
+  setTimeout(() => {
+    process.exit(0);
+  }, 1200).unref();
+}
+
+process.on("SIGINT", () => handleShutdown("SIGINT"));
+process.on("SIGTERM", () => handleShutdown("SIGTERM"));

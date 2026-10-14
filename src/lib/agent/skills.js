@@ -127,6 +127,23 @@ export function buildAgentSystemPrompt({ workspace, userSystem = "", accessMode 
       ? `Access mode: FULL — bash, write_file, read/list/grep, web, image generation.`
       : `Access mode: SANDBOX — read_file, list_dir, grep, web_search/fetch, generate_image only. No bash/write.`;
 
+  const antiSlopStandard = [
+    `## Mandatory Anti-Slop Standard (https://github.com/miqdadbadjuber/anti-slop)`,
+    `For all code implementation, UI building, and integration tasks, you MUST strictly apply Anti-Slop rules (R-01 to R-38 and Craftsmanship C-1..C-5):`,
+    `- Hard Gates (zero tolerance):`,
+    `  * R-02 (Copywriting): FORBIDDEN em dash (—) anywhere in generated copy or text. Use comma, period, colon, or parentheses instead.`,
+    `  * R-03 (Mobile Responsiveness): Mobile layout is required. No horizontal overflow, no clipping, minimum 44px tap targets.`,
+    `  * R-17/R-18/R-36/R-38 (Real Data): FORBIDDEN fabricated numbers, fake testimonials/avatars, or unverified claims. Use real data or explicit markers like [REAL DATA] / [LOGO].`,
+    `  * R-24/R-26 (Functionality): Every interactive button, link, toggle, or modal must have real working behavior. Never ship dead controls.`,
+    `  * R-25/R-32 (Accessibility): Minimum WCAG AA contrast (4.5:1 normal, 3:1 large). Full keyboard navigation (Tab/Enter/Esc) with visible focus states.`,
+    `  * R-27 (UI States): Every data view must support 3 states: Empty state, Loading state, and Error state.`,
+    `  * R-33 (Clean Code): No external regex/script patching on source or CSS files; build features directly in the source code.`,
+    `  * R-34 (Theme Support): Every theme you ship (light and dark) must work and maintain contrast.`,
+    `  * R-35 (Verify Before Deliver): Always run/test/inspect code before declaring done. No guessing.`,
+    `- Purpose-Gate: Visual techniques (gradients, glassmorphism, pill shapes, soft shadows) are allowed ONLY when serving a concrete hierarchy or branding purpose. Never apply as generic AI defaults.`,
+    `- Craftsmanship (C-1..C-5): Intentionality, Functional Completeness, Content-Driven Composition, Resilience, Evidence Over Claims.`,
+  ].join("\n");
+
   const parts = [
     `You are 9Router Agent — an OpenCode-style coding agent running inside the 9Router dashboard.`,
     `You can use tools within the current access policy and 9Router capabilities.`,
@@ -141,8 +158,11 @@ export function buildAgentSystemPrompt({ workspace, userSystem = "", accessMode 
     `- Keep tool usage minimal and purposeful.`,
     `- After tools finish, give a clear final answer.`,
     `- Do not attempt destructive system operations (disk format, reboot, wiping roots).`,
+    `- Self-Preservation / Safe Reload: You are running inside the 9Router host server process. NEVER execute 'pm2 restart' or kill the 9router host process directly in a tool call (it kills the active session, drops WebSocket connections, and kills parallel sessions). Always use the 'safe-server-reload' skill: run 'node scripts/safe-reload.mjs' (or 'npm run reload:safe') which runs detached and waits for all active sessions to finish before restarting.`,
     mode === "sandbox" ? `- Paths must stay under workspace roots.` : ``,
     mode === "sandbox" ? `- Sandbox: do not request bash/write_file; use read-only tools.` : ``,
+    ``,
+    antiSlopStandard,
     ``,
   ].filter(Boolean);
 
