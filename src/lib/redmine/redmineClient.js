@@ -2,10 +2,10 @@ import { getSettings, updateSettings } from "@/lib/localDb";
 
 export const DEFAULT_REDMINE_CONFIG = {
   baseUrl: "https://redmine.profescipta.co.id",
-  apiKey: "c59e9eb47b00396f8c676f03863cf6bd18144f9b",
-  userEmail: "arfan.zaky@dipstrategy.co.id",
-  userId: 135,
-  userName: "Arfan Zaky Hifdillah",
+  apiKey: "",
+  userEmail: "",
+  userId: null,
+  userName: "",
 };
 
 export async function getRedmineConfig() {
@@ -41,6 +41,9 @@ function getHeaders(apiKey) {
 
 export async function verifyRedmineConnection(customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) {
+    throw new Error("Redmine API key is not configured");
+  }
   const res = await fetch(`${config.baseUrl}/users/current.json`, {
     headers: getHeaders(config.apiKey),
     cache: "no-store",
@@ -65,6 +68,9 @@ export async function getRedmineIssues({
   customConfig = null,
 } = {}) {
   const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) {
+    throw new Error("Redmine API key is not configured");
+  }
   const params = new URLSearchParams();
   if (assignedToId) params.append("assigned_to_id", assignedToId);
   if (statusId) params.append("status_id", statusId);
@@ -111,6 +117,9 @@ export async function getRedmineIssues({
 
 export async function getRedmineIssueDetail(issueId, customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) {
+    throw new Error("Redmine API key is not configured");
+  }
   const url = `${config.baseUrl}/issues/${issueId}.json?include=journals,attachments,relations,children,watchers`;
   const res = await fetch(url, {
     headers: getHeaders(config.apiKey),
@@ -126,6 +135,9 @@ export async function getRedmineIssueDetail(issueId, customConfig = null) {
 
 export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio }, customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) {
+    throw new Error("Redmine API key is not configured");
+  }
   const issueUpdate = {};
   if (notes) issueUpdate.notes = notes;
   if (statusId) issueUpdate.status_id = Number(statusId);
@@ -146,6 +158,7 @@ export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio }
 
 export async function getRedmineProjects(customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) return [];
   const res = await fetch(`${config.baseUrl}/projects.json?limit=100`, {
     headers: getHeaders(config.apiKey),
     cache: "no-store",
@@ -157,6 +170,7 @@ export async function getRedmineProjects(customConfig = null) {
 
 export async function getRedmineStatuses(customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) return [];
   const res = await fetch(`${config.baseUrl}/issue_statuses.json`, {
     headers: getHeaders(config.apiKey),
     cache: "no-store",
@@ -168,6 +182,7 @@ export async function getRedmineStatuses(customConfig = null) {
 
 export async function getRedmineTrackers(customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) return [];
   const res = await fetch(`${config.baseUrl}/trackers.json`, {
     headers: getHeaders(config.apiKey),
     cache: "no-store",

@@ -848,7 +848,7 @@ export default function RedminePageClient() {
                 <label className="block text-xs font-medium text-text-main mb-1">Account Email (Optional)</label>
                 <input
                   type="email"
-                  placeholder="arfan.zaky@dipstrategy.co.id"
+                  placeholder="user@example.com"
                   value={cfgEmail}
                   onChange={(e) => setCfgEmail(e.target.value)}
                   className="w-full bg-bg border border-border rounded-xl px-3.5 py-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary outline-none transition-colors"
