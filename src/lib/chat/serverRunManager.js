@@ -24,6 +24,34 @@ globalThis.__chatServerRuns = liveRuns;
 
 const GATE_TIMEOUT_MS = 120_000;
 
+function findTask(teamTasks, query) {
+  if (!query || !teamTasks) return null;
+  const qStr = String(query).trim();
+  if (teamTasks.has(qStr)) return teamTasks.get(qStr);
+
+  const qLower = qStr.toLowerCase();
+  // Match by numeric index e.g. "1", 1, "task_1", "#1"
+  const numMatch = qLower.match(/^(?:task_?|#)?(\d+)$/i);
+  if (numMatch) {
+    const idx = parseInt(numMatch[1], 10);
+    const list = Array.from(teamTasks.values());
+    if (idx >= 1 && idx <= list.length) {
+      return list[idx - 1];
+    }
+  }
+
+  // Match by exact ID case-insensitive or exact title
+  for (const t of teamTasks.values()) {
+    if (t.id && t.id.toLowerCase() === qLower) return t;
+    if (t.title && t.title.toLowerCase().trim() === qLower) return t;
+  }
+  // Match by title substring
+  for (const t of teamTasks.values()) {
+    if (t.title && t.title.toLowerCase().includes(qLower)) return t;
+  }
+  return null;
+}
+
 async function saveTeamState(run) {
   if (!run?.sessionId) return;
   const rosterList = Array.from(run.teamRoster?.values() || []);
@@ -407,10 +435,39 @@ async function runPlainChat(run) {
 
 async function runAgent(run) {
   const mcp = await loadMcpTools();
+
+  // Dynamic context injection: provide current Task Board & Roster so model sees existing tasks on subsequent turns
+  let teamContextPrompt = "";
+  if (run.teamTasks && run.teamTasks.size > 0) {
+    const taskLines = Array.from(run.teamTasks.values()).map((t, idx) => {
+      const mark = t.status === "completed" ? "[x]" : t.status === "in_progress" ? "[/]" : "[ ]";
+      const assignee = t.assignee ? ` @${t.assignee}` : "";
+      const deps = Array.isArray(t.dependsOn) && t.dependsOn.length > 0 ? ` (depends on: ${t.dependsOn.join(", ")})` : "";
+      return `- ${mark} ${t.id}: ${t.title || t.description || `Task ${idx + 1}`} [status: ${t.status}${assignee}]${deps}`;
+    }).join("\n");
+
+    teamContextPrompt += `\n\n## Shared Team Task Board (Current State)\n` +
+      `Active tasks on the board:\n${taskLines}\n\n` +
+      `MANDATORY Task Board Rules for all subsequent tasks and turns:\n` +
+      `- When starting any pending or subsequent task, claim it with team_post_task(action: 'claim', taskId: '<id>', assignee: '<role>') to mark it 'in_progress'.\n` +
+      `- When completing a task, immediately mark it with team_post_task(action: 'update', taskId: '<id>', status: 'completed').\n` +
+      `- For new requests or additional work, create new task(s) with team_post_task(action: 'create', title: '...').\n` +
+      `- Maintain the board continuously across all turns and steps.`;
+  }
+
+  if (run.teamRoster && run.teamRoster.size > 0) {
+    const rosterLines = Array.from(run.teamRoster.values()).map((m) =>
+      `- ${m.name} (${m.role || m.name}): ${m.description || "Specialist agent"} [status: ${m.status || "idle"}]`
+    ).join("\n");
+    teamContextPrompt += `\n\n## Agent Team Roster:\n${rosterLines}\nDispatch specialized work with team_send_message and announce discoveries with team_broadcast.`;
+  }
+
+  const effectiveSystemPrompt = [run.request.systemPrompt, teamContextPrompt].filter(Boolean).join("\n");
+
   await runAgentLoop({
     model: run.request.model,
     messages: run.request.messages,
-    systemPrompt: run.request.systemPrompt,
+    systemPrompt: effectiveSystemPrompt,
     codebase: run.codebase,
     apiKey: run.request.apiKey,
     workspace: run.workspace,
@@ -479,24 +536,31 @@ async function runAgent(run) {
       run.tasks = items;
       await updateChatSession(run.sessionId, { tasks: items }).catch(() => {});
       await emit(run, "task_update", { items });
-      // If team tasks are uninitialized or track task_ indices, mirror todo items to teamTasks DAG
-      if (run.teamTasks.size === 0 || Array.from(run.teamTasks.keys()).every((k) => k.startsWith("task_"))) {
-        run.teamTasks.clear();
-        (items || []).forEach((item, idx) => {
-          const tid = `task_${idx + 1}`;
+      
+      // Always keep teamTasks DAG synchronized with todo items
+      (items || []).forEach((item, idx) => {
+        const tid = `task_${idx + 1}`;
+        const existing = run.teamTasks.get(tid) || findTask(run.teamTasks, tid) || findTask(run.teamTasks, item.content);
+        const taskStatus = item.status === "in_progress" ? "in_progress" : item.status === "completed" ? "completed" : "pending";
+        if (existing) {
+          existing.title = item.content || existing.title;
+          existing.status = taskStatus;
+          existing.updatedAt = new Date().toISOString();
+          run.teamTasks.set(existing.id, existing);
+        } else {
           run.teamTasks.set(tid, {
             id: tid,
             title: item.content || `Task ${idx + 1}`,
             description: item.content || "",
             assignee: "orchestrator",
-            status: item.status === "in_progress" ? "in_progress" : item.status === "completed" ? "completed" : "pending",
+            status: taskStatus,
             dependsOn: idx > 0 ? [`task_${idx}`] : [],
             updatedAt: new Date().toISOString(),
           });
-        });
-        const list = Array.from(run.teamTasks.values());
-        await emit(run, "team_tasks_update", { tasks: list });
-      }
+        }
+      });
+      const list = Array.from(run.teamTasks.values());
+      await emit(run, "team_tasks_update", { tasks: list });
       await saveTeamState(run);
     },
     onDelegate: async ({ role, task }) => runSubAgent(run, { role, task }),
@@ -522,41 +586,47 @@ async function runAgent(run) {
     onTeamTask: async (args) => {
       const action = args?.action || "list";
       if (action === "create") {
-        const taskId = args.taskId || `task_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`;
-        const depends = Array.isArray(args.dependsOn) ? args.dependsOn : [];
-        const isDepSatisfied = depends.every((d) => {
-          const prior = run.teamTasks.get(d);
-          return prior && prior.status === "completed";
-        });
-        const taskObj = {
-          id: taskId,
-          title: args.title || "Untitled task",
-          description: args.description || "",
-          assignee: args.assignee || null,
-          status: args.status || (isDepSatisfied ? "pending" : "blocked"),
-          dependsOn: depends,
-          updatedAt: new Date().toISOString(),
-        };
-        run.teamTasks.set(taskId, taskObj);
+        const rawItems = Array.isArray(args.tasks) ? args.tasks : Array.isArray(args.items) ? args.items : [args];
+        for (const item of rawItems) {
+          if (!item || (!item.title && !item.content && !item.description)) continue;
+          const nextIdx = run.teamTasks.size + 1;
+          const taskId = item.taskId || item.id || `task_${nextIdx}`;
+          const depends = Array.isArray(item.dependsOn) ? item.dependsOn : [];
+          const isDepSatisfied = depends.length === 0 || depends.every((d) => {
+            const prior = findTask(run.teamTasks, d);
+            return prior && prior.status === "completed";
+          });
+          const taskObj = {
+            id: taskId,
+            title: item.title || item.content || item.description || `Task ${nextIdx}`,
+            description: item.description || item.content || "",
+            assignee: item.assignee || "orchestrator",
+            status: item.status || (isDepSatisfied ? "pending" : "blocked"),
+            dependsOn: depends,
+            updatedAt: new Date().toISOString(),
+          };
+          run.teamTasks.set(taskId, taskObj);
+        }
       } else if (action === "update" || action === "claim") {
-        const taskObj = run.teamTasks.get(args.taskId);
-        if (!taskObj) return { ok: false, error: `Task ${args.taskId} not found` };
+        const targetQuery = args.taskId || args.id || args.title;
+        const taskObj = findTask(run.teamTasks, targetQuery);
+        if (!taskObj) return { ok: false, error: `Task "${targetQuery}" not found on board` };
         if (args.title) taskObj.title = args.title;
         if (args.description) taskObj.description = args.description;
         if (args.assignee) taskObj.assignee = args.assignee;
         if (args.status) taskObj.status = args.status;
-        if (action === "claim" && args.assignee) {
-          taskObj.assignee = args.assignee;
+        if (action === "claim") {
+          if (args.assignee) taskObj.assignee = args.assignee;
           taskObj.status = "in_progress";
         }
         taskObj.updatedAt = new Date().toISOString();
-        run.teamTasks.set(args.taskId, taskObj);
+        run.teamTasks.set(taskObj.id, taskObj);
 
         if (taskObj.status === "completed") {
           for (const other of run.teamTasks.values()) {
             if (other.status === "blocked" && Array.isArray(other.dependsOn)) {
               const allDone = other.dependsOn.every((depId) => {
-                const dt = run.teamTasks.get(depId);
+                const dt = findTask(run.teamTasks, depId);
                 return dt && dt.status === "completed";
               });
               if (allDone) {
@@ -784,6 +854,22 @@ async function execute(run) {
     const title = !session?.title || session.title === "New chat" ? makeTitle(run.titleSeed) : session.title;
     await updateChatSession(run.sessionId, { title, model: run.request.model, providerId: run.providerId }).catch(() => {});
     
+    // Auto-complete any remaining in_progress tasks so board doesn't leave them dangling
+    if (!stopped && run.teamTasks) {
+      let updatedAny = false;
+      for (const t of run.teamTasks.values()) {
+        if (t.status === "in_progress") {
+          t.status = "completed";
+          t.updatedAt = new Date().toISOString();
+          updatedAny = true;
+        }
+      }
+      if (updatedAny) {
+        const list = Array.from(run.teamTasks.values());
+        await emit(run, "team_tasks_update", { tasks: list });
+      }
+    }
+
     // Normalize any roster member left in 'running' state so DB doesn't freeze them as running
     if (run.teamRoster) {
       for (const m of run.teamRoster.values()) {
@@ -855,10 +941,19 @@ export async function startServerChatRun(input) {
     for (const m of existingTeam.roster) {
       if (m?.name) teamRoster.set(m.name, { ...m, status: "idle" });
     }
+  } else if (Array.isArray(input.teamRoster) && input.teamRoster.length > 0) {
+    for (const m of input.teamRoster) {
+      if (m?.name) teamRoster.set(m.name, { ...m, status: "idle" });
+    }
   }
+
   const teamTasks = new Map();
   if (Array.isArray(existingTeam.tasks) && existingTeam.tasks.length > 0) {
     for (const t of existingTeam.tasks) {
+      if (t?.id) teamTasks.set(t.id, t);
+    }
+  } else if (Array.isArray(input.teamTasks) && input.teamTasks.length > 0) {
+    for (const t of input.teamTasks) {
       if (t?.id) teamTasks.set(t.id, t);
     }
   } else if (Array.isArray(session.tasks) && session.tasks.length > 0) {

@@ -31,14 +31,14 @@ const AGENT_ROLES = [
     label: "Orchestrator",
     icon: "hub",
     description: "Plan, delegate, coordinate",
-    prompt: "Act as the lead orchestrator. For multi-step work, publish a todo_update checklist, delegate focused read-only research or review with delegate_task, integrate the results, execute the remaining work, verify it, then report one coherent outcome. Enforce the Anti-Slop standard (https://github.com/miqdadbadjuber/anti-slop): no dead controls, real data/states, no em dashes, and rigorous verification. Do not delegate trivial work.",
+    prompt: "Act as the lead orchestrator. For multi-step work, publish a todo_update checklist or use team_post_task, update task status as each step progresses and completes, delegate focused read-only research or review with delegate_task, integrate the results, execute the remaining work, verify it, then report one coherent outcome. Enforce the Anti-Slop standard (https://github.com/miqdadbadjuber/anti-slop): no dead controls, real data/states, no em dashes, and rigorous verification. Do not delegate trivial work.",
   },
   {
     id: "team",
     label: "Agent Team",
     icon: "groups",
     description: "DSH collaborative multi-agent team",
-    prompt: "Act as a Native Agent Team orchestrator (DeepSeek Harness style). You operate a collaborative multi-agent system with a shared Task Board, Agent Roster (dev, qa, architect, reviewer), and P2P messaging. Post/claim tasks with team_post_task, inspect or register members with team_roster, dispatch peer work or reviews with team_send_message, and broadcast discoveries with team_broadcast. Strictly enforce Anti-Slop rules (https://github.com/miqdadbadjuber/anti-slop) across all team output: purposeful code, verified facts, no generic UI slop.",
+    prompt: "Act as a Native Agent Team orchestrator (DeepSeek Harness style). You operate a collaborative multi-agent system with a shared Task Board, Agent Roster (dev, qa, architect, reviewer), and P2P messaging.\n\nCRITICAL TASK BOARD DISCIPLINE:\n- Always maintain the shared Task Board with team_post_task for EVERY task (task 1, task 2, and all subsequent tasks).\n- Before executing any task step, claim it with team_post_task(action: 'claim', taskId, assignee) so the board shows 'in_progress'.\n- When each task step finishes, mark it completed with team_post_task(action: 'update', taskId, status: 'completed').\n- For new user requests, follow-ups, or continuations, add new tasks with team_post_task(action: 'create').\n- Dispatch specialist work with team_send_message and team_roster.\n- Strictly enforce Anti-Slop rules (https://github.com/miqdadbadjuber/anti-slop): purposeful code, verified facts, no generic UI slop.",
   },
   {
     id: "coder",
@@ -2493,6 +2493,8 @@ export default function ChatPageClient() {
           verify: verifyMode,
           codebase: activeSessionCodebase,
           autoApprove,
+          teamTasks,
+          teamRoster,
           params: {
             temperature: params.temperature,
             max_tokens: params.max_tokens,

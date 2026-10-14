@@ -232,7 +232,7 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "todo_update",
-      description: "Publish or replace the current task checklist for long multi-step work.",
+      description: "Publish or replace the current task checklist for long multi-step work. Automatically mirrors to shared Task Board.",
       parameters: {
         type: "object",
         properties: {
@@ -298,17 +298,32 @@ export const TOOL_DEFS = [
     type: "function",
     function: {
       name: "team_post_task",
-      description: "Create, update, or claim a task on the shared team task board (DSH style). Action: 'create' | 'update' | 'claim' | 'list'.",
+      description: "Create, update, or claim tasks on the shared Agent Team task board (DSH style). Call this for the first task AND all subsequent tasks. Supports single task or batch tasks (pass 'tasks' array).",
       parameters: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["create", "update", "claim", "list"], description: "Action on task board" },
-          taskId: { type: "string", description: "Task ID when updating or claiming" },
-          title: { type: "string", description: "Task title" },
+          action: { type: "string", enum: ["create", "update", "claim", "list"], description: "Action on task board: 'create' to add task(s), 'claim' to start working (sets in_progress), 'update' to update status (e.g. 'completed'), 'list' to view tasks." },
+          taskId: { type: "string", description: "Task ID (e.g. 'task_1', 'task_2', '1', '2') or task title when updating or claiming" },
+          title: { type: "string", description: "Task title for single task creation" },
           description: { type: "string", description: "Task specification and acceptance criteria" },
-          assignee: { type: "string", description: "Assigned member name/role" },
-          status: { type: "string", enum: ["pending", "in_progress", "review", "completed", "blocked"], description: "Status" },
+          assignee: { type: "string", description: "Assigned member name/role from roster (dev, qa, architect, reviewer, orchestrator)" },
+          status: { type: "string", enum: ["pending", "in_progress", "review", "completed", "blocked"], description: "Task status" },
           dependsOn: { type: "array", items: { type: "string" }, description: "Task IDs that must complete first" },
+          tasks: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string" },
+                description: { type: "string" },
+                assignee: { type: "string" },
+                status: { type: "string", enum: ["pending", "in_progress", "review", "completed", "blocked"] },
+                dependsOn: { type: "array", items: { type: "string" } },
+              },
+              required: ["title"],
+            },
+            description: "Optional array of tasks to create multiple tasks in one call",
+          },
         },
         required: ["action"],
       },
