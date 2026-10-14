@@ -17,6 +17,7 @@ import {
   listChatMcpServers,
 } from "@/lib/localDb";
 import { resolveProjectWorkspace } from "./projectWorkspace.js";
+import { saveDualTierMemory } from "@/lib/agent/memory.js";
 import { listTools as listMcpTools, callTool as callMcpTool } from "./mcpClient.js";
 
 const liveRuns = globalThis.__chatServerRuns || new Map();
@@ -143,6 +144,69 @@ function makeTitle(value = "") {
   const normalized = text(value).replace(/\s+/g, " ").trim();
   if (!normalized) return "New chat";
   return normalized.length > 52 ? `${normalized.slice(0, 52).trimEnd()}…` : normalized;
+}
+
+async function runBackgroundReflection(run, content) {
+  if (run.mode !== "agent" || !run.workspace || !run.request?.apiKey) return;
+  const lastUserMsg = [...(run.request.messages || [])].reverse().find((m) => m?.role === "user");
+  const userText = text(lastUserMsg?.content).trim();
+  if (!userText || userText.length < 5) return;
+  if (/^(hi|hello|hey|halo|test|ok|oke|sip|thanks|terima kasih)[\s.!]*$/i.test(userText)) return;
+
+  const prompt = `You are the Hermes Self-Improvement Background Reviewer for 9Router Agent.
+Analyze this completed interaction to extract durable learnings:
+1. Durable Project Fact (MEMORY.md): Stack nuance, build command, port, error cause, or architecture convention. (Max 1-2 bullet points starting with "- ").
+2. Durable User Preference (USER.md): Explicit user style, communication rule, language preference, or workflow constraint. (Max 1 bullet point starting with "- ").
+Rules:
+- Do NOT save ephemeral session states or transient task progress.
+- Only return durable, reusable facts. If nothing new was learned, set shouldUpdate: false.
+- Anti-Slop: No generic filler, no em dash.
+
+Completed Turn:
+User Request: ${userText.slice(0, 800)}
+Assistant Output: ${String(content || "").slice(0, 1000)}
+
+Reply JSON only:
+{
+  "shouldUpdate": boolean,
+  "projectFact": "- fact" or null,
+  "userPreference": "- pref" or null
+}`;
+
+  const body = {
+    model: run.request.model,
+    stream: false,
+    messages: [
+      { role: "system", content: "You extract durable memory facts from assistant turns. Reply JSON only." },
+      { role: "user", content: prompt },
+    ],
+    response_format: { type: "json_object" },
+    max_tokens: 400,
+  };
+
+  try {
+    const request = new Request("http://9router.local/api/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${run.request.apiKey}` },
+      body: JSON.stringify(body),
+    });
+    await ensureTranslators();
+    const response = await handleChat(request);
+    const data = await response.json().catch(() => ({}));
+    const raw = text(data.choices?.[0]?.message?.content);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed?.shouldUpdate) {
+      if (parsed.projectFact && typeof parsed.projectFact === "string") {
+        saveDualTierMemory(run.workspace, { type: "project", content: parsed.projectFact, mode: "append" });
+      }
+      if (parsed.userPreference && typeof parsed.userPreference === "string") {
+        saveDualTierMemory(run.workspace, { type: "user", content: parsed.userPreference, mode: "append" });
+      }
+    }
+  } catch {
+    // Silent background execution
+  }
 }
 
 async function callChatCompletionsForJudge(run, summary) {
@@ -883,6 +947,11 @@ async function execute(run) {
     const result = { messages: run.messages, finalText: content, title, tokenUsage: run.tokenUsage || null };
     await updateChatRunRecord(run.id, { status, result, finishedAt: new Date().toISOString() });
     await emit(run, "done", { ...result, stopped });
+
+    // Self-Improving AI: background post-turn reflection
+    if (!stopped && status === "completed") {
+      void runBackgroundReflection(run, content).catch(() => {});
+    }
   } catch (error) {
     const message = run.abortController.signal.aborted ? "(Stopped)" : (error?.message || String(error));
     const content = run.abortController.signal.aborted

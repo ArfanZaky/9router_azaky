@@ -1,0 +1,3 @@
+- 9Router custom project runs Next.js App Router on Node v22.
+- Anti-slop standard strictly enforced for all UI and code generation.
+- Self-preservation: Never execute sync pm2 restart in tool calls; use scripts/safe-reload.mjs.

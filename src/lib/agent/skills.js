@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { formatDualTierMemoryForPrompt } from "./memory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -144,6 +145,8 @@ export function buildAgentSystemPrompt({ workspace, userSystem = "", accessMode 
     `- Craftsmanship (C-1..C-5): Intentionality, Functional Completeness, Content-Driven Composition, Resilience, Evidence Over Claims.`,
   ].join("\n");
 
+  const memorySection = formatDualTierMemoryForPrompt(workspace);
+
   const parts = [
     `You are 9Router Agent — an OpenCode-style coding agent running inside the 9Router dashboard.`,
     `You can use tools within the current access policy and 9Router capabilities.`,
@@ -165,6 +168,10 @@ export function buildAgentSystemPrompt({ workspace, userSystem = "", accessMode 
     antiSlopStandard,
     ``,
   ].filter(Boolean);
+
+  if (memorySection) {
+    parts.push(memorySection, ``);
+  }
 
   if (userSystem?.trim()) {
     parts.push(`User system instructions:\n${userSystem.trim()}`, ``);

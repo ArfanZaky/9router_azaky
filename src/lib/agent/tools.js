@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { DATA_DIR } from "../dataDir.js";
-import { getSkillByName, loadAllSkillIndex } from "./skills.js";
+import { getSkillByName, loadAllSkillIndex, resolveSkillRoots, parseSkillFrontmatter } from "./skills.js";
 import { registerProcess, startBackgroundProcess } from "../chat/processManager.js";
+import { loadDualTierMemory, saveDualTierMemory } from "./memory.js";
 
 const MAX_READ = 200_000;
 const MAX_LIST = 500;
@@ -84,6 +85,8 @@ const TOOL_ACCESS = {
   ask_user: "sandbox",
   goal_update: "sandbox",
   read_skill: "sandbox",
+  manage_memory: "sandbox",
+  manage_skill: "full",
 };
 
 export function getOpenAiTools(accessMode = "sandbox") {
@@ -415,6 +418,39 @@ export const TOOL_DEFS = [
           name: { type: "string", description: "Skill id or name, e.g. 9router, react, sql-database" },
         },
         required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "manage_memory",
+      description: "Hermes-style persistent dual-tier memory. View, append, or replace durable project facts (MEMORY.md) or user preferences/style (USER.md). Always keeps content concise and bounded.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["view", "append", "replace"], description: "Action: 'view' to read memory, 'append' to add new facts/bullet points, 'replace' to rewrite entire content." },
+          target: { type: "string", enum: ["project", "user"], description: "'project' for MEMORY.md (build commands, architecture, gotchas, stack), 'user' for USER.md (user preferences, communication style)." },
+          content: { type: "string", description: "Text or bullet points to append or replace" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "manage_skill",
+      description: "Hermes-style procedural skill self-improvement. List, view, create, or patch reusable procedural skills in skills/<name>/SKILL.md.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["list", "view", "create", "patch"], description: "Action: 'list' all skills, 'view' full body of a skill, 'create' a new skill, 'patch' existing skill." },
+          name: { type: "string", description: "Skill identifier name (kebab-case, e.g. 'nextjs-optimization')" },
+          description: { type: "string", description: "Short 1-line description of what the skill does (for frontmatter/catalogue)" },
+          content: { type: "string", description: "Full markdown content or instructions for the skill" },
+        },
+        required: ["action"],
       },
     },
   },
@@ -895,6 +931,83 @@ export async function executeTool(name, args = {}, ctx = {}) {
           return JSON.stringify({ ok: false, error: `Skill not found. Available: ${names}` });
         }
         return JSON.stringify({ ok: true, name: skill.name, content: `${skill.description ? `# ${skill.name}\n\n${skill.description}\n\n` : ""}${skill.body}` });
+      }
+      case "manage_memory": {
+        const target = args.target === "user" ? "user" : "project";
+        const action = args.action || "view";
+        if (action === "view") {
+          const mem = loadDualTierMemory(workspace);
+          return JSON.stringify({
+            ok: true,
+            projectMemory: mem.projectMemory,
+            userMemory: mem.userMemory,
+          });
+        }
+        if (action === "append" || action === "replace") {
+          if (!args.content) return JSON.stringify({ ok: false, error: "Content is required to append or replace memory" });
+          const res = saveDualTierMemory(workspace, {
+            type: target,
+            content: args.content,
+            mode: action,
+          });
+          return JSON.stringify(res);
+        }
+        return JSON.stringify({ ok: false, error: `Invalid action "${action}"` });
+      }
+      case "manage_skill": {
+        const action = args.action || "list";
+        const baseDir = path.join(process.cwd(), "skills");
+
+        if (action === "list") {
+          const all = loadAllSkillIndex();
+          return JSON.stringify({
+            ok: true,
+            count: all.length,
+            skills: all.map((s) => ({ id: s.id, name: s.name, description: s.description })),
+          });
+        }
+
+        if (action === "view") {
+          if (!args.name) return JSON.stringify({ ok: false, error: "Skill name is required" });
+          const skill = getSkillByName(String(args.name).trim());
+          if (!skill) return JSON.stringify({ ok: false, error: `Skill "${args.name}" not found` });
+          return JSON.stringify({ ok: true, name: skill.name, description: skill.description, content: skill.body, path: skill.path });
+        }
+
+        if (action === "create") {
+          const rawName = String(args.name || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+          if (!rawName) return JSON.stringify({ ok: false, error: "Valid skill name is required" });
+          const existing = getSkillByName(rawName);
+          if (existing) return JSON.stringify({ ok: false, error: `Skill "${rawName}" already exists. Use action: "patch" to update it.` });
+
+          const targetDir = path.join(baseDir, rawName);
+          const targetFile = path.join(targetDir, "SKILL.md");
+          fs.mkdirSync(targetDir, { recursive: true });
+
+          const desc = String(args.description || rawName).trim();
+          const body = String(args.content || "").trim();
+          const fileContent = `---\nname: ${rawName}\ndescription: ${desc}\n---\n\n${body}\n`;
+
+          fs.writeFileSync(targetFile, fileContent, "utf8");
+          return JSON.stringify({ ok: true, name: rawName, path: targetFile, description: desc });
+        }
+
+        if (action === "patch") {
+          const rawName = String(args.name || "").trim();
+          if (!rawName) return JSON.stringify({ ok: false, error: "Skill name is required" });
+          const existing = getSkillByName(rawName);
+          if (!existing) return JSON.stringify({ ok: false, error: `Skill "${rawName}" not found to patch` });
+
+          const targetFile = existing.path;
+          const desc = String(args.description || existing.description || rawName).trim();
+          const body = String(args.content || existing.body).trim();
+          const fileContent = `---\nname: ${existing.name || rawName}\ndescription: ${desc}\n---\n\n${body}\n`;
+
+          fs.writeFileSync(targetFile, fileContent, "utf8");
+          return JSON.stringify({ ok: true, name: existing.name, path: targetFile, description: desc, updated: true });
+        }
+
+        return JSON.stringify({ ok: false, error: `Unsupported manage_skill action "${action}"` });
       }
       case "compact_session": {
         // DB-level compaction: delete old messages, keep N recent verbatim.
