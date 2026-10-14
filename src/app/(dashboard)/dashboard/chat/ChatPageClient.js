@@ -3195,7 +3195,7 @@ export default function ChatPageClient() {
             <Button variant="ghost" size="sm" icon="extension" onClick={() => { loadMcpServers(); setMcpModalOpen(true); }}>
               MCP
             </Button>
-            <Button variant={skillsModalOpen ? "secondary" : "ghost"} size="sm" icon="auto_awesome" onClick={() => setSkillsModalOpen(true)} title="Agent Skills Hub & Anti-Slop Standard">
+            <Button variant={skillsModalOpen ? "secondary" : "ghost"} size="sm" icon="auto_awesome" onClick={() => setSkillsModalOpen(true)} title="Agent Skills Hub">
               Skills
             </Button>
             {activeSessionCodebase ? (
@@ -3633,15 +3633,6 @@ export default function ChatPageClient() {
                 >
                   <span className="material-symbols-outlined text-[15px]">{autoApprove ? "task_alt" : "shield"}</span>
                   {autoApprove ? "Auto" : "Approve"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSkillsModalOpen(true)}
-                  className="hidden sm:inline-flex items-center gap-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 px-2 py-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15 transition cursor-pointer"
-                  title="Anti-Slop standard (https://github.com/miqdadbadjuber/anti-slop) is mandatory & active for all development & integration"
-                >
-                  <span className="material-symbols-outlined text-[14px]">verified</span>
-                  <span>Anti-Slop</span>
                 </button>
                 <div className="relative">
                   <button
