@@ -686,6 +686,11 @@ export default function ChatPageClient() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
+  const isSendingRef = useRef(false);
+  useEffect(() => {
+    isSendingRef.current = isSending;
+  }, [isSending]);
+  const sendMessageRef = useRef(null);
   const [runningSessionIds, setRunningSessionIds] = useState(() => new Set(getActiveRunSessions()));
   const [sessionQueues, setSessionQueues] = useState({});
   const sessionQueuesRef = useRef({});
@@ -1314,14 +1319,29 @@ export default function ChatPageClient() {
         if (!res.ok) return;
         const data = await res.json().catch(() => null);
         if (alive && Array.isArray(data?.activeSessions)) {
-          setRunningSessionIds((prev) => {
-            const clientActive = getActiveRunSessions();
-            const merged = new Set([...clientActive, ...data.activeSessions]);
-            if (merged.size !== prev.size || [...merged].some((id) => !prev.has(id))) {
-              return merged;
-            }
-            return prev;
-          });
+          const clientActive = getActiveRunSessions();
+          const serverActive = data.activeSessions;
+          const merged = new Set([...clientActive, ...serverActive]);
+          setRunningSessionIds(merged);
+
+          // Zombie run safeguard: if UI thinks activeSession is running, but neither server nor client runtime has it active
+          const curSid = activeSessionIdRef.current;
+          if (curSid && isSendingRef.current && !serverActive.includes(curSid) && !clientActive.includes(curSid)) {
+            fetch(`/api/chat/runs/${curSid}?bySession=1`)
+              .then((r) => r.json())
+              .then((d) => {
+                if (!d.active) {
+                  setIsSending(false);
+                  setAgentStatus("");
+                  clearChatRun(curSid);
+                  loadSessionDetail(curSid).catch(() => {});
+                  setTimeout(() => {
+                    processNextQueuedMessage(curSid);
+                  }, 300);
+                }
+              })
+              .catch(() => {});
+          }
         }
       } catch {
         // ignore
@@ -2048,6 +2068,18 @@ export default function ChatPageClient() {
             }
             if (runData && !runData.live) {
               pollTimerRef.current.delete(runId);
+              const hasDone = (runData.events || []).some((e) => e.type === "done" || e.type === "error");
+              if (!hasDone) {
+                live.applyEvent({
+                  seq: 9999999,
+                  type: runData.status === "failed" ? "error" : "done",
+                  data: {
+                    messages: runData.messages || runData.result?.messages,
+                    finalText: runData.result?.finalText || runData.assistantText || "",
+                    title: runData.result?.title,
+                  },
+                });
+              }
               return;
             }
           }
@@ -2084,8 +2116,24 @@ export default function ChatPageClient() {
         } catch {
           return;
         }
-        if (payload.type === "snapshot" && payload.run?.events) {
-          for (const event of payload.run.events) live?.applyEvent(event);
+        if (payload.type === "snapshot" && payload.run) {
+          if (payload.run.events) {
+            for (const event of payload.run.events) live?.applyEvent(event);
+          }
+          if (!payload.run.live || payload.run.status === "completed" || payload.run.status === "failed" || payload.run.status === "stopped") {
+            const hasDoneEvent = (payload.run.events || []).some((e) => e.type === "done" || e.type === "error");
+            if (!hasDoneEvent) {
+              live?.applyEvent({
+                seq: 9999999,
+                type: payload.run.status === "failed" ? "error" : "done",
+                data: {
+                  messages: payload.run.messages || payload.run.result?.messages,
+                  finalText: payload.run.result?.finalText || payload.run.assistantText || "",
+                  title: payload.run.result?.title,
+                },
+              });
+            }
+          }
           return;
         }
         const event = payload.type === "event" ? payload.event : null;
@@ -2211,6 +2259,9 @@ export default function ChatPageClient() {
     });
     setApprovals([]);
     setAsks([]);
+    setTimeout(() => {
+      processNextQueuedMessage(sessionId);
+    }, 300);
 
     return finalMessages;
   };
@@ -2230,6 +2281,41 @@ export default function ChatPageClient() {
       return { ...prev, [activeSessionId]: [] };
     });
   };
+
+  const processNextQueuedMessage = useCallback((sid) => {
+    const targetId = sid || activeSessionIdRef.current;
+    if (!targetId) return;
+    const curQueue = sessionQueuesRef.current[targetId] || [];
+    if (curQueue.length === 0) return;
+    if (isSendingRef.current || getChatRun(targetId)?.isSending) {
+      return;
+    }
+    const nextItem = curQueue[0];
+    const remaining = curQueue.slice(1);
+    setSessionQueues((prev) => {
+      const updated = { ...prev, [targetId]: remaining };
+      sessionQueuesRef.current = updated;
+      persistSessionQueue(targetId, remaining);
+      return updated;
+    });
+    if (nextItem && (nextItem.text || nextItem.attachments?.length)) {
+      setTimeout(() => {
+        sendMessageRef.current?.({ queuedItem: nextItem });
+      }, 120);
+    }
+  }, [persistSessionQueue]);
+
+  const runQueuedItemImmediately = useCallback((item) => {
+    if (!item) return;
+    const sid = item.sessionId || activeSessionIdRef.current;
+    setSessionQueues((prev) => {
+      const cur = prev[sid] || [];
+      const updated = cur.filter((x) => x.id !== item.id);
+      persistSessionQueue(sid, updated);
+      return { ...prev, [sid]: updated };
+    });
+    sendMessageRef.current?.({ queuedItem: item });
+  }, [persistSessionQueue]);
 
   const sendMessage = async ({ regenerate = false, sourceMessages = null, queuedItem = null } = {}) => {
     if (!activeSession?.model) {
@@ -2468,8 +2554,12 @@ export default function ChatPageClient() {
         setAgentStatus("");
         if (isError) setError(data.message || "Chat failed");
       });
+      setTimeout(() => {
+        processNextQueuedMessage(sessionId);
+      }, 300);
     };
 
+    sendMessageRef.current = sendMessage;
     try {
       applyUiIfActive(sessionId, () => setAgentStatus(`${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} starting…`));
       const response = await fetch("/api/chat/runs", {
@@ -2704,29 +2794,20 @@ export default function ChatPageClient() {
   };
 
   useEffect(() => {
-    if (!isSending && activeSession?.model && apiKey && activeSessionId) {
-      const q = sessionQueuesRef.current[activeSessionId] || [];
-      if (q.length > 0) {
-        const timer = setTimeout(() => {
-          if (!getChatRun(activeSessionId)?.isSending) {
-            let nextItem = null;
-            setSessionQueues((prev) => {
-              const cur = prev[activeSessionId] || [];
-              if (cur.length === 0) return prev;
-              nextItem = cur[0];
-              const next = cur.slice(1);
-              persistSessionQueue(activeSessionId, next);
-              return { ...prev, [activeSessionId]: next };
-            });
-            if (nextItem && (nextItem.text || nextItem.attachments?.length)) {
-              sendMessage({ queuedItem: nextItem });
-            }
-          }
-        }, 300);
-        return () => clearTimeout(timer);
-      }
+    sendMessageRef.current = sendMessage;
+  }, [sendMessage]);
+
+  useEffect(() => {
+    const queue = sessionQueues[activeSessionId] || [];
+    if (!isSending && queue.length > 0 && activeSession?.model && apiKey && activeSessionId) {
+      const timer = setTimeout(() => {
+        if (!isSendingRef.current && !getChatRun(activeSessionId)?.isSending) {
+          processNextQueuedMessage(activeSessionId);
+        }
+      }, 350);
+      return () => clearTimeout(timer);
     }
-  }, [isSending, sessionQueues, activeSessionId, activeSession?.model, apiKey, persistSessionQueue]);
+  }, [isSending, sessionQueues, activeSessionId, activeSession?.model, apiKey, processNextQueuedMessage]);
 
   const handleKeyDown = (event) => {
     if (commandOptions.length > 0) {
@@ -3551,20 +3632,31 @@ export default function ChatPageClient() {
                 {activeQueue.map((item, qIdx) => (
                   <div
                     key={item.id}
-                    className="flex items-center justify-between gap-2 rounded-lg bg-surface/90 px-2 py-1 border border-border text-[11px]"
+                    className="flex items-center justify-between gap-2 rounded-lg bg-surface/90 px-2.5 py-1.5 border border-border text-[11px]"
                   >
                     <span className="truncate flex-1 text-text-main font-mono">
                       <span className="text-primary mr-1.5 font-semibold">#{qIdx + 1}</span>
                       {item.text || "(attachments only)"}
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => removeFromQueue(item.id)}
-                      className="text-text-muted hover:text-red-400 transition-colors p-0.5 rounded"
-                      title="Remove from queue"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">close</span>
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => runQueuedItemImmediately(item)}
+                        className="flex items-center gap-1 rounded bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/25 transition-colors"
+                        title="Send this message now"
+                      >
+                        <span className="material-symbols-outlined text-[13px]">play_arrow</span>
+                        <span>Send now</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeFromQueue(item.id)}
+                        className="text-text-muted hover:text-red-400 transition-colors p-0.5 rounded"
+                        title="Remove from queue"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">close</span>
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
