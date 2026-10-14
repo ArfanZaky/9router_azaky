@@ -53,11 +53,14 @@ function extractTextFromChoices(data) {
       .trim();
     if (combined) return combined;
   }
-  if (typeof msg.reasoning_content === "string" && msg.reasoning_content.trim()) {
-    return msg.reasoning_content;
-  }
-  if (typeof msg.reasoning === "string" && msg.reasoning.trim()) {
-    return msg.reasoning;
+  const rawReasoning = (typeof msg.reasoning_content === "string" && msg.reasoning_content.trim())
+    || (typeof msg.reasoning === "string" && msg.reasoning.trim())
+    || "";
+  if (rawReasoning) {
+    const lines = rawReasoning.split("\n").map((l) => l.trim()).filter(Boolean);
+    const candidate = lines.find((l) => /^(?:feat|fix|chore|refactor|docs|test|perf|style)(?:\([^)]+\))?:/i.test(l));
+    if (candidate) return candidate;
+    return rawReasoning;
   }
   return "";
 }
@@ -198,7 +201,7 @@ Rules:
           { role: "user", content: userContent },
         ],
         temperature: 0.2,
-        max_tokens: 300,
+        max_tokens: 800,
       };
 
       const headers = {
@@ -228,6 +231,10 @@ Rules:
         generatedMessage = generatedMessage.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
       }
       generatedMessage = generatedMessage.replace(/^["']|["']$/g, "").trim();
+
+      if (!generatedMessage) {
+        throw new Error("AI returned an empty commit message. Please try again or type message manually.");
+      }
 
       return NextResponse.json({
         ok: true,

@@ -290,6 +290,8 @@ function GitSourceControlComponent({
         setCommitMessage(data.message);
         commitInputRef.current?.focus();
         setNotice({ type: "success", text: "Generated commit message with AI" });
+      } else {
+        setNotice({ type: "error", text: "AI returned an empty commit message. Please try again or type message manually." });
       }
     } catch (err) {
       setNotice({ type: "error", text: err.message || "Failed to generate commit message" });

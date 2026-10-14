@@ -137,6 +137,7 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
   let usage = null;
 
   for (const chunk of chunks) {
+    // 1. OpenAI-format chunk (choices[0].delta)
     const choice = chunk?.choices?.[0];
     const delta = choice?.delta || {};
     if (typeof delta.content === "string" && delta.content.length > 0) contentParts.push(delta.content);
@@ -144,7 +145,75 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
     if (choice?.finish_reason) finishReason = choice.finish_reason;
     if (chunk?.usage && typeof chunk.usage === "object") usage = chunk.usage;
 
-    // Accumulate tool_calls from streaming deltas
+    // 2. Gemini / Antigravity format chunk (response.candidates[0].content.parts or candidates[0].content.parts)
+    const geminiResp = chunk?.response || chunk;
+    const candidate = geminiResp?.candidates?.[0];
+    if (candidate?.content?.parts) {
+      for (const part of candidate.content.parts) {
+        if (part.thought === true && typeof part.text === "string" && part.text) {
+          reasoningParts.push(part.text);
+        } else if (typeof part.text === "string" && part.text) {
+          contentParts.push(part.text);
+        }
+        if (part.functionCall) {
+          const idx = toolCallMap.size;
+          toolCallMap.set(idx, {
+            id: part.functionCall.id || `call_${part.functionCall.name}_${Date.now()}_${idx}`,
+            type: "function",
+            function: {
+              name: part.functionCall.name,
+              arguments: typeof part.functionCall.args === "string" ? part.functionCall.args : JSON.stringify(part.functionCall.args || {}),
+            },
+          });
+        }
+      }
+    }
+    if (candidate?.finishReason) {
+      finishReason = candidate.finishReason.toLowerCase();
+    }
+    if (geminiResp?.usageMetadata && !usage) {
+      const u = geminiResp.usageMetadata;
+      usage = {
+        prompt_tokens: (u.promptTokenCount || 0) + (u.thoughtsTokenCount || 0),
+        completion_tokens: u.candidatesTokenCount || 0,
+        total_tokens: u.totalTokenCount || 0,
+      };
+    }
+
+    // 3. Claude format chunk (content_block_delta, message_delta)
+    if (chunk?.type === "content_block_delta") {
+      if (chunk.delta?.type === "text_delta" && typeof chunk.delta.text === "string") {
+        contentParts.push(chunk.delta.text);
+      } else if (chunk.delta?.type === "thinking_delta" && typeof chunk.delta.thinking === "string") {
+        reasoningParts.push(chunk.delta.thinking);
+      } else if (chunk.delta?.type === "input_json_delta" && typeof chunk.delta.partial_json === "string") {
+        const idx = chunk.index ?? 0;
+        if (!toolCallMap.has(idx)) {
+          toolCallMap.set(idx, { id: "", type: "function", function: { name: "", arguments: "" } });
+        }
+        toolCallMap.get(idx).function.arguments += chunk.delta.partial_json;
+      }
+    }
+    if (chunk?.type === "content_block_start" && chunk.content_block?.type === "tool_use") {
+      const idx = chunk.index ?? 0;
+      toolCallMap.set(idx, {
+        id: chunk.content_block.id || "",
+        type: "function",
+        function: { name: chunk.content_block.name || "", arguments: "" },
+      });
+    }
+    if (chunk?.type === "message_delta" && chunk.delta?.stop_reason) {
+      finishReason = chunk.delta.stop_reason;
+      if (chunk.usage) {
+        usage = {
+          prompt_tokens: usage?.prompt_tokens || 0,
+          completion_tokens: chunk.usage.output_tokens || 0,
+          total_tokens: (usage?.prompt_tokens || 0) + (chunk.usage.output_tokens || 0),
+        };
+      }
+    }
+
+    // Accumulate tool_calls from OpenAI streaming deltas
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
         const idx = tc.index ?? 0;
