@@ -1,2 +1,3 @@
 - Terse concise communication preferred; avoid conversational filler.
 - Preserve dominant language of user.
+- Communicate in Indonesian.

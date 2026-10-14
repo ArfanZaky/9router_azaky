@@ -1,3 +1,5 @@
 - 9Router custom project runs Next.js App Router on Node v22.
 - Anti-slop standard strictly enforced for all UI and code generation.
 - Self-preservation: Never execute sync pm2 restart in tool calls; use scripts/safe-reload.mjs.
+- Memory in `src/lib/agent/memory.js`: `MEMORY.md` limit 2200 chars, `USER.md` limit 1375 chars. Tools: `manage_memory`, `manage_skill` in `src/lib/agent/tools.js`.
+- Redmine integration route at `/dashboard/redmine`; user Redmine ID 135 username `azaky`.
