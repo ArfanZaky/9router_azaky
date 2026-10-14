@@ -88,6 +88,35 @@ const server = http.createServer((request, response) => {
       return serveWorkspaceFile(request, response, requestedPath);
     }
   }
+  if (url.pathname.startsWith("/_next/static/css/")) {
+    const cssFile = path.basename(url.pathname);
+    const cssTarget = path.resolve(projectRoot, ".next", "static", "css", cssFile);
+    if (!fs.existsSync(cssTarget)) {
+      try {
+        const cssDir = path.resolve(projectRoot, ".next", "static", "css");
+        if (fs.existsSync(cssDir)) {
+          const files = fs.readdirSync(cssDir).filter(f => f.endsWith(".css"));
+          if (files.length > 0) {
+            files.sort((a, b) => {
+              const sa = fs.statSync(path.join(cssDir, a));
+              const sb = fs.statSync(path.join(cssDir, b));
+              return sb.size - sa.size;
+            });
+            const fallbackFile = path.join(cssDir, files[0]);
+            const stat = fs.statSync(fallbackFile);
+            response.writeHead(200, {
+              "Content-Type": "text/css; charset=UTF-8",
+              "Content-Length": stat.size,
+              "Cache-Control": "no-cache, must-revalidate",
+              "X-Asset-Fallback": "true",
+            });
+            fs.createReadStream(fallbackFile).pipe(response);
+            return;
+          }
+        }
+      } catch {}
+    }
+  }
   return handle(request, response);
 });
 const wss = new WebSocketServer({ noServer: true });
