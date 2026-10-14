@@ -916,6 +916,16 @@ export async function startServerChatRun(input) {
   const id = randomUUID();
   const session = await getChatSession(input.sessionId, { includeMessages: false });
   if (!session) throw new Error("Session not found");
+
+  // Clean up and abort any lingering runs for the same session to avoid race conditions
+  for (const [existingId, existing] of liveRuns.entries()) {
+    if (existing.sessionId === input.sessionId && !existing.abortController?.signal?.aborted) {
+      settleGates(existing);
+      existing.abortController?.abort();
+      existing.status = "stopped";
+      liveRuns.delete(existingId);
+    }
+  }
   let workspace = process.cwd();
   if (session.workspacePath) {
     try {
@@ -1013,8 +1023,9 @@ export async function getServerChatRun(id, after = 0) {
   const live = liveRuns.get(id);
   const record = await getChatRunRecord(id);
   if (!record) return null;
+  const isLive = !!live && live.status !== "completed" && live.status !== "stopped" && live.status !== "failed" && !live.abortController?.signal?.aborted;
   const events = live ? live.events.filter((event) => event.seq > Number(after || 0)) : await listChatRunEvents(id, { after });
-  return { ...record, events, live: !!live, lastSeq: live?.seq || events.at(-1)?.seq || 0 };
+  return { ...record, status: live?.status || record.status, events, live: isLive, lastSeq: live?.seq || events.at(-1)?.seq || 0 };
 }
 
 export function getLiveRunForSession(sessionId) {

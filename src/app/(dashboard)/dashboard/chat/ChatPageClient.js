@@ -697,7 +697,43 @@ export default function ChatPageClient() {
   useEffect(() => {
     sessionQueuesRef.current = sessionQueues;
   }, [sessionQueues]);
-  const [error, setError] = useState("");
+  const [appNotice, setAppNotice] = useState(null); // { text: string, type: 'error' | 'warning' | 'info' | 'success' }
+  const noticeTimerRef = useRef(null);
+
+  const setNotice = useCallback((text, type = "error") => {
+    if (noticeTimerRef.current) {
+      clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = null;
+    }
+    if (!text) {
+      setAppNotice(null);
+      return;
+    }
+    const str = String(text);
+    let detectedType = type;
+    if (type === "error") {
+      const lower = str.toLowerCase();
+      if (lower.includes("queued") || lower.includes("will send automatically") || lower.includes("waiting in queue")) {
+        detectedType = "info";
+      } else if (lower.includes("auto-approve") || lower.includes("codebase set") || lower.includes("codebase cleared") || lower.includes("saved") || lower.includes("copied")) {
+        detectedType = "success";
+      } else if (lower.includes("already running") || lower.includes("select a model") || lower.includes("no api key") || lower.includes("required") || lower.includes("stop it first")) {
+        detectedType = "warning";
+      }
+    }
+    setAppNotice({ text: str, type: detectedType });
+    if (detectedType !== "error") {
+      noticeTimerRef.current = setTimeout(() => {
+        setAppNotice(null);
+      }, detectedType === "success" ? 4000 : 6000);
+    }
+  }, []);
+
+  const setError = useCallback((val) => {
+    setNotice(val, "error");
+  }, [setNotice]);
+
+  const error = appNotice?.type === "error" ? appNotice.text : "";
   const [renameId, setRenameId] = useState("");
   const [renameValue, setRenameValue] = useState("");
   const [agentRole, setAgentRole] = useState(() => {
@@ -1324,13 +1360,14 @@ export default function ChatPageClient() {
           const merged = new Set([...clientActive, ...serverActive]);
           setRunningSessionIds(merged);
 
-          // Zombie run safeguard: if UI thinks activeSession is running, but neither server nor client runtime has it active
+          // Zombie run safeguard: if UI thinks activeSession is running, but server does not have it active
           const curSid = activeSessionIdRef.current;
-          if (curSid && isSendingRef.current && !serverActive.includes(curSid) && !clientActive.includes(curSid)) {
+          if (curSid && isSendingRef.current && !serverActive.includes(curSid)) {
             fetch(`/api/chat/runs/${curSid}?bySession=1`)
               .then((r) => r.json())
               .then((d) => {
                 if (!d.active) {
+                  isSendingRef.current = false;
                   setIsSending(false);
                   setAgentStatus("");
                   clearChatRun(curSid);
@@ -1590,7 +1627,7 @@ export default function ChatPageClient() {
                 setAgentStatus("Waiting for your answer…");
               }
             } else if (event.type === "subagent_start") {
-              const subStart = { ...eventData, sessionId, status: "running" };
+              const subStart = { ...data, sessionId, status: "running" };
               setSubAgents((prev) => [...prev.filter((item) => item.id !== eventData.id), subStart]);
               if (activeSessionIdRef.current === sessionId) {
                 setTeamRoster((prev) => prev.map((m) => m.name === eventData.role ? { ...m, status: "running" } : m));
@@ -2066,7 +2103,8 @@ export default function ChatPageClient() {
                 live.applyEvent(ev);
               }
             }
-            if (runData && !runData.live) {
+            const isEnded = !runData?.live || runData?.status === "completed" || runData?.status === "stopped" || runData?.status === "failed";
+            if (runData && isEnded) {
               pollTimerRef.current.delete(runId);
               const hasDone = (runData.events || []).some((e) => e.type === "done" || e.type === "error");
               if (!hasDone) {
@@ -2241,6 +2279,11 @@ export default function ChatPageClient() {
       error: errorText || "",
     });
     clearChatRun(sessionId);
+    if (sessionId === activeSessionIdRef.current) {
+      isSendingRef.current = false;
+      setIsSending(false);
+      setAgentStatus("");
+    }
     setRunningSessionIds((prev) => { const n = new Set(prev); n.delete(sessionId); return n; });
 
     if (mountedRef.current) {
@@ -2300,25 +2343,59 @@ export default function ChatPageClient() {
     });
     if (nextItem && (nextItem.text || nextItem.attachments?.length)) {
       setTimeout(() => {
-        sendMessageRef.current?.({ queuedItem: nextItem });
+        sendMessageRef.current?.({ queuedItem: nextItem, force: true });
       }, 120);
     }
   }, [persistSessionQueue]);
 
-  const runQueuedItemImmediately = useCallback((item) => {
+  const runQueuedItemImmediately = useCallback(async (item) => {
     if (!item) return;
     const sid = item.sessionId || activeSessionIdRef.current;
+    if (!sid) return;
+
+    if (sid !== activeSessionIdRef.current) {
+      handleSelectSession(sid);
+    }
+
+    // 1. Capture existing run info BEFORE clearing it
+    const existingRun = getChatRun(sid);
+    const existingRunId = existingRun?.runId;
+
+    // 2. Abort and stop transport for the old run
+    if (existingRunId) {
+      stopRunTransport(existingRunId);
+      fetch(`/api/chat/runs/${existingRunId}`, { method: "DELETE" }).catch(() => {});
+    }
+    abortChatRun(sid);
+    abortRef.current?.abort();
+    clearChatRun(sid);
+
+    if (sid === activeSessionIdRef.current) {
+      isSendingRef.current = false;
+      setIsSending(false);
+      setAgentStatus("");
+    }
+
+    // 3. Remove from queue state and persist immediately
     setSessionQueues((prev) => {
       const cur = prev[sid] || [];
       const updated = cur.filter((x) => x.id !== item.id);
+      sessionQueuesRef.current = { ...sessionQueuesRef.current, [sid]: updated };
       persistSessionQueue(sid, updated);
       return { ...prev, [sid]: updated };
     });
-    sendMessageRef.current?.({ queuedItem: item });
-  }, [persistSessionQueue]);
 
-  const sendMessage = async ({ regenerate = false, sourceMessages = null, queuedItem = null } = {}) => {
-    if (!activeSession?.model) {
+    // 4. Immediately trigger execution with force
+    setTimeout(() => {
+      sendMessageRef.current?.({ queuedItem: item, force: true });
+    }, 40);
+  }, [persistSessionQueue, handleSelectSession]);
+
+  const sendMessage = async ({ regenerate = false, sourceMessages = null, queuedItem = null, force = false } = {}) => {
+    const sessionId = queuedItem?.sessionId || activeSessionIdRef.current;
+    const targetSession = sessions.find((s) => s.id === sessionId) || activeSession;
+    const modelToUse = targetSession?.model || activeSession?.model;
+    if (!modelToUse) {
       setError("Select a model first.");
       return;
     }
@@ -2326,9 +2403,8 @@ export default function ChatPageClient() {
       setError("No API key. Create one in Endpoint & Key.");
       return;
     }
-    const sessionId = queuedItem?.sessionId || activeSessionId;
-    const targetSession = sessions.find((s) => s.id === sessionId) || activeSession;
-    if (getChatRun(sessionId)?.isSending) {
+
+    if (!force && getChatRun(sessionId)?.isSending) {
       if (!regenerate && !queuedItem && (draft.trim() || attachments.length > 0)) {
         const item = {
           id: createId(),
@@ -2340,6 +2416,7 @@ export default function ChatPageClient() {
         setSessionQueues((prev) => {
           const cur = prev[sessionId] || [];
           const next = [...cur, item];
+          sessionQueuesRef.current = { ...sessionQueuesRef.current, [sessionId]: next };
           persistSessionQueue(sessionId, next);
           return { ...prev, [sessionId]: next };
         });
@@ -2351,7 +2428,8 @@ export default function ChatPageClient() {
       if (queuedItem) {
         setSessionQueues((prev) => {
           const cur = prev[sessionId] || [];
-          const next = [queuedItem, ...cur];
+          const next = cur.some((x) => x.id === queuedItem.id) ? cur : [queuedItem, ...cur];
+          sessionQueuesRef.current = { ...sessionQueuesRef.current, [sessionId]: next };
           persistSessionQueue(sessionId, next);
           return { ...prev, [sessionId]: next };
         });
@@ -2361,13 +2439,26 @@ export default function ChatPageClient() {
       return;
     }
 
+    if (force) {
+      abortRef.current?.abort();
+      clearChatRun(sessionId);
+      if (sessionId === activeSessionIdRef.current) {
+        isSendingRef.current = false;
+        setIsSending(false);
+      }
+    }
+
     const sessionMeta = {
       title: targetSession?.title || "Chat",
       model: targetSession?.model || activeSession?.model,
       providerId: targetSession?.providerId || activeSession?.providerId,
     };
 
-    let workingMessages = [...(sourceMessages || messagesRef.current || messages)];
+    let workingMessages = [...(sourceMessages || messagesRef.current || messages)].map((m) =>
+      m.role === "assistant" && m.status === "streaming"
+        ? { ...m, status: "done", content: m.content || "(interrupted)" }
+        : m
+    );
     if (regenerate) {
       const lastUserIdx = [...workingMessages].map((m) => m.role).lastIndexOf("user");
       if (lastUserIdx < 0) return;
@@ -2536,6 +2627,11 @@ export default function ChatPageClient() {
         error: isError ? data.message || "Chat failed" : "",
       });
       clearChatRun(sessionId);
+      if (sessionId === activeSessionIdRef.current) {
+        isSendingRef.current = false;
+        setIsSending(false);
+        setAgentStatus("");
+      }
       if (currentRunId) liveRunRef.current.delete(currentRunId);
       setRunningSessionIds((prev) => { const n = new Set(prev); n.delete(sessionId); return n; });
       setApprovals([]);
@@ -2572,11 +2668,11 @@ export default function ChatPageClient() {
           assistantId,
           titleSeed,
           persistedMessages: workingMessages,
-          model: activeSession.model,
+          model: modelToUse,
           messages: requestMessages,
           systemPrompt: [
             AGENT_ROLES.find((role) => role.id === agentRole)?.prompt || "",
-            activeSession.systemPrompt || "",
+            targetSession?.systemPrompt || activeSession?.systemPrompt || "",
           ].filter(Boolean).join("\n\n"),
           apiKey,
           accessMode,
@@ -2752,7 +2848,7 @@ export default function ChatPageClient() {
               setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: "running" } : m));
             }
           } else if (event.type === "subagent_done") {
-            const subDone = { ...eventData, sessionId, status: data.error ? "failed" : "completed" };
+            const subDone = { ...data, sessionId, status: data.error ? "failed" : "completed" };
             setSubAgents((prev) => prev.map((item) => item.id === data.id ? { ...item, ...subDone } : item));
             if (activeSessionIdRef.current === sessionId) {
               setTeamRoster((prev) => prev.map((m) => m.name === data.role ? { ...m, status: data.error ? "failed" : "idle" } : m));
@@ -3444,12 +3540,45 @@ export default function ChatPageClient() {
           </div>
         ) : null}
 
-        {error ? (
-          <div className="mx-4 mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-300 flex items-start gap-2">
-            <span className="material-symbols-outlined text-[18px]">error</span>
-            <div className="flex-1">{error}</div>
-            <button type="button" className="text-xs underline" onClick={() => setError("")}>
-              dismiss
+        {appNotice ? (
+          <div
+            className={`mx-4 mt-3 rounded-xl border px-3 py-2 text-sm flex items-start gap-2.5 shadow-sm transition-all ${
+              appNotice.type === "info"
+                ? "border-sky-500/30 bg-sky-500/10 text-sky-800 dark:text-sky-200"
+                : appNotice.type === "success"
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200"
+                : appNotice.type === "warning"
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200"
+                : "border-rose-500/30 bg-rose-500/10 text-rose-800 dark:text-rose-200"
+            }`}
+          >
+            <span
+              className={`material-symbols-outlined text-[18px] shrink-0 mt-0.5 ${
+                appNotice.type === "info"
+                  ? "text-sky-600 dark:text-sky-400"
+                  : appNotice.type === "success"
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : appNotice.type === "warning"
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-rose-600 dark:text-rose-400"
+              }`}
+            >
+              {appNotice.type === "info"
+                ? "schedule"
+                : appNotice.type === "success"
+                ? "check_circle"
+                : appNotice.type === "warning"
+                ? "warning"
+                : "error"}
+            </span>
+            <div className="flex-1 font-medium text-xs sm:text-sm leading-relaxed">{appNotice.text}</div>
+            <button
+              type="button"
+              className="text-xs opacity-70 hover:opacity-100 transition-opacity p-0.5 rounded cursor-pointer"
+              onClick={() => setAppNotice(null)}
+              title="Dismiss"
+            >
+              <span className="material-symbols-outlined text-[16px]">close</span>
             </button>
           </div>
         ) : null}
@@ -3614,10 +3743,10 @@ export default function ChatPageClient() {
             <AskWizard key={ask.id} ask={ask} onAnswer={(answer) => resolveGate(ask, answer)} />
           ))}
           {activeQueue.length > 0 && (
-            <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+            <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-xs backdrop-blur-sm">
               <div className="flex items-center justify-between font-medium text-primary">
-                <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[16px]">queue</span>
+                <span className="flex items-center gap-1.5 text-sky-600 dark:text-sky-400 font-medium">
+                  <span className="material-symbols-outlined text-[16px]">schedule</span>
                   Queued Messages ({activeQueue.length})
                 </span>
                 <button
@@ -3632,17 +3761,17 @@ export default function ChatPageClient() {
                 {activeQueue.map((item, qIdx) => (
                   <div
                     key={item.id}
-                    className="flex items-center justify-between gap-2 rounded-lg bg-surface/90 px-2.5 py-1.5 border border-border text-[11px]"
+                    className="flex items-center justify-between gap-2 rounded-lg bg-surface/90 px-2.5 py-1.5 border border-sky-500/15 text-[11px]"
                   >
                     <span className="truncate flex-1 text-text-main font-mono">
-                      <span className="text-primary mr-1.5 font-semibold">#{qIdx + 1}</span>
+                      <span className="text-sky-500 mr-1.5 font-semibold">#{qIdx + 1}</span>
                       {item.text || "(attachments only)"}
                     </span>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         type="button"
                         onClick={() => runQueuedItemImmediately(item)}
-                        className="flex items-center gap-1 rounded bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/25 transition-colors"
+                        className="flex items-center gap-1 rounded bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-300 hover:bg-sky-500/25 transition-colors"
                         title="Send this message now"
                       >
                         <span className="material-symbols-outlined text-[13px]">play_arrow</span>
