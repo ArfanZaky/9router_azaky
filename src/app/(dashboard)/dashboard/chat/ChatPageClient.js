@@ -692,6 +692,11 @@ export default function ChatPageClient() {
   }, [isSending]);
   const sendMessageRef = useRef(null);
   const [runningSessionIds, setRunningSessionIds] = useState(() => new Set(getActiveRunSessions()));
+  const runningSessionIdsRef = useRef(new Set(getActiveRunSessions()));
+  useEffect(() => {
+    runningSessionIdsRef.current = runningSessionIds;
+  }, [runningSessionIds]);
+  const processingQueuesRef = useRef(new Set());
   const [sessionQueues, setSessionQueues] = useState({});
   const sessionQueuesRef = useRef({});
   useEffect(() => {
@@ -1035,6 +1040,16 @@ export default function ChatPageClient() {
     if (!res.ok) throw new Error(data.error || "Failed to load sessions");
     const list = data.sessions || [];
     setSessions(list);
+    const initialQueues = {};
+    for (const s of list) {
+      const q = Array.isArray(s.projectMeta?.queuedMessages) ? s.projectMeta.queuedMessages : [];
+      if (q.length > 0) {
+        initialQueues[s.id] = q;
+      }
+    }
+    if (Object.keys(initialQueues).length > 0) {
+      setSessionQueues((prev) => ({ ...initialQueues, ...prev }));
+    }
     const storedId = (() => {
       try {
         return globalThis.localStorage?.getItem("chat.activeSessionId") || "";
@@ -1259,6 +1274,9 @@ export default function ChatPageClient() {
                 setAgentStatus("");
                 if (event.type === "error") setError(data.message || "Chat failed");
               }
+              setTimeout(() => {
+                processNextQueuedMessage(existingSessionId);
+              }, 300);
             }
           },
         };
@@ -1359,6 +1377,22 @@ export default function ChatPageClient() {
           const serverActive = data.activeSessions;
           const merged = new Set([...clientActive, ...serverActive]);
           setRunningSessionIds(merged);
+          runningSessionIdsRef.current = merged;
+
+          // Multi-session background queue processor:
+          // Check all sessions with queued messages regardless of focus/active tab
+          const allQueueSids = Object.keys(sessionQueuesRef.current || {});
+          for (const sid of allQueueSids) {
+            const q = sessionQueuesRef.current[sid] || [];
+            if (
+              q.length > 0 &&
+              !merged.has(sid) &&
+              !isRunActiveFor(sid) &&
+              !processingQueuesRef.current?.has(sid)
+            ) {
+              processNextQueuedMessage(sid);
+            }
+          }
 
           // Zombie run safeguard: if UI thinks activeSession is running, but server does not have it active
           const curSid = activeSessionIdRef.current;
@@ -1687,6 +1721,9 @@ export default function ChatPageClient() {
                 setAgentStatus("");
                 if (event.type === "error") setError(eventData.message || "Chat failed");
               }
+              setTimeout(() => {
+                processNextQueuedMessage(sessionId);
+              }, 300);
             }
           },
         };
@@ -2328,11 +2365,21 @@ export default function ChatPageClient() {
   const processNextQueuedMessage = useCallback((sid) => {
     const targetId = sid || activeSessionIdRef.current;
     if (!targetId) return;
+    if (processingQueuesRef.current.has(targetId)) return;
+
     const curQueue = sessionQueuesRef.current[targetId] || [];
     if (curQueue.length === 0) return;
-    if (isSendingRef.current || getChatRun(targetId)?.isSending) {
+
+    // Check if THIS specific session is active/sending
+    if (
+      isRunActiveFor(targetId) ||
+      getChatRun(targetId)?.isSending ||
+      runningSessionIdsRef.current.has(targetId)
+    ) {
       return;
     }
+
+    processingQueuesRef.current.add(targetId);
     const nextItem = curQueue[0];
     const remaining = curQueue.slice(1);
     setSessionQueues((prev) => {
@@ -2341,10 +2388,19 @@ export default function ChatPageClient() {
       persistSessionQueue(targetId, remaining);
       return updated;
     });
+
     if (nextItem && (nextItem.text || nextItem.attachments?.length)) {
       setTimeout(() => {
-        sendMessageRef.current?.({ queuedItem: nextItem, force: true });
+        try {
+          sendMessageRef.current?.({ queuedItem: nextItem, force: true });
+        } finally {
+          setTimeout(() => {
+            processingQueuesRef.current.delete(targetId);
+          }, 600);
+        }
       }, 120);
+    } else {
+      processingQueuesRef.current.delete(targetId);
     }
   }, [persistSessionQueue]);
 
@@ -2448,13 +2504,34 @@ export default function ChatPageClient() {
       }
     }
 
+    const isTargetActive = sessionId === activeSessionIdRef.current;
     const sessionMeta = {
       title: targetSession?.title || "Chat",
-      model: targetSession?.model || activeSession?.model,
+      model: modelToUse,
       providerId: targetSession?.providerId || activeSession?.providerId,
     };
 
-    let workingMessages = [...(sourceMessages || messagesRef.current || messages)].map((m) =>
+    let baseMessages = sourceMessages;
+    if (!baseMessages) {
+      if (isTargetActive) {
+        baseMessages = messagesRef.current || messages;
+      } else {
+        const runMsgs = getChatRun(sessionId)?.messages;
+        if (runMsgs && runMsgs.length > 0) {
+          baseMessages = runMsgs;
+        } else {
+          try {
+            const res = await fetch(`/api/chat/sessions/${sessionId}?limit=1000`);
+            const data = await res.json().catch(() => null);
+            baseMessages = data?.messages || [];
+          } catch {
+            baseMessages = [];
+          }
+        }
+      }
+    }
+
+    let workingMessages = [...(baseMessages || [])].map((m) =>
       m.role === "assistant" && m.status === "streaming"
         ? { ...m, status: "done", content: m.content || "(interrupted)" }
         : m
@@ -2488,7 +2565,7 @@ export default function ChatPageClient() {
         createdAt: new Date().toISOString(),
       };
       workingMessages = [...workingMessages, userMessage];
-      if (!queuedItem) {
+      if (isTargetActive && !queuedItem) {
         setDraft("");
         setAttachments([]);
       }
@@ -2516,32 +2593,46 @@ export default function ChatPageClient() {
       createdAt: new Date().toISOString(),
     };
     workingMessages = [...workingMessages, assistantMessage];
-    setMessages(workingMessages);
-    setIsSending(true);
-    setError("");
-    isAtBottomRef.current = true;
-    setShowScrollBottomBtn(false);
-    setTimeout(() => scrollToBottom(true), 30);
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
+    if (isTargetActive) {
+      setMessages(workingMessages);
+      setIsSending(true);
+      setError("");
+      isAtBottomRef.current = true;
+      setShowScrollBottomBtn(false);
+      setTimeout(() => scrollToBottom(true), 30);
+    }
+    const runAbortController = new AbortController();
+    if (isTargetActive) {
+      abortRef.current?.abort();
+      abortRef.current = runAbortController;
+    }
 
     const titleSeed = textValue(
-      workingMessages.find((m) => m.role === "user")?.content || activeSession.title
+      workingMessages.find((m) => m.role === "user")?.content || targetSession?.title || activeSession?.title
     );
 
+    const targetRole = targetSession?.projectMeta?.agentRole || (isTargetActive ? agentRole : "orchestrator");
+    const targetRoleObj = AGENT_ROLES.find((role) => role.id === targetRole) || AGENT_ROLES[0];
+    const targetWorkspace = targetSession?.workspacePath || targetSession?.codebase || (isTargetActive ? activeSessionCodebase : "");
+    const targetTeamRoster = targetSession?.teamState?.roster || (isTargetActive ? teamRoster : []);
+    const targetTeamTasks = targetSession?.teamState?.tasks || (isTargetActive ? teamTasks : []);
+    const targetTeamMessages = targetSession?.teamState?.messages || (isTargetActive ? teamMessages : []);
+
     setRunningSessionIds((prev) => new Set([...prev, sessionId]));
+    runningSessionIdsRef.current.add(sessionId);
+
     startChatRun({
       sessionId,
-      abortController: abortRef.current,
+      abortController: runAbortController,
       messages: workingMessages,
       assistantId,
       assistantText: "",
-      agentStatus: `${AGENT_ROLES.find((role) => role.id === agentRole)?.label || "Agent"} starting…`,
+      agentStatus: `${targetRoleObj.label} starting…`,
       titleSeed,
       sessionMeta,
-      teamRoster,
-      teamTasks,
-      teamMessages,
+      teamRoster: targetTeamRoster,
+      teamTasks: targetTeamTasks,
+      teamMessages: targetTeamMessages,
     });
 
     const requestMessages = [];
@@ -2634,6 +2725,7 @@ export default function ChatPageClient() {
       }
       if (currentRunId) liveRunRef.current.delete(currentRunId);
       setRunningSessionIds((prev) => { const n = new Set(prev); n.delete(sessionId); return n; });
+      runningSessionIdsRef.current.delete(sessionId);
       setApprovals([]);
       setAsks([]);
       stopRunTransport(currentRunId || undefined);
@@ -2671,20 +2763,20 @@ export default function ChatPageClient() {
           model: modelToUse,
           messages: requestMessages,
           systemPrompt: [
-            AGENT_ROLES.find((role) => role.id === agentRole)?.prompt || "",
+            targetRoleObj.prompt || "",
             targetSession?.systemPrompt || activeSession?.systemPrompt || "",
           ].filter(Boolean).join("\n\n"),
           apiKey,
           accessMode,
           verify: verifyMode,
-          codebase: activeSessionCodebase,
+          codebase: targetWorkspace,
           autoApprove,
-          teamTasks,
-          teamRoster,
+          teamTasks: targetTeamTasks,
+          teamRoster: targetTeamRoster,
           params: {
-            temperature: params.temperature,
-            max_tokens: params.max_tokens,
-            top_p: params.top_p,
+            temperature: targetSession?.params?.temperature ?? params.temperature,
+            max_tokens: targetSession?.params?.max_tokens ?? params.max_tokens,
+            top_p: targetSession?.params?.top_p ?? params.top_p,
             ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
           },
           maxSteps,
@@ -2694,7 +2786,7 @@ export default function ChatPageClient() {
       if (!response.ok || !started.id) {
         throw new Error(started.error || "Unable to start background chat");
       }
-      if (abortRef.current.signal.aborted) {
+      if (runAbortController.signal.aborted) {
         await fetch(`/api/chat/runs/${started.id}`, { method: "DELETE" }).catch(() => {});
         return;
       }
@@ -2897,7 +2989,7 @@ export default function ChatPageClient() {
     const queue = sessionQueues[activeSessionId] || [];
     if (!isSending && queue.length > 0 && activeSession?.model && apiKey && activeSessionId) {
       const timer = setTimeout(() => {
-        if (!isSendingRef.current && !getChatRun(activeSessionId)?.isSending) {
+        if (!isSendingRef.current && !getChatRun(activeSessionId)?.isSending && !runningSessionIdsRef.current.has(activeSessionId)) {
           processNextQueuedMessage(activeSessionId);
         }
       }, 350);
