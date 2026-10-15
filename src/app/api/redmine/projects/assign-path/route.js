@@ -10,20 +10,22 @@ export const dynamic = "force-dynamic";
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { projectId, path: targetPath } = body;
+    const { projectId, path: targetPath, autoWork } = body;
 
     if (!projectId) {
       return NextResponse.json({ error: "projectId is required" }, { status: 400 });
     }
 
-    const cleanPath = targetPath ? String(targetPath).trim() : "";
-    const updatedPaths = await assignRedmineProjectPath(projectId, cleanPath);
+    const updatedPaths = await assignRedmineProjectPath(projectId, targetPath, autoWork);
+    const assigned = updatedPaths[String(projectId)] || null;
+    const cleanPath = assigned?.path || null;
     const inspection = cleanPath ? inspectLocalPath(cleanPath) : null;
 
     return NextResponse.json({
       ok: true,
       projectId: String(projectId),
-      localPath: cleanPath || null,
+      localPath: cleanPath,
+      autoWork: assigned ? (assigned.autoWork !== undefined ? Boolean(assigned.autoWork) : true) : false,
       inspection,
       projectPaths: updatedPaths,
     });

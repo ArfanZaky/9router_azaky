@@ -67,18 +67,31 @@ export function inspectLocalPath(targetPath) {
   }
 }
 
-export async function assignRedmineProjectPath(projectId, localPath) {
+export async function assignRedmineProjectPath(projectId, localPath, autoWork = undefined) {
   const current = await getRedmineConfig();
   const projectPaths = { ...(current.projectPaths || {}) };
   const pid = String(projectId);
-  const cleanPath = localPath ? String(localPath).trim() : "";
-  if (!cleanPath) {
+  const existing = projectPaths[pid] || {};
+
+  const cleanPath = localPath !== undefined ? String(localPath || "").trim() : undefined;
+
+  if (cleanPath === "" && autoWork === undefined) {
     delete projectPaths[pid];
   } else {
-    projectPaths[pid] = {
-      path: cleanPath,
-      assignedAt: new Date().toISOString(),
-    };
+    const finalPath = cleanPath !== undefined ? cleanPath : (existing.path || "");
+    const finalAutoWork = autoWork !== undefined
+      ? Boolean(autoWork)
+      : (existing.autoWork !== undefined ? Boolean(existing.autoWork) : true);
+
+    if (!finalPath && autoWork === undefined) {
+      delete projectPaths[pid];
+    } else {
+      projectPaths[pid] = {
+        path: finalPath,
+        assignedAt: existing.assignedAt || new Date().toISOString(),
+        autoWork: finalAutoWork,
+      };
+    }
   }
   await saveRedmineConfig({ projectPaths });
   return projectPaths;
@@ -223,10 +236,12 @@ export async function getRedmineIssues({
     const pident = String(i.project?.identifier || "");
     const assigned = projectPaths[pid] || projectPaths[pident] || null;
     const localPath = assigned?.path || null;
+    const projectAutoWork = assigned ? (assigned.autoWork !== undefined ? Boolean(assigned.autoWork) : true) : false;
     const localTask = localTaskStatuses[String(i.id)] || null;
     return {
       ...i,
       localPath,
+      projectAutoWork,
       localStatus: localTask?.status || null,
       localSessionId: localTask?.sessionId || null,
       localSessionTitle: localTask?.sessionTitle || null,
@@ -311,11 +326,13 @@ export async function getRedmineProjects(customConfig = null, { all = true, sear
     const assigned = projectPaths[String(p.id)] || projectPaths[String(p.identifier)];
     const localPath = assigned?.path || null;
     const assignedAt = assigned?.assignedAt || null;
+    const autoWork = assigned ? (assigned.autoWork !== undefined ? Boolean(assigned.autoWork) : true) : false;
     const inspection = localPath ? inspectLocalPath(localPath) : null;
     return {
       ...p,
       localPath,
       assignedAt,
+      autoWork,
       pathExists: inspection?.exists ?? null,
       isGitRepo: inspection?.isGit ?? null,
     };

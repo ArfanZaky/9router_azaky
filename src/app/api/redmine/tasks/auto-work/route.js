@@ -33,9 +33,9 @@ export async function POST(req) {
       customConfig: config,
     });
 
-    // Eligible issues: has localPath assigned, no localStatus yet, and no session yet
+    // Eligible issues: has localPath assigned, projectAutoWork is TRUE, no localStatus yet, and no session yet
     const eligible = (issues || []).filter(
-      (i) => i.localPath && !i.localStatus && !i.localSessionId
+      (i) => i.localPath && i.projectAutoWork && !i.localStatus && !i.localSessionId
     );
 
     const spawned = [];

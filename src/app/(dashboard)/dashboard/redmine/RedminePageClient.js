@@ -291,12 +291,13 @@ export default function RedminePageClient() {
   const [projectsRefreshing, setProjectsRefreshing] = useState(false);
   const [projectsError, setProjectsError] = useState("");
   const [projectSearchQuery, setProjectSearchQuery] = useState("");
-  const [projectPathFilter, setProjectPathFilter] = useState("all"); // "all" | "assigned" | "unassigned"
+  const [projectPathFilter, setProjectPathFilter] = useState("all"); // "all" | "autowork" | "assigned" | "unassigned"
 
   // Assign Path Modal
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [assignTargetProject, setAssignTargetProject] = useState(null);
   const [assignPathInput, setAssignPathInput] = useState("");
+  const [assignAutoWork, setAssignAutoWork] = useState(true);
   const [assigningPath, setAssigningPath] = useState(false);
   const [assignMsg, setAssignMsg] = useState("");
   const [assignError, setAssignError] = useState("");
@@ -386,7 +387,7 @@ export default function RedminePageClient() {
   const triggerAutoWorkIfEnabled = useCallback(async (currentIssues, currentConfig) => {
     if (!currentConfig?.autoWorkWithAi || autoWorkingRef.current) return;
     const eligible = (currentIssues || []).filter(
-      (i) => i.localPath && !i.localStatus && !i.localSessionId
+      (i) => i.localPath && i.projectAutoWork && !i.localStatus && !i.localSessionId
     );
     if (eligible.length === 0) return;
 
@@ -691,6 +692,7 @@ export default function RedminePageClient() {
     if (e) e.stopPropagation();
     setAssignTargetProject(project);
     setAssignPathInput(project.localPath || "");
+    setAssignAutoWork(project.autoWork !== false);
     setAssignMsg("");
     setAssignError("");
     setShowAssignModal(true);
@@ -710,13 +712,14 @@ export default function RedminePageClient() {
         body: JSON.stringify({
           projectId: assignTargetProject.id,
           path: assignPathInput.trim(),
+          autoWork: assignAutoWork,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to assign project path");
 
-      setAssignMsg(assignPathInput.trim() ? "Local path assigned successfully." : "Local path assignment cleared.");
+      setAssignMsg(assignPathInput.trim() ? "Local path & auto work status saved successfully." : "Local path assignment cleared.");
       setTimeout(() => {
         setShowAssignModal(false);
         setAssignMsg("");
@@ -755,6 +758,38 @@ export default function RedminePageClient() {
       setAssignError(err.message || "Failed to clear path");
     } finally {
       setAssigningPath(false);
+    }
+  };
+
+  const handleToggleProjectAutoWork = async (project, e) => {
+    if (e) e.stopPropagation();
+    const nextVal = !project.autoWork;
+
+    // Optimistic UI update
+    setProjectsList((prev) =>
+      prev.map((p) => (p.id === project.id ? { ...p, autoWork: nextVal } : p))
+    );
+
+    try {
+      const res = await fetch("/api/redmine/projects/assign-path", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          path: project.localPath || undefined,
+          autoWork: nextVal,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to update project auto work status");
+      }
+    } catch (err) {
+      // Revert on error
+      setProjectsList((prev) =>
+        prev.map((p) => (p.id === project.id ? { ...p, autoWork: !nextVal } : p))
+      );
+      alert(`Error updating auto work: ${err.message}`);
     }
   };
 
@@ -934,6 +969,7 @@ export default function RedminePageClient() {
 
   const projectMetrics = useMemo(() => {
     let assignedCount = 0;
+    let autoWorkCount = 0;
     let gitCount = 0;
 
     for (const p of projectsList) {
@@ -941,11 +977,15 @@ export default function RedminePageClient() {
         assignedCount++;
         if (p.isGitRepo) gitCount++;
       }
+      if (p.autoWork) {
+        autoWorkCount++;
+      }
     }
 
     return {
       total: projectsList.length,
       assignedCount,
+      autoWorkCount,
       unassignedCount: projectsList.length - assignedCount,
       gitCount,
     };
@@ -956,6 +996,7 @@ export default function RedminePageClient() {
     return projectsList.filter((p) => {
       if (projectPathFilter === "assigned" && !p.localPath) return false;
       if (projectPathFilter === "unassigned" && p.localPath) return false;
+      if (projectPathFilter === "autowork" && !p.autoWork) return false;
 
       if (projectSearchQuery.trim()) {
         const q = projectSearchQuery.toLowerCase().trim();
@@ -1298,13 +1339,23 @@ export default function RedminePageClient() {
                             <div className="flex items-center gap-1.5 text-[11px] text-text-muted font-mono mt-0.5 flex-wrap">
                               <span>{issue.tracker?.name || "Task"}</span>
                               {issue.localPath ? (
-                                <span
-                                  className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px]"
-                                  title={`Local folder: ${issue.localPath}`}
-                                >
-                                  <span className="material-symbols-outlined text-[11px]">folder_open</span>
-                                  {issue.localPath.split(/[\\/]/).filter(Boolean).pop()}
-                                </span>
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  <span
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px]"
+                                    title={`Local folder: ${issue.localPath}`}
+                                  >
+                                    <span className="material-symbols-outlined text-[11px]">folder_open</span>
+                                    {issue.localPath.split(/[\\/]/).filter(Boolean).pop()}
+                                  </span>
+                                  {issue.projectAutoWork === false && (
+                                    <span
+                                      className="inline-flex items-center px-1.5 py-0.2 rounded bg-surface-2 text-text-muted text-[10px] border border-border-subtle"
+                                      title="Project ini di-set Inactive untuk Auto Work AI"
+                                    >
+                                      Auto AI: Off
+                                    </span>
+                                  )}
+                                </div>
                               ) : null}
                             </div>
                           </td>
@@ -1496,33 +1547,33 @@ export default function RedminePageClient() {
 
             <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-emerald-500/40 transition-all">
               <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400 mb-1.5">
-                <span className="text-xs font-medium">Assigned Local Path</span>
-                <span className="material-symbols-outlined text-[20px]">folder_check</span>
+                <span className="text-xs font-medium">Auto Work Active</span>
+                <span className="material-symbols-outlined text-[20px]">smart_toy</span>
               </div>
-              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.assignedCount}</div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.autoWorkCount}</div>
               <span className="text-[11px] text-emerald-600/70 dark:text-emerald-400/70 block mt-0.5">
-                Linked to workspace folder
-              </span>
-            </div>
-
-            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-amber-500/40 transition-all">
-              <div className="flex items-center justify-between text-amber-600 dark:text-amber-400 mb-1.5">
-                <span className="text-xs font-medium">Unassigned Projects</span>
-                <span className="material-symbols-outlined text-[20px]">folder_off</span>
-              </div>
-              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.unassignedCount}</div>
-              <span className="text-[11px] text-amber-600/70 dark:text-amber-400/70 block mt-0.5">
-                No local folder linked yet
+                Included in Auto Work AI
               </span>
             </div>
 
             <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-blue-500/40 transition-all">
               <div className="flex items-center justify-between text-blue-600 dark:text-blue-400 mb-1.5">
+                <span className="text-xs font-medium">Assigned Local Path</span>
+                <span className="material-symbols-outlined text-[20px]">folder_check</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.assignedCount}</div>
+              <span className="text-[11px] text-blue-600/70 dark:text-blue-400/70 block mt-0.5">
+                Linked to workspace folder
+              </span>
+            </div>
+
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-purple-500/40 transition-all">
+              <div className="flex items-center justify-between text-purple-600 dark:text-purple-400 mb-1.5">
                 <span className="text-xs font-medium">Git Repositories</span>
                 <span className="material-symbols-outlined text-[20px]">commit</span>
               </div>
               <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.gitCount}</div>
-              <span className="text-[11px] text-blue-600/70 dark:text-blue-400/70 block mt-0.5">
+              <span className="text-[11px] text-purple-600/70 dark:text-purple-400/70 block mt-0.5">
                 Valid Git repos detected
               </span>
             </div>
@@ -1565,10 +1616,21 @@ export default function RedminePageClient() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setProjectPathFilter("autowork")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
+                    projectPathFilter === "autowork"
+                      ? "bg-surface text-emerald-600 dark:text-emerald-400 shadow-xs font-semibold"
+                      : "text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  Auto Work Active ({projectMetrics.autoWorkCount})
+                </button>
+                <button
+                  type="button"
                   onClick={() => setProjectPathFilter("assigned")}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
                     projectPathFilter === "assigned"
-                      ? "bg-surface text-emerald-600 dark:text-emerald-400 shadow-xs font-semibold"
+                      ? "bg-surface text-blue-600 dark:text-blue-400 shadow-xs font-semibold"
                       : "text-text-muted hover:text-text-main"
                   }`}
                 >
@@ -1644,10 +1706,11 @@ export default function RedminePageClient() {
                   <thead className="bg-surface-2 border-b border-border text-text-muted uppercase tracking-wider text-[11px] font-semibold">
                     <tr>
                       <th className="px-4 py-3.5 w-16"># ID</th>
-                      <th className="px-4 py-3.5 min-w-[220px]">Project Name & Identifier</th>
+                      <th className="px-4 py-3.5 min-w-[200px]">Project Name & Identifier</th>
                       <th className="px-4 py-3.5">Status</th>
-                      <th className="px-4 py-3.5 min-w-[260px]">Assigned Local Path</th>
-                      <th className="px-4 py-3.5 text-right min-w-[240px]">Actions</th>
+                      <th className="px-4 py-3.5 whitespace-nowrap">Auto Work AI</th>
+                      <th className="px-4 py-3.5 min-w-[240px]">Assigned Local Path</th>
+                      <th className="px-4 py-3.5 text-right min-w-[220px]">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border-subtle">
@@ -1694,6 +1757,34 @@ export default function RedminePageClient() {
                             >
                               {project.status === 1 || project.status === undefined ? "Active" : "Closed"}
                             </span>
+                          </td>
+
+                          {/* Auto Work AI Column with interactive toggle button */}
+                          <td className="px-4 py-3.5 whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={(e) => handleToggleProjectAutoWork(project, e)}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border transition cursor-pointer shadow-xs min-h-[32px] ${
+                                project.autoWork
+                                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25"
+                                  : "bg-surface-2 text-text-muted border-border hover:bg-surface-3 hover:text-text-main"
+                              }`}
+                              title={
+                                project.autoWork
+                                  ? "Status: Active (termasuk di Auto Work AI). Klik untuk Inactive."
+                                  : "Status: Inactive (dilewati Auto Work AI). Klik untuk Active."
+                              }
+                            >
+                              <span
+                                className={`size-2 rounded-full ${
+                                  project.autoWork
+                                    ? "bg-emerald-500 dark:bg-emerald-400 animate-pulse"
+                                    : "bg-text-subtle"
+                                }`}
+                              />
+                              <span>{project.autoWork ? "Active" : "Inactive"}</span>
+                              <span className="material-symbols-outlined text-[13px] opacity-60">sync_alt</span>
+                            </button>
                           </td>
 
                           {/* Assigned Local Path Column */}
@@ -1857,6 +1948,30 @@ export default function RedminePageClient() {
                 <p className="text-[11px] text-text-muted mt-1">
                   Enter absolute folder path on host where this project repository is located.
                 </p>
+              </div>
+
+              {/* Auto Work Toggle for Project */}
+              <div className="flex items-center justify-between p-3.5 rounded-xl bg-bg border border-border">
+                <div className="pr-3">
+                  <span className="text-xs font-semibold text-text-main block">Auto Work with AI Status</span>
+                  <span className="text-[11px] text-text-muted block mt-0.5 leading-tight">
+                    Jika Active, tiket pada project ini otomatis di-run oleh AI worker saat Auto AI aktif. Jika Inactive, project ini dilewati walaupun path lokal sudah terisi.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAssignAutoWork(!assignAutoWork)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    assignAutoWork ? "bg-emerald-500" : "bg-surface-3"
+                  }`}
+                  aria-label="Toggle auto work for project"
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                      assignAutoWork ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
               </div>
 
               {/* Suggestions from Detected Workspaces */}
@@ -2946,7 +3061,7 @@ export default function RedminePageClient() {
                   <div className="pr-3">
                     <span className="text-xs font-semibold text-text-main block">Auto Work with AI</span>
                     <span className="text-[11px] text-text-muted block mt-0.5 leading-tight">
-                      Jika aktif (ON), setiap task pada project yang sudah di-assign local path akan otomatis dijalankan oleh AI worker tanpa perlu klik manual.
+                      Jika aktif (ON), setiap task pada project yang status Auto Work-nya Active dan sudah punya local path akan otomatis dijalankan oleh AI worker.
                     </span>
                   </div>
                   <button
