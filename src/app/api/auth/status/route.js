@@ -3,13 +3,22 @@ import { cookies } from "next/headers";
 import { getSettings } from "@/lib/localDb";
 import { isOidcConfigured } from "@/lib/auth/oidc";
 import { isSamlConfigured } from "@/lib/auth/saml.js";
-import { getDashboardAuthSession } from "@/lib/auth/dashboardSession";
+import { getDashboardAuthSession, setDashboardAuthCookie } from "@/lib/auth/dashboardSession";
 
-export async function GET() {
+export async function GET(request) {
   try {
     const settings = await getSettings();
     const cookieStore = await cookies();
-    const session = await getDashboardAuthSession(cookieStore.get("auth_token")?.value);
+    const token = cookieStore.get("auth_token")?.value;
+    const session = await getDashboardAuthSession(token);
+
+    // Refresh token and cookie on check so active sessions stay permanent
+    if (session) {
+      try {
+        await setDashboardAuthCookie(cookieStore, request, session);
+      } catch {}
+    }
+
     const requireLogin = settings.requireLogin !== false;
     const authMode = settings.authMode || "password";
     const ssoType = settings.ssoType || "oidc";

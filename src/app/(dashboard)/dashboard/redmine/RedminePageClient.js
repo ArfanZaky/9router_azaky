@@ -55,8 +55,12 @@ function isImageFile(filename = "", contentType = "") {
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(filename);
 }
 
-function getAttachmentProxyUrl(attachment) {
+function getAttachmentProxyUrl(attachment, fallbackIssueId = null) {
   if (!attachment) return "";
+  if (typeof attachment === "string") {
+    if (attachment.startsWith("/")) return attachment;
+    return `/api/redmine/attachment?filename=${encodeURIComponent(attachment)}${fallbackIssueId ? `&issueId=${fallbackIssueId}` : ""}`;
+  }
   if (attachment.id) {
     const encUrl = attachment.content_url ? encodeURIComponent(attachment.content_url) : "";
     return `/api/redmine/attachment?id=${attachment.id}&url=${encUrl}`;
@@ -64,7 +68,207 @@ function getAttachmentProxyUrl(attachment) {
   if (attachment.content_url) {
     return `/api/redmine/attachment?url=${encodeURIComponent(attachment.content_url)}`;
   }
+  if (attachment.filename) {
+    return `/api/redmine/attachment?filename=${encodeURIComponent(attachment.filename)}${fallbackIssueId ? `&issueId=${fallbackIssueId}` : ""}`;
+  }
   return "";
+}
+
+function RedmineFormattedText({ text, issue, onPreviewImage }) {
+  if (!text) return null;
+
+  // Build attachment lookup map from both issue.attachments and issue.journals.details
+  const attachmentsMap = useMemo(() => {
+    const map = new Map();
+    if (!issue) return map;
+
+    // 1. From issue.attachments
+    if (Array.isArray(issue.attachments)) {
+      for (const att of issue.attachments) {
+        if (att && att.filename) {
+          map.set(att.filename.toLowerCase().trim(), att);
+          if (att.id) map.set(String(att.id), att);
+        }
+      }
+    }
+
+    // 2. From journals details
+    if (Array.isArray(issue.journals)) {
+      for (const j of issue.journals) {
+        if (Array.isArray(j.details)) {
+          for (const d of j.details) {
+            if (d.property === "attachment" && d.name && d.new_value) {
+              const key = d.new_value.toLowerCase().trim();
+              if (!map.has(key)) {
+                map.set(key, {
+                  id: d.name,
+                  filename: d.new_value,
+                  content_url: `${issue.baseUrl || ""}/attachments/download/${d.name}/${encodeURIComponent(d.new_value)}`,
+                });
+              }
+              if (!map.has(String(d.name))) {
+                map.set(String(d.name), {
+                  id: d.name,
+                  filename: d.new_value,
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return map;
+  }, [issue]);
+
+  // Tokenize text into plain text chunks and attachment/image elements
+  const tokens = useMemo(() => {
+    if (typeof text !== "string") return [{ type: "text", value: String(text || "") }];
+
+    const regex = /!(?:\{[^}]+\})?(?:<|>|=)?([^\s!()]+\.(?:png|jpe?g|gif|webp|bmp|svg)|[0-9]+)(?:\(([^)]*)\))?!|!\[([^\]]*)\]\((?:attachment:)?([^\s)]+?\.(?:png|jpe?g|gif|webp|bmp|svg))\)|attachment:(?:"([^"]+)"|([^\s,;()<>[\]]+\.[a-zA-Z0-9]+))/gi;
+
+    const parts = [];
+    let lastIdx = 0;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIdx) {
+        parts.push({ type: "text", value: text.slice(lastIdx, match.index) });
+      }
+
+      if (match[1]) {
+        parts.push({
+          type: "image",
+          target: match[1],
+          caption: match[2] || "",
+          raw: match[0],
+        });
+      } else if (match[4]) {
+        parts.push({
+          type: "image",
+          target: match[4],
+          caption: match[3] || "",
+          raw: match[0],
+        });
+      } else if (match[5] || match[6]) {
+        parts.push({
+          type: "attachment",
+          target: match[5] || match[6],
+          raw: match[0],
+        });
+      }
+
+      lastIdx = regex.lastIndex;
+    }
+
+    if (lastIdx < text.length) {
+      parts.push({ type: "text", value: text.slice(lastIdx) });
+    }
+
+    return parts;
+  }, [text]);
+
+  return (
+    <div className="whitespace-pre-wrap font-sans break-words leading-relaxed text-xs">
+      {tokens.map((tok, idx) => {
+        if (tok.type === "text") {
+          return <span key={idx}>{tok.value}</span>;
+        }
+
+        if (tok.type === "image") {
+          const lower = tok.target.toLowerCase().trim();
+          const att = attachmentsMap.get(lower) || attachmentsMap.get(tok.target.trim());
+          const filename = att?.filename || tok.target;
+          const proxyUrl = getAttachmentProxyUrl(att || filename, issue?.id);
+          const caption = tok.caption || filename;
+
+          return (
+            <span key={idx} className="my-2.5 block max-w-full">
+              <span className="inline-block max-w-full rounded-xl border border-border overflow-hidden bg-surface-2/60 shadow-xs group/img">
+                <img
+                  src={proxyUrl}
+                  alt={caption}
+                  className="max-h-80 max-w-full object-contain cursor-pointer hover:opacity-95 transition bg-black/5"
+                  onClick={() => onPreviewImage && onPreviewImage({ url: proxyUrl, name: filename })}
+                  loading="lazy"
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                    const fallbackEl = e.currentTarget.parentElement?.querySelector(".img-fallback");
+                    if (fallbackEl) fallbackEl.style.display = "flex";
+                  }}
+                />
+                <span className="img-fallback hidden items-center gap-2 p-2.5 text-xs text-text-muted bg-surface-2">
+                  <span className="material-symbols-outlined text-[16px] text-text-subtle">broken_image</span>
+                  <span className="font-mono text-[11px] truncate max-w-xs">{filename}</span>
+                  <a
+                    href={proxyUrl}
+                    download={filename}
+                    className="ml-auto text-primary text-[11px] hover:underline flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">download</span>
+                    Download
+                  </a>
+                </span>
+                <span className="flex items-center justify-between px-3 py-1.5 text-[10px] text-text-muted bg-surface/90 border-t border-border-subtle font-mono">
+                  <span className="truncate max-w-xs" title={filename}>
+                    {filename} {att?.filesize ? `(${formatFileSize(att.filesize)})` : ""}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onPreviewImage && onPreviewImage({ url: proxyUrl, name: filename })}
+                      className="text-text-subtle hover:text-primary transition"
+                      title="Enlarge preview"
+                    >
+                      <span className="material-symbols-outlined text-[13px]">fullscreen</span>
+                    </button>
+                    <a
+                      href={proxyUrl}
+                      download={filename}
+                      className="text-text-subtle hover:text-primary transition"
+                      title="Download image"
+                    >
+                      <span className="material-symbols-outlined text-[13px]">download</span>
+                    </a>
+                  </div>
+                </span>
+              </span>
+            </span>
+          );
+        }
+
+        if (tok.type === "attachment") {
+          const lower = tok.target.toLowerCase().trim();
+          const att = attachmentsMap.get(lower) || attachmentsMap.get(tok.target.trim());
+          const filename = att?.filename || tok.target;
+          const proxyUrl = getAttachmentProxyUrl(att || filename, issue?.id);
+
+          return (
+            <span
+              key={idx}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 my-1 rounded-lg bg-surface border border-border text-xs text-text-main shadow-2xs align-middle"
+            >
+              <span className="material-symbols-outlined text-[15px] text-primary">description</span>
+              <span className="font-medium truncate max-w-xs">{filename}</span>
+              {att?.filesize && (
+                <span className="text-[10px] text-text-muted font-mono">{formatFileSize(att.filesize)}</span>
+              )}
+              <a
+                href={proxyUrl}
+                download={filename}
+                className="p-0.5 text-text-muted hover:text-primary transition"
+                title="Download attachment"
+              >
+                <span className="material-symbols-outlined text-[14px]">download</span>
+              </a>
+            </span>
+          );
+        }
+
+        return null;
+      })}
+    </div>
+  );
 }
 
 export default function RedminePageClient() {
@@ -2067,7 +2271,7 @@ export default function RedminePageClient() {
                     </div>
 
                     <p className="text-[10px] text-text-subtle italic">
-                      Catatan: AI hanya diizinkan query SELECT (read-only) pada database dan tidak pernah mengubah data/skema langsung (jika ada alter, AI membuat file .sql). Jika database gagal terkoneksi dan task memerlukan database, status task dijadikan Pending.
+                      Catatan: AI hanya diizinkan query SELECT (read-only) pada database dan dilarang mengubah data/skema langsung. Untuk setiap perubahan data maupun skema (INSERT, UPDATE, DELETE, ALTER, migrasi), AI wajib membuat file .sql tersendiri. Jika database gagal terkoneksi dan task memerlukan database, status task dijadikan Pending.
                     </p>
                   </div>
 
@@ -2085,18 +2289,26 @@ export default function RedminePageClient() {
                         expand_more
                       </span>
                     </summary>
-                    <div className="p-4 text-xs text-text-main leading-relaxed whitespace-pre-wrap font-sans border-t border-border-subtle bg-bg">
-                      {issueDetail.description || "(No description provided)"}
+                    <div className="p-4 text-xs text-text-main leading-relaxed font-sans border-t border-border-subtle bg-bg">
+                      {issueDetail.description ? (
+                        <RedmineFormattedText
+                          text={issueDetail.description}
+                          issue={issueDetail}
+                          onPreviewImage={setActiveImagePreview}
+                        />
+                      ) : (
+                        <span className="text-text-muted italic">(No description provided)</span>
+                      )}
 
                       {Array.isArray(issueDetail.attachments) && issueDetail.attachments.length > 0 && (
-                        <div className="mt-3 pt-3 border-t border-border-subtle">
+                        <div className="mt-4 pt-3 border-t border-border-subtle">
                           <span className="text-[11px] font-medium text-text-muted block mb-2">
                             Attachments ({issueDetail.attachments.length}):
                           </span>
                           <div className="flex flex-wrap gap-2">
                             {issueDetail.attachments.map((att) => {
                               const isImg = isImageFile(att.filename, att.content_type);
-                              const proxyUrl = getAttachmentProxyUrl(att);
+                              const proxyUrl = getAttachmentProxyUrl(att, issueDetail.id);
 
                               return (
                                 <div
@@ -2171,7 +2383,7 @@ export default function RedminePageClient() {
                             : (journal.user?.name?.toLowerCase().includes("arfan") ||
                                journal.user?.name?.toLowerCase().includes("zaky"));
 
-                          const journalAttachments = detailsList
+                          const allJournalAttachments = detailsList
                             .filter((d) => d.property === "attachment")
                             .map((d) => {
                               return (
@@ -2184,6 +2396,12 @@ export default function RedminePageClient() {
                                 }
                               );
                             });
+
+                          // Only show attachment cards below if not already rendered inline in notes
+                          const journalAttachments = allJournalAttachments.filter((att) => {
+                            if (!journal.notes) return true;
+                            return !journal.notes.toLowerCase().includes(att.filename?.toLowerCase());
+                          });
 
                           return (
                             <div key={journal.id} className="space-y-2">
@@ -2243,16 +2461,18 @@ export default function RedminePageClient() {
                                       }`}
                                     >
                                       {hasNotes && (
-                                        <div className="whitespace-pre-wrap font-sans break-words">
-                                          {journal.notes}
-                                        </div>
+                                        <RedmineFormattedText
+                                          text={journal.notes}
+                                          issue={issueDetail}
+                                          onPreviewImage={setActiveImagePreview}
+                                        />
                                       )}
 
                                       {journalAttachments.length > 0 && (
                                         <div className="mt-2.5 pt-2 border-t border-border/40 space-y-2">
                                           {journalAttachments.map((att, attIdx) => {
                                             const isImg = isImageFile(att.filename, att.content_type);
-                                            const proxyUrl = getAttachmentProxyUrl(att);
+                                            const proxyUrl = getAttachmentProxyUrl(att, issueDetail.id);
 
                                             return (
                                               <div key={att.id || attIdx} className="space-y-1">
@@ -2781,7 +3001,7 @@ export default function RedminePageClient() {
                     Aturan Akses Database AI
                   </div>
                   <p className="text-text-muted">
-                    AI diizinkan mengakses database <strong>hanya untuk SELECT (read-only)</strong>. Dilarang keras INSERT, UPDATE, DELETE, atau ALTER/DROP. Jika butuh migrasi skema, AI akan membuat file <code>.sql</code>. Jika database tidak bisa terhubung dan task membutuhkan database, status task otomatis menjadi <strong>Pending</strong>.
+                    AI diizinkan mengakses database <strong>hanya untuk SELECT (read-only)</strong>. Dilarang keras mengeksekusi INSERT, UPDATE, DELETE, atau ALTER/DROP langsung ke database. Untuk segala perubahan data maupun skema (seperti INSERT, UPDATE, DELETE, ALTER, seeder, migrasi), AI wajib membuat file <code>.sql</code> tersendiri. Jika database tidak bisa terhubung dan task membutuhkan database, status task otomatis menjadi <strong>Pending</strong>.
                   </p>
                 </div>
               </div>

@@ -1,4 +1,4 @@
-import { SignJWT, jwtVerify } from "jose";
+import { SignJWT, jwtVerify, compactVerify } from "jose";
 import bcrypt from "bcryptjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -7,7 +7,8 @@ import { DATA_DIR } from "@/lib/dataDir";
 import { getSettings } from "@/lib/localDb";
 
 const DEFAULT_PASSWORD = "123456";
-const SESSION_MAX_AGE_SEC = 24 * 60 * 60;
+// 100 years in seconds — permanent non-expiring session
+const SESSION_MAX_AGE_SEC = 100 * 365 * 24 * 60 * 60;
 
 function loadJwtSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
@@ -31,10 +32,10 @@ export function shouldUseSecureCookie(request) {
 }
 
 export async function createDashboardAuthToken(claims = {}) {
-  return new SignJWT({ authenticated: true, ...claims })
+  const { exp, iat, nbf, ...customClaims } = claims;
+  return new SignJWT({ authenticated: true, ...customClaims })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("24h")
     .sign(SECRET);
 }
 
@@ -43,7 +44,15 @@ export async function verifyDashboardAuthToken(token) {
   try {
     await jwtVerify(token, SECRET);
     return true;
-  } catch {
+  } catch (err) {
+    if (err?.code === "ERR_JWT_EXPIRED") {
+      try {
+        await compactVerify(token, SECRET);
+        return true;
+      } catch {
+        return false;
+      }
+    }
     return false;
   }
 }
@@ -53,7 +62,15 @@ export async function getDashboardAuthSession(token) {
   try {
     const { payload } = await jwtVerify(token, SECRET);
     return payload;
-  } catch {
+  } catch (err) {
+    if (err?.code === "ERR_JWT_EXPIRED") {
+      try {
+        const { payload: rawPayload } = await compactVerify(token, SECRET);
+        return JSON.parse(new TextDecoder().decode(rawPayload));
+      } catch {
+        return null;
+      }
+    }
     return null;
   }
 }

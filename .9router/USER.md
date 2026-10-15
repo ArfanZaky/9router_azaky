@@ -1,3 +1,4 @@
 - Terse concise communication preferred; avoid conversational filler.
 - Preserve dominant language of user.
 - Communicate in Indonesian.
+- Commit task changes locally upon completion; never push to remote.

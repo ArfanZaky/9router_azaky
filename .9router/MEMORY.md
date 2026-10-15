@@ -3,3 +3,9 @@
 - Self-preservation: Never execute sync pm2 restart in tool calls; use scripts/safe-reload.mjs.
 - Memory in `src/lib/agent/memory.js`: `MEMORY.md` limit 2200 chars, `USER.md` limit 1375 chars. Tools: `manage_memory`, `manage_skill` in `src/lib/agent/tools.js`.
 - Redmine integration route at `/dashboard/redmine`; user Redmine ID 135 username `azaky`.
+- Redmine credentials stored in gitignored data/settings.json; client at src/lib/redmine/redmineClient.js targets https://redmine.profescipta.co.id/.
+- App store settings in local SQLite DB at `data/db/data.sqlite` (`settings` table); `data/` path in `.gitignore`.
+- Completed Redmine tasks auto-commit locally with `feat(#<id>): <subject>`; `git push` blocked by runtime guard in `tools.js`.
+- Database changes require .sql files; direct schema or data alterations prohibited.
+- Database access rule: AI worker restricted to SELECT-only; direct CLI write operations blocked, schema and data changes require .sql migration files.
+- 9router binary located at `F:\project\9router\9router.exe`.
