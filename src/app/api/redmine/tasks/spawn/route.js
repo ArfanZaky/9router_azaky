@@ -91,11 +91,14 @@ export async function POST(req) {
     }
 
     // 4. Model & Key selection
+    const requestedModel = body.model || config.aiModel;
     const modelCandidate =
-      allSessions.find((s) => s.model)?.model || "anthropic/claude-3-7-sonnet";
+      requestedModel ||
+      allSessions.find((s) => s.model)?.model ||
+      "anthropic/claude-3-7-sonnet";
+
     const providerCandidate =
-      allSessions.find((s) => s.model)?.providerId ||
-      (modelCandidate.includes("/") ? modelCandidate.split("/")[0] : "");
+      modelCandidate.includes("/") ? modelCandidate.split("/")[0] : "";
 
     const keys = await getApiKeys();
     const activeKey = keys.find((k) => k.isActive !== false)?.key || "";
@@ -105,10 +108,13 @@ export async function POST(req) {
 Workspace project path: ${assigned.path}
 
 ### CRITICAL RULES:
-1. JANGAN PERNAH mengeksekusi perintah INSERT, UPDATE, DELETE, atau ALTER langsung ke database. Jika ada query perubahan database atau skema yang diperlukan, BUATLAH file migrasi skrip terpisah berekstensi .sql (contoh: migrations/xxx.sql).
-2. Tulis kode yang bersih, modular, dan teruji sesuai standar kualitas tinggi (Anti-Slop standard).
+1. ATURAN AKSES DATABASE:
+   - Anda BOLEH mengakses database untuk query pembacaan data atau memeriksa skema, TETAPI HANYA QUERY SELECT SAJA (READ-ONLY).
+   - JANGAN PERNAH mengeksekusi INSERT, UPDATE, DELETE, ALTER, DROP, atau TRUNCATE langsung ke database mana pun. Jika ada perubahan skema atau data yang diperlukan, BUATLAH file skrip migrasi tersendiri berekstensi .sql (contoh: migrations/xxx.sql).
+   - KONEKSI DATABASE GAGAL / TIDAK DAPAT DIAKSES: Jika task memerlukan koneksi ke database dan koneksi database tidak dapat terhubung / gagal connect / credentials tidak tersedia, JANGAN membuat asumsi spekulatif dan JANGAN memaksakan selesai. Jadikan status task PENDING dengan menyertakan teks: [STATUS: PENDING] di dalam jawaban akhir Anda, serta jelaskan kredensial atau akses database apa yang dibutuhkan.
+2. Tulis kode yang bersih, modular, dan teruji sesuai standar kualitas tinggi (Anti-Slop standard: no em dashes, no dead code, mobile responsive).
 3. Jangan mengubah status tiket Redmine di remote server; selesaikan pekerjaan di codebase lokal dan verifikasi dengan teliti.
-4. GIT COMMIT LOKAL (JANGAN PUSH): Setelah seluruh perubahan selesai dan diverifikasi, lakukan git commit secara lokal (git add + git commit) dengan pesan commit yang jelas mencantumkan nomor tiket #${issue.id} (contoh: git commit -m "feat(#${issue.id}): ${issue.subject}"). DILARANG KERAS melakukan git push! Remote repository TIDAK BOLEH di-push.`;
+4. GIT COMMIT LOKAL (JANGAN PUSH): Setelah seluruh perubahan selesai dan diverifikasi (jika BUKAN pending), lakukan git commit secara lokal (git add + git commit) dengan pesan commit yang jelas mencantumkan nomor tiket #${issue.id} (contoh: git commit -m "feat(#${issue.id}): ${issue.subject}"). DILARANG KERAS melakukan git push! Remote repository TIDAK BOLEH di-push.`;
 
     const userPrompt = `Kerjakan task Redmine berikut pada project ini:
 
@@ -124,10 +130,13 @@ ${issue.description ? issue.description.trim() : "(Tidak ada deskripsi rinci)"}
 ---
 **ATURAN KERJA & BATASAN KEAMANAN:**
 1. Analisis arsitektur dan file terkait di workspace (${assigned.path}) sebelum mengubah kode.
-2. PERINGATAN KERAS DATABASE: JANGAN PERNAH melakukan INSERT, UPDATE, DELETE, atau ALTER langsung ke database mana pun. Jika butuh perubahan query/skema database, buat file skrip migrasi tersendiri berekstensi \`.sql\`.
+2. ATURAN AKSES DATABASE:
+   - Anda BOLEH mengakses database HANYA untuk query SELECT saja (read-only).
+   - DILARANG KERAS mengeksekusi INSERT, UPDATE, DELETE, atau ALTER/DROP skema langsung ke database. Jika perlu perubahan skema database, buat file .sql tersendiri.
+   - JIKA DATABASE TIDAK BISA KONEK: Jika task ini memerlukan koneksi ke database dan koneksi database tidak dapat terhubung, jangan paksakan selesai! Buat status task menjadi PENDING dengan menulis teks persis: [STATUS: PENDING] di laporan akhir Anda dan jelaskan kebutuhan koneksi DB-nya.
 3. Selesaikan implementasi atau perbaikan bug dengan teliti, dan pastikan tidak ada syntax error / build error.
-4. LAKUKAN GIT COMMIT LOKAL SAJA (DILARANG GIT PUSH): Jika task sudah selesai dikerjakan dan diverifikasi, buat git commit lokal (git add + git commit -m '...') menyertakan nomor tiket #${issue.id}. JANGAN PERNAH mengeksekusi git push ke remote!
-5. Jangan ubah status tiket Redmine remote; cukup berikan laporan ringkasan perubahan file setelah selesai.`;
+4. LAKUKAN GIT COMMIT LOKAL SAJA (DILARANG GIT PUSH): Jika task berhasil selesai (bukan pending), buat git commit lokal (git add + git commit -m '...') menyertakan nomor tiket #${issue.id}. JANGAN PERNAH mengeksekusi git push ke remote!
+5. Jangan ubah status tiket Redmine remote; status akan dicatat di sistem lokal 9Router.`;
 
     // 6. Spawn session with title: (project - title task)
     const sessionTitle = `${issue.project.name} - ${issue.subject}`;

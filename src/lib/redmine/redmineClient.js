@@ -9,6 +9,8 @@ export const DEFAULT_REDMINE_CONFIG = {
   userId: null,
   userName: "",
   projectPaths: {},
+  autoWorkWithAi: false,
+  aiModel: "anthropic/claude-3-7-sonnet",
 };
 
 export async function getRedmineConfig() {
@@ -21,6 +23,8 @@ export async function getRedmineConfig() {
     userId: stored.userId || DEFAULT_REDMINE_CONFIG.userId,
     userName: stored.userName || DEFAULT_REDMINE_CONFIG.userName,
     projectPaths: stored.projectPaths || {},
+    autoWorkWithAi: stored.autoWorkWithAi === true,
+    aiModel: stored.aiModel || DEFAULT_REDMINE_CONFIG.aiModel,
   };
 }
 
@@ -30,6 +34,8 @@ export async function saveRedmineConfig(updates = {}) {
     ...current,
     ...updates,
     baseUrl: (updates.baseUrl || current.baseUrl).replace(/\/+$/, ""),
+    autoWorkWithAi: updates.autoWorkWithAi !== undefined ? Boolean(updates.autoWorkWithAi) : current.autoWorkWithAi,
+    aiModel: updates.aiModel ? String(updates.aiModel).trim() : current.aiModel,
   };
   await updateSettings({ redmine: next });
   return next;

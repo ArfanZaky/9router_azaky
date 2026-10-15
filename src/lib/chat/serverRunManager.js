@@ -954,59 +954,77 @@ async function execute(run) {
     await updateChatRunRecord(run.id, { status, result, finishedAt: new Date().toISOString() });
     await emit(run, "done", { ...result, stopped });
 
-    // Redmine Task tracking: if session is linked to Redmine task, mark 9router status as done (without touching remote Redmine)
+    // Redmine Task tracking: if session is linked to Redmine task, determine local status (done vs pending)
     if (!stopped && status === "completed") {
       try {
         const sess = await getChatSession(run.sessionId, { includeMessages: false });
         if (sess?.projectMeta?.redmineIssueId) {
           const rIssueId = String(sess.projectMeta.redmineIssueId);
+
+          const isPending =
+            /\[STATUS:\s*PENDING\]/i.test(content) ||
+            /(?:status\s*[:=]\s*pending)/i.test(content) ||
+            /(?:pending|gagal\s+konek).*database/i.test(content) ||
+            sess?.projectMeta?.localStatus === "pending";
+
+          const finalLocalStatus = isPending ? "pending" : "done";
+
           await updateChatSession(run.sessionId, {
-            projectMeta: { ...sess.projectMeta, localStatus: "done" },
+            projectMeta: { ...sess.projectMeta, localStatus: finalLocalStatus },
           }).catch(() => {});
+
           const currentSettings = await getSettings();
           const rts = { ...(currentSettings?.redmineTaskStatuses || {}) };
           rts[rIssueId] = {
-            status: "done",
+            ...(rts[rIssueId] || {}),
+            status: finalLocalStatus,
             sessionId: run.sessionId,
             sessionTitle: sess.title,
             finishedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
+            reason: isPending ? "Database connection needed or pending verification" : null,
           };
           await updateSettings({ redmineTaskStatuses: rts }).catch(() => {});
 
-          // Auto-commit any remaining uncommitted changes locally (NEVER PUSH)
-          try {
-            const projectDir = sess.workspacePath || run.workspace;
-            if (projectDir) {
-              const { execSync } = await import("node:child_process");
-              const gitStatus = execSync("git status --porcelain", {
-                cwd: projectDir,
-                encoding: "utf8",
-                stdio: ["ignore", "pipe", "ignore"],
-                timeout: 10000,
-              });
-              if (gitStatus && gitStatus.trim().length > 0) {
-                const rawSubject = sess.projectMeta.redmineIssueSubject || sess.title || "resolve redmine task";
-                const cleanSubject = String(rawSubject).replace(/[\r\n"\\`$]/g, " ").trim();
-                const commitMsg = `feat(#${rIssueId}): ${cleanSubject}`;
-                execSync("git add -A", { cwd: projectDir, stdio: "ignore", timeout: 15000 });
-                try {
-                  execSync(`git commit -m "${commitMsg}"`, { cwd: projectDir, stdio: "ignore", timeout: 15000 });
-                } catch {
-                  // Fallback author if no user.name/email set in repo
-                  execSync(`git -c user.name="9Router Agent" -c user.email="agent@9router.local" commit -m "${commitMsg}"`, {
-                    cwd: projectDir,
-                    stdio: "ignore",
-                    timeout: 15000,
-                  });
+          if (isPending) {
+            await emit(run, "notice", {
+              message: `Task #${rIssueId} status marked as PENDING in 9Router (requires database connection / further review).`,
+            }).catch(() => {});
+          } else {
+            // Auto-commit any remaining uncommitted changes locally (NEVER PUSH)
+            try {
+              const projectDir = sess.workspacePath || run.workspace;
+              if (projectDir) {
+                const { execSync } = await import("node:child_process");
+                const gitStatus = execSync("git status --porcelain", {
+                  cwd: projectDir,
+                  encoding: "utf8",
+                  stdio: ["ignore", "pipe", "ignore"],
+                  timeout: 10000,
+                });
+                if (gitStatus && gitStatus.trim().length > 0) {
+                  const rawSubject = sess.projectMeta.redmineIssueSubject || sess.title || "resolve redmine task";
+                  const cleanSubject = String(rawSubject).replace(/[\r\n"\\`$]/g, " ").trim();
+                  const commitMsg = `feat(#${rIssueId}): ${cleanSubject}`;
+                  execSync("git add -A", { cwd: projectDir, stdio: "ignore", timeout: 15000 });
+                  try {
+                    execSync(`git commit -m "${commitMsg}"`, { cwd: projectDir, stdio: "ignore", timeout: 15000 });
+                  } catch {
+                    // Fallback author if no user.name/email set in repo
+                    execSync(`git -c user.name="9Router Agent" -c user.email="agent@9router.local" commit -m "${commitMsg}"`, {
+                      cwd: projectDir,
+                      stdio: "ignore",
+                      timeout: 15000,
+                    });
+                  }
+                  await emit(run, "notice", {
+                    message: `Task changes automatically committed locally: "${commitMsg}" (remote push skipped as requested).`,
+                  }).catch(() => {});
                 }
-                await emit(run, "notice", {
-                  message: `Task changes automatically committed locally: "${commitMsg}" (remote push skipped as requested).`,
-                }).catch(() => {});
               }
+            } catch {
+              // Not a git repository or commit error, safely ignore
             }
-          } catch {
-            // Not a git repository or commit error, safely ignore
           }
         }
       } catch {

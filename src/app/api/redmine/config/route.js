@@ -15,8 +15,10 @@ export async function GET() {
     let error = null;
 
     try {
-      userInfo = await verifyRedmineConnection(config);
-      verified = Boolean(userInfo);
+      if (config.apiKey) {
+        userInfo = await verifyRedmineConnection(config);
+        verified = Boolean(userInfo);
+      }
     } catch (e) {
       error = e.message;
     }
@@ -28,6 +30,8 @@ export async function GET() {
         userEmail: config.userEmail,
         userId: config.userId,
         userName: config.userName,
+        autoWorkWithAi: config.autoWorkWithAi === true,
+        aiModel: config.aiModel || "anthropic/claude-3-7-sonnet",
       },
       verified,
       user: userInfo,
@@ -41,31 +45,40 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { baseUrl, apiKey, userEmail } = body;
+    const current = await getRedmineConfig();
 
-    if (!baseUrl || !apiKey) {
-      return NextResponse.json({ error: "baseUrl and apiKey are required" }, { status: 400 });
+    const baseUrl = (body.baseUrl || current.baseUrl || "https://redmine.profescipta.co.id").replace(/\/+$/, "");
+    const apiKey = (body.apiKey !== undefined && body.apiKey !== null && body.apiKey.trim() !== "")
+      ? body.apiKey.trim()
+      : current.apiKey;
+    const userEmail = body.userEmail !== undefined ? body.userEmail.trim() : current.userEmail;
+    const autoWorkWithAi = body.autoWorkWithAi !== undefined ? Boolean(body.autoWorkWithAi) : current.autoWorkWithAi;
+    const aiModel = body.aiModel ? String(body.aiModel).trim() : current.aiModel;
+
+    if (!baseUrl) {
+      return NextResponse.json({ error: "baseUrl is required" }, { status: 400 });
     }
 
-    // Verify first before saving
-    const testConfig = {
-      baseUrl: baseUrl.replace(/\/+$/, ""),
-      apiKey: apiKey.trim(),
-    };
-    const user = await verifyRedmineConnection(testConfig);
+    let user = null;
+    if (apiKey) {
+      const testConfig = { baseUrl, apiKey };
+      user = await verifyRedmineConnection(testConfig);
+    }
 
     const saved = await saveRedmineConfig({
-      baseUrl: testConfig.baseUrl,
-      apiKey: testConfig.apiKey,
+      baseUrl,
+      apiKey: apiKey || "",
       userEmail: userEmail || user?.mail || "",
-      userId: user?.id || null,
-      userName: user ? `${user.firstname || ""} ${user.lastname || ""}`.trim() : "",
+      userId: user?.id || current.userId || null,
+      userName: user ? `${user.firstname || ""} ${user.lastname || ""}`.trim() : current.userName,
+      autoWorkWithAi,
+      aiModel,
     });
 
     return NextResponse.json({
       success: true,
       config: saved,
-      user,
+      user: user || { id: saved.userId, mail: saved.userEmail, name: saved.userName },
     });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 400 });

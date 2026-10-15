@@ -143,6 +143,16 @@ async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress, 
     };
   }
 
+  // Strict guard for Redmine tasks: only SELECT queries allowed; block direct destructive database modifications
+  if (isRedmineTask && /\b(mysql|psql|sqlite3|mongosh|mongo|sqlcmd)\b/i.test(cmd)) {
+    if (/\b(insert|update|delete|drop|alter|truncate|create\s+table)\b/i.test(cmd)) {
+      return {
+        ok: false,
+        error: "Action blocked: Direct database modification (INSERT, UPDATE, DELETE, ALTER, DROP, TRUNCATE) is strictly forbidden. You may only execute SELECT queries or write .sql migration script files.",
+      };
+    }
+  }
+
   const isWin = process.platform === "win32";
   const { shell: sh, args } = resolveShell(shell, cmd, isWin);
   return await new Promise((resolve) => {
@@ -702,6 +712,16 @@ export async function executeTool(name, args = {}, ctx = {}) {
             ok: false,
             error: "Action blocked: 'git push' is strictly forbidden on Redmine tasks. You must only commit locally using 'git commit -m \"...\"' without pushing to remote.",
           });
+        }
+
+        // Strict guard: block direct destructive database modifications on Redmine tasks
+        if (isRedmineTask && /\b(mysql|psql|sqlite3|mongosh|mongo|sqlcmd)\b/i.test(cmdTrimmed)) {
+          if (/\b(insert|update|delete|drop|alter|truncate|create\s+table)\b/i.test(cmdTrimmed)) {
+            return JSON.stringify({
+              ok: false,
+              error: "Action blocked: Direct database modification (INSERT, UPDATE, DELETE, ALTER, DROP, TRUNCATE) is strictly forbidden. You may only execute SELECT queries or write .sql migration script files.",
+            });
+          }
         }
 
         // Self-Preservation Guard:

@@ -141,12 +141,16 @@ export default function RedminePageClient() {
   const [cfgBaseUrl, setCfgBaseUrl] = useState("https://redmine.profescipta.co.id");
   const [cfgApiKey, setCfgApiKey] = useState("");
   const [cfgEmail, setCfgEmail] = useState("");
+  const [cfgAutoWorkWithAi, setCfgAutoWorkWithAi] = useState(false);
+  const [cfgAiModel, setCfgAiModel] = useState("anthropic/claude-3-7-sonnet");
+  const [availableModels, setAvailableModels] = useState([]);
   const [savingConfig, setSavingConfig] = useState(false);
   const [configMsg, setConfigMsg] = useState("");
 
   const fileInputRef = useRef(null);
   const chatBottomRef = useRef(null);
   const chatContainerRef = useRef(null);
+  const autoWorkingRef = useRef(false);
 
   const loadMeta = useCallback(async () => {
     try {
@@ -157,12 +161,60 @@ export default function RedminePageClient() {
         if (data.config) {
           setCfgBaseUrl(data.config.baseUrl || "https://redmine.profescipta.co.id");
           setCfgEmail(data.config.userEmail || "");
+          setCfgAutoWorkWithAi(data.config.autoWorkWithAi === true);
+          setCfgAiModel(data.config.aiModel || "anthropic/claude-3-7-sonnet");
+        }
+      }
+
+      // Load available models for selection
+      const modelsRes = await fetch("/api/models").catch(() => null);
+      if (modelsRes && modelsRes.ok) {
+        const modelsData = await modelsRes.json().catch(() => ({}));
+        if (Array.isArray(modelsData.models)) {
+          setAvailableModels(modelsData.models);
         }
       }
     } catch {
       // quiet fail on background metadata load
     }
   }, []);
+
+  const triggerAutoWorkIfEnabled = useCallback(async (currentIssues, currentConfig) => {
+    if (!currentConfig?.autoWorkWithAi || autoWorkingRef.current) return;
+    const eligible = (currentIssues || []).filter(
+      (i) => i.localPath && !i.localStatus && !i.localSessionId
+    );
+    if (eligible.length === 0) return;
+
+    autoWorkingRef.current = true;
+    for (const issue of eligible) {
+      try {
+        await fetch("/api/redmine/tasks/spawn", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ issueId: issue.id, model: currentConfig.aiModel }),
+        });
+        await new Promise((r) => setTimeout(r, 1200));
+      } catch {
+        // ignore individual failure
+      }
+    }
+    autoWorkingRef.current = false;
+    // Re-fetch issues silently to reflect new working status
+    const params = new URLSearchParams();
+    if (statusFilter) params.append("status_id", statusFilter);
+    if (projectFilter) params.append("project_id", projectFilter);
+    if (trackerFilter) params.append("tracker_id", trackerFilter);
+    if (searchQuery.trim()) params.append("q", searchQuery.trim());
+    params.append("limit", "100");
+
+    const refreshRes = await fetch(`/api/redmine/issues?${params.toString()}`).catch(() => null);
+    if (refreshRes && refreshRes.ok) {
+      const refreshData = await refreshRes.json();
+      setIssues(refreshData.issues || []);
+      setTotalCount(refreshData.totalCount ?? (refreshData.issues?.length || 0));
+    }
+  }, [statusFilter, projectFilter, trackerFilter, searchQuery]);
 
   const fetchIssues = useCallback(async (isRefresh = false) => {
     try {
@@ -184,15 +236,20 @@ export default function RedminePageClient() {
         throw new Error(data.error || "Failed to fetch issues from Redmine");
       }
 
-      setIssues(data.issues || []);
-      setTotalCount(data.totalCount ?? (data.issues?.length || 0));
+      const issuesList = data.issues || [];
+      setIssues(issuesList);
+      setTotalCount(data.totalCount ?? (issuesList.length || 0));
+
+      if (meta?.config?.autoWorkWithAi) {
+        triggerAutoWorkIfEnabled(issuesList, meta.config);
+      }
     } catch (err) {
       setError(err.message || "An unexpected error occurred while loading tasks");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [statusFilter, projectFilter, trackerFilter, searchQuery]);
+  }, [statusFilter, projectFilter, trackerFilter, searchQuery, meta?.config, triggerAutoWorkIfEnabled]);
 
   const fetchProjects = useCallback(async (isRefresh = false) => {
     try {
@@ -509,7 +566,7 @@ export default function RedminePageClient() {
       const res = await fetch("/api/redmine/tasks/spawn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ issueId: issue.id }),
+        body: JSON.stringify({ issueId: issue.id, model: meta?.config?.aiModel }),
       });
 
       const data = await res.json();
@@ -590,15 +647,24 @@ export default function RedminePageClient() {
           baseUrl: cfgBaseUrl.trim(),
           apiKey: cfgApiKey.trim(),
           userEmail: cfgEmail.trim(),
+          autoWorkWithAi: cfgAutoWorkWithAi,
+          aiModel: cfgAiModel.trim(),
         }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to verify and save Redmine config");
 
-      setConfigMsg("Redmine connection verified and saved.");
+      setConfigMsg("Redmine configuration saved successfully.");
       loadMeta();
       fetchIssues(true);
+
+      if (cfgAutoWorkWithAi) {
+        fetch("/api/redmine/tasks/auto-work", { method: "POST" })
+          .then(() => fetchIssues(false))
+          .catch(() => {});
+      }
+
       if (activeTab === "projects") fetchProjects(true);
       setTimeout(() => setShowConfigModal(false), 1200);
     } catch (err) {
@@ -678,6 +744,21 @@ export default function RedminePageClient() {
                 <span className="size-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400 animate-pulse" />
                 Live Sync
               </span>
+
+              {meta.config?.autoWorkWithAi ? (
+                <span
+                  className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium flex items-center gap-1.5 shadow-xs"
+                  title={`Auto Work with AI aktif dengan model: ${meta.config.aiModel || "Default"}`}
+                >
+                  <span className="material-symbols-outlined text-[13px]">smart_toy</span>
+                  Auto AI: ON ({meta.config.aiModel ? meta.config.aiModel.split("/").pop() : "Active"})
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-md bg-surface-2 border border-border text-text-subtle text-[11px] font-medium flex items-center gap-1.5 shadow-xs">
+                  <span className="size-1.5 rounded-full bg-text-subtle" />
+                  Auto AI: OFF
+                </span>
+              )}
             </div>
             <p className="text-xs sm:text-sm text-text-muted mt-0.5 truncate">
               {meta.config?.userName
@@ -1008,6 +1089,12 @@ export default function RedminePageClient() {
                                   9Router: Done
                                 </span>
                               )}
+                              {issue.localStatus === "pending" && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30" title="Menunggu koneksi database atau review">
+                                  <span className="material-symbols-outlined text-[12px]">pause_circle</span>
+                                  9Router: Pending
+                                </span>
+                              )}
                             </div>
                           </td>
 
@@ -1081,6 +1168,15 @@ export default function RedminePageClient() {
                                     <span className="material-symbols-outlined text-[14px] text-emerald-500">task_alt</span>
                                     Done · Chat
                                   </button>
+                                ) : issue.localStatus === "pending" ? (
+                                  <button
+                                    onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-medium text-xs transition border border-amber-500/30 inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
+                                    title="Lihat sesi pending di Chat (koneksi database dibutuhkan)"
+                                  >
+                                    <span className="material-symbols-outlined text-[14px] text-amber-500">pause_circle</span>
+                                    Pending · Chat
+                                  </button>
                                 ) : (
                                   <button
                                     onClick={(e) => handleSpawnTaskSession(issue, e)}
@@ -1098,7 +1194,7 @@ export default function RedminePageClient() {
                                 <button
                                   onClick={() => {
                                     setActiveTab("projects");
-                                    setProjectSearch(issue.project?.name || "");
+                                    setProjectSearchQuery(issue.project?.name || "");
                                   }}
                                   className="px-2 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-muted hover:text-text-main text-[11px] transition border border-dashed border-border inline-flex items-center gap-1 min-h-[36px]"
                                   title="Assign local workspace path to enable AI worker"
@@ -1654,6 +1750,15 @@ export default function RedminePageClient() {
                       <span className="material-symbols-outlined text-[16px] text-emerald-500">task_alt</span>
                       <span>Done · View Chat</span>
                     </button>
+                  ) : issueDetail.localStatus === "pending" ? (
+                    <button
+                      onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-xs font-semibold border border-amber-500/30 transition min-h-[44px]"
+                      title="Lihat sesi pending di Chat (koneksi database dibutuhkan)"
+                    >
+                      <span className="material-symbols-outlined text-[16px] text-amber-500">pause_circle</span>
+                      <span>Pending · View Chat</span>
+                    </button>
                   ) : (
                     <button
                       onClick={(e) => handleSpawnTaskSession(issueDetail, e)}
@@ -1671,7 +1776,7 @@ export default function RedminePageClient() {
                     onClick={() => {
                       closeIssueDetail();
                       setActiveTab("projects");
-                      setProjectSearch(issueDetail.project?.name || "");
+                      setProjectSearchQuery(issueDetail.project?.name || "");
                     }}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-surface-2 hover:bg-surface-3 text-text-muted hover:text-text-main border border-dashed border-border text-xs font-medium min-h-[44px]"
                   >
@@ -1779,7 +1884,7 @@ export default function RedminePageClient() {
                   {/* ──────────────── 9ROUTER WORKSPACE & AI STATUS CARD ──────────────── */}
                   <div className="bg-surface border border-border rounded-xl p-3.5 sm:p-4 text-xs space-y-3">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="material-symbols-outlined text-[20px] text-primary">smart_toy</span>
                         <span className="font-semibold text-text-main text-xs sm:text-sm">9Router AI Worker</span>
                         {issueDetail.localStatus === "working" && (
@@ -1792,6 +1897,12 @@ export default function RedminePageClient() {
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
                             <span className="material-symbols-outlined text-[13px]">task_alt</span>
                             Done in 9Router
+                          </span>
+                        )}
+                        {issueDetail.localStatus === "pending" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30">
+                            <span className="material-symbols-outlined text-[13px]">pause_circle</span>
+                            Pending (Need DB / Verification)
                           </span>
                         )}
                         {!issueDetail.localStatus && (
@@ -1839,7 +1950,7 @@ export default function RedminePageClient() {
                             onClick={() => {
                               closeIssueDetail();
                               setActiveTab("projects");
-                              setProjectSearch(issueDetail.project?.name || "");
+                              setProjectSearchQuery(issueDetail.project?.name || "");
                             }}
                             className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-medium text-xs transition border border-amber-500/30 inline-flex items-center gap-1.5 min-h-[36px]"
                           >
@@ -1866,18 +1977,29 @@ export default function RedminePageClient() {
                       </div>
 
                       {/* Manual local status controls */}
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="text-text-subtle">Status 9Router:</span>
-                        {issueDetail.localStatus !== "done" ? (
+                        {issueDetail.localStatus !== "done" && (
                           <button
                             type="button"
                             onClick={(e) => handleSetLocalTaskStatus(issueDetail.id, "done", e)}
                             className="px-2 py-0.5 rounded bg-surface-2 hover:bg-surface-3 text-emerald-600 dark:text-emerald-400 border border-border text-[11px] font-medium transition"
-                            title="Tandai Done di 9Router (tanpa mengubah status tiket Redmine di server)"
+                            title="Tandai Done di 9Router"
                           >
                             Mark Done
                           </button>
-                        ) : (
+                        )}
+                        {issueDetail.localStatus !== "pending" && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleSetLocalTaskStatus(issueDetail.id, "pending", e)}
+                            className="px-2 py-0.5 rounded bg-surface-2 hover:bg-surface-3 text-amber-600 dark:text-amber-400 border border-border text-[11px] font-medium transition"
+                            title="Tandai Pending di 9Router (misal butuh koneksi DB)"
+                          >
+                            Mark Pending
+                          </button>
+                        )}
+                        {issueDetail.localStatus !== "working" && (
                           <button
                             type="button"
                             onClick={(e) => handleSetLocalTaskStatus(issueDetail.id, "working", e)}
@@ -1901,7 +2023,7 @@ export default function RedminePageClient() {
                     </div>
 
                     <p className="text-[10px] text-text-subtle italic">
-                      Catatan: AI tidak pernah mengubah skema atau data database langsung (jika ada alter, AI membuat file .sql). Status di atas adalah status lokal 9Router dan tidak mengubah status tiket Redmine remote.
+                      Catatan: AI hanya diizinkan query SELECT (read-only) pada database dan tidak pernah mengubah data/skema langsung (jika ada alter, AI membuat file .sql). Jika database gagal terkoneksi dan task memerlukan database, status task dijadikan Pending.
                     </p>
                   </div>
 
@@ -2472,11 +2594,11 @@ export default function RedminePageClient() {
       {/* ──────────────── MODAL: CONFIGURATION ──────────────── */}
       {showConfigModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-surface border border-border rounded-[14px] w-full max-w-md overflow-hidden shadow-2xl text-text-main">
+          <div className="bg-surface border border-border rounded-[14px] w-full max-w-lg overflow-hidden shadow-2xl text-text-main">
             <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-surface-2/40">
               <h3 className="text-sm font-semibold text-text-main flex items-center gap-2">
                 <span className="material-symbols-outlined text-[18px] text-primary">settings</span>
-                Redmine API Configuration
+                Redmine API & AI Worker Configuration
               </h3>
               <button
                 onClick={() => setShowConfigModal(false)}
@@ -2487,7 +2609,7 @@ export default function RedminePageClient() {
               </button>
             </div>
 
-            <form onSubmit={handleSaveConfig} className="p-5 space-y-4">
+            <form onSubmit={handleSaveConfig} className="p-5 space-y-4 max-h-[80vh] overflow-y-auto custom-scrollbar">
               {configMsg && (
                 <div
                   className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
@@ -2503,47 +2625,124 @@ export default function RedminePageClient() {
                 </div>
               )}
 
-              <div>
-                <label className="block text-xs font-medium text-text-main mb-1">Redmine Base URL</label>
-                <input
-                  type="url"
-                  required
-                  placeholder="https://redmine.profescipta.co.id"
-                  value={cfgBaseUrl}
-                  onChange={(e) => setCfgBaseUrl(e.target.value)}
-                  className="w-full bg-bg border border-border rounded-xl px-3.5 py-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary outline-none transition-colors"
-                />
+              {/* Redmine Connection Info */}
+              <div className="space-y-3">
+                <span className="text-xs font-semibold text-text-muted uppercase tracking-wider block">
+                  Redmine Credentials
+                </span>
+
+                <div>
+                  <label className="block text-xs font-medium text-text-main mb-1">Redmine Base URL</label>
+                  <input
+                    type="url"
+                    required
+                    placeholder="https://redmine.profescipta.co.id"
+                    value={cfgBaseUrl}
+                    onChange={(e) => setCfgBaseUrl(e.target.value)}
+                    className="w-full bg-bg border border-border rounded-xl px-3.5 py-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary outline-none transition-colors"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-text-main mb-1">
+                    Redmine API Access Key
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="Paste your 40-character API access key"
+                    value={cfgApiKey}
+                    onChange={(e) => setCfgApiKey(e.target.value)}
+                    className="w-full bg-bg border border-border rounded-xl px-3.5 py-2 text-xs font-mono text-primary placeholder:text-text-muted focus:border-primary outline-none transition-colors"
+                  />
+                  <p className="text-[11px] text-text-muted mt-1">
+                    Find your API key on your Redmine account page (`/my/account`). Kosongkan jika tidak ingin mengubah key yang tersimpan.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-text-main mb-1">Account Email (Optional)</label>
+                  <input
+                    type="email"
+                    placeholder="user@example.com"
+                    value={cfgEmail}
+                    onChange={(e) => setCfgEmail(e.target.value)}
+                    className="w-full bg-bg border border-border rounded-xl px-3.5 py-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary outline-none transition-colors"
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-medium text-text-main mb-1">
-                  Redmine API Access Key
-                </label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Paste your 40-character API access key"
-                  value={cfgApiKey}
-                  onChange={(e) => setCfgApiKey(e.target.value)}
-                  className="w-full bg-bg border border-border rounded-xl px-3.5 py-2 text-xs font-mono text-primary placeholder:text-text-muted focus:border-primary outline-none transition-colors"
-                />
-                <p className="text-[11px] text-text-muted mt-1">
-                  Find your API key on your Redmine account page (`/my/account`).
-                </p>
+              {/* ──────────────── AI WORKER AUTOMATION SECTION ──────────────── */}
+              <div className="pt-3 border-t border-border space-y-3">
+                <span className="text-xs font-semibold text-text-muted uppercase tracking-wider block">
+                  AI Worker Automation
+                </span>
+
+                {/* Auto Work Toggle */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl bg-bg border border-border">
+                  <div className="pr-3">
+                    <span className="text-xs font-semibold text-text-main block">Auto Work with AI</span>
+                    <span className="text-[11px] text-text-muted block mt-0.5 leading-tight">
+                      Jika aktif (ON), setiap task pada project yang sudah di-assign local path akan otomatis dijalankan oleh AI worker tanpa perlu klik manual.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCfgAutoWorkWithAi(!cfgAutoWorkWithAi)}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      cfgAutoWorkWithAi ? "bg-primary" : "bg-surface-3"
+                    }`}
+                    aria-label="Toggle auto work with AI"
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        cfgAutoWorkWithAi ? "translate-x-5" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* AI Model Selection */}
+                <div>
+                  <label className="block text-xs font-medium text-text-main mb-1">
+                    AI Model for Redmine Worker
+                  </label>
+                  <select
+                    value={cfgAiModel}
+                    onChange={(e) => setCfgAiModel(e.target.value)}
+                    className="w-full bg-bg border border-border rounded-xl px-3.5 py-2 text-xs text-text-main focus:border-primary outline-none transition-colors"
+                  >
+                    {availableModels.length > 0 ? (
+                      availableModels.map((m) => (
+                        <option key={m.fullModel || m.model} value={m.fullModel || m.model}>
+                          {m.name || m.model} ({m.provider})
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="anthropic/claude-3-7-sonnet">Claude 3.7 Sonnet (Anthropic)</option>
+                        <option value="openai/gpt-4o">GPT-4o (OpenAI)</option>
+                        <option value="google/gemini-2.5-pro">Gemini 2.5 Pro (Google)</option>
+                      </>
+                    )}
+                  </select>
+                  <p className="text-[10px] text-text-muted mt-1">
+                    Pilihan model AI yang dipakai saat auto-work maupun saat manual klik Work with AI.
+                  </p>
+                </div>
+
+                {/* Database Access Rule Note */}
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-text-main text-[11px] leading-relaxed space-y-1">
+                  <div className="font-semibold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[15px]">security</span>
+                    Aturan Akses Database AI
+                  </div>
+                  <p className="text-text-muted">
+                    AI diizinkan mengakses database <strong>hanya untuk SELECT (read-only)</strong>. Dilarang keras INSERT, UPDATE, DELETE, atau ALTER/DROP. Jika butuh migrasi skema, AI akan membuat file <code>.sql</code>. Jika database tidak bisa terhubung dan task membutuhkan database, status task otomatis menjadi <strong>Pending</strong>.
+                  </p>
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-medium text-text-main mb-1">Account Email (Optional)</label>
-                <input
-                  type="email"
-                  placeholder="user@example.com"
-                  value={cfgEmail}
-                  onChange={(e) => setCfgEmail(e.target.value)}
-                  className="w-full bg-bg border border-border rounded-xl px-3.5 py-2 text-xs text-text-main placeholder:text-text-muted focus:border-primary outline-none transition-colors"
-                />
-              </div>
-
-              <div className="pt-2 flex items-center justify-end gap-2">
+              <div className="pt-2 flex items-center justify-end gap-2 border-t border-border">
                 <button
                   type="button"
                   onClick={() => setShowConfigModal(false)}
@@ -2561,7 +2760,7 @@ export default function RedminePageClient() {
                       progress_activity
                     </span>
                   )}
-                  Verify & Save
+                  Save Configuration
                 </button>
               </div>
             </form>
