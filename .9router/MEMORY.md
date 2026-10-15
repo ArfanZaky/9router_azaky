@@ -9,3 +9,5 @@
 - Database changes require .sql files; direct schema or data alterations prohibited.
 - Database access rule: AI worker restricted to SELECT-only; direct CLI write operations blocked, schema and data changes require .sql migration files.
 - 9router binary located at `F:\project\9router\9router.exe`.
+- Default 9Router login password is `123456`; configure via `INITIAL_PASSWORD` env var or reset via CLI `Settings` > `Reset Password to Default`.
+- Redmine auto-work execution requires both assigned local project path and active auto-work status.

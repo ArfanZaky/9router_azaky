@@ -292,6 +292,7 @@ export default function RedminePageClient() {
   const [projectsError, setProjectsError] = useState("");
   const [projectSearchQuery, setProjectSearchQuery] = useState("");
   const [projectPathFilter, setProjectPathFilter] = useState("all"); // "all" | "autowork" | "assigned" | "unassigned"
+  const [projectScope, setProjectScope] = useState("relevant"); // "relevant" (default) | "all"
 
   // Assign Path Modal
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -456,13 +457,15 @@ export default function RedminePageClient() {
     }
   }, [statusFilter, projectFilter, trackerFilter, searchQuery, meta?.config, triggerAutoWorkIfEnabled]);
 
-  const fetchProjects = useCallback(async (isRefresh = false) => {
+  const fetchProjects = useCallback(async (isRefresh = false, scopeOverride = null) => {
     try {
       if (isRefresh) setProjectsRefreshing(true);
       else setProjectsLoading(true);
       setProjectsError("");
 
-      const res = await fetch("/api/redmine/projects");
+      const targetScope = scopeOverride !== null ? scopeOverride : projectScope;
+      const url = targetScope === "all" ? "/api/redmine/projects?scope=all" : "/api/redmine/projects";
+      const res = await fetch(url);
       const data = await res.json();
 
       if (!res.ok) {
@@ -477,7 +480,7 @@ export default function RedminePageClient() {
       setProjectsLoading(false);
       setProjectsRefreshing(false);
     }
-  }, []);
+  }, [projectScope]);
 
   useEffect(() => {
     loadMeta();
@@ -971,6 +974,8 @@ export default function RedminePageClient() {
     let assignedCount = 0;
     let autoWorkCount = 0;
     let gitCount = 0;
+    let awaitingPathCount = 0;
+    let totalUserTasks = 0;
 
     for (const p of projectsList) {
       if (p.localPath) {
@@ -980,6 +985,10 @@ export default function RedminePageClient() {
       if (p.autoWork) {
         autoWorkCount++;
       }
+      if ((p.userTasksCount || 0) > 0 && !p.localPath) {
+        awaitingPathCount++;
+      }
+      totalUserTasks += p.userTasksCount || 0;
     }
 
     return {
@@ -987,6 +996,8 @@ export default function RedminePageClient() {
       assignedCount,
       autoWorkCount,
       unassignedCount: projectsList.length - assignedCount,
+      awaitingPathCount,
+      totalUserTasks,
       gitCount,
     };
   }, [projectsList]);
@@ -995,7 +1006,7 @@ export default function RedminePageClient() {
   const filteredProjects = useMemo(() => {
     return projectsList.filter((p) => {
       if (projectPathFilter === "assigned" && !p.localPath) return false;
-      if (projectPathFilter === "unassigned" && p.localPath) return false;
+      if (projectPathFilter === "unassigned" && (p.localPath || (p.userTasksCount || 0) === 0)) return false;
       if (projectPathFilter === "autowork" && !p.autoWork) return false;
 
       if (projectSearchQuery.trim()) {
@@ -1133,7 +1144,7 @@ export default function RedminePageClient() {
               activeTab === "projects" ? "bg-white/20 text-white" : "bg-surface-2 text-text-muted"
             }`}
           >
-            {projectsList.length || meta.projects.length}
+            {projectsList.length}
           </span>
         </button>
       </div>
@@ -1538,11 +1549,15 @@ export default function RedminePageClient() {
           <section aria-label="Project Summary" className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
             <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-primary/40 transition-all">
               <div className="flex items-center justify-between text-text-muted mb-1.5">
-                <span className="text-xs font-medium">Total Redmine Projects</span>
+                <span className="text-xs font-medium">
+                  {projectScope === "all" ? "Total Redmine Projects" : "My Active Projects"}
+                </span>
                 <span className="material-symbols-outlined text-[20px] text-text-subtle">domain</span>
               </div>
               <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.total}</div>
-              <span className="text-[11px] text-text-subtle block mt-0.5">Projects from Redmine</span>
+              <span className="text-[11px] text-text-subtle block mt-0.5">
+                {projectScope === "all" ? "Org-wide projects" : `${projectMetrics.totalUserTasks} assigned tasks total`}
+              </span>
             </div>
 
             <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-emerald-500/40 transition-all">
@@ -1567,14 +1582,14 @@ export default function RedminePageClient() {
               </span>
             </div>
 
-            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-purple-500/40 transition-all">
-              <div className="flex items-center justify-between text-purple-600 dark:text-purple-400 mb-1.5">
-                <span className="text-xs font-medium">Git Repositories</span>
-                <span className="material-symbols-outlined text-[20px]">commit</span>
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-amber-500/40 transition-all">
+              <div className="flex items-center justify-between text-amber-600 dark:text-amber-400 mb-1.5">
+                <span className="text-xs font-medium">Awaiting Path</span>
+                <span className="material-symbols-outlined text-[20px]">pending_actions</span>
               </div>
-              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.gitCount}</div>
-              <span className="text-[11px] text-purple-600/70 dark:text-purple-400/70 block mt-0.5">
-                Valid Git repos detected
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.awaitingPathCount}</div>
+              <span className="text-[11px] text-amber-600/70 dark:text-amber-400/70 block mt-0.5">
+                Projects with tasks needing path
               </span>
             </div>
           </section>
@@ -1606,7 +1621,7 @@ export default function RedminePageClient() {
                 <button
                   type="button"
                   onClick={() => setProjectPathFilter("all")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] cursor-pointer ${
                     projectPathFilter === "all"
                       ? "bg-surface text-primary shadow-xs font-semibold"
                       : "text-text-muted hover:text-text-main"
@@ -1617,18 +1632,18 @@ export default function RedminePageClient() {
                 <button
                   type="button"
                   onClick={() => setProjectPathFilter("autowork")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] cursor-pointer ${
                     projectPathFilter === "autowork"
                       ? "bg-surface text-emerald-600 dark:text-emerald-400 shadow-xs font-semibold"
                       : "text-text-muted hover:text-text-main"
                   }`}
                 >
-                  Auto Work Active ({projectMetrics.autoWorkCount})
+                  Auto Work ({projectMetrics.autoWorkCount})
                 </button>
                 <button
                   type="button"
                   onClick={() => setProjectPathFilter("assigned")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] cursor-pointer ${
                     projectPathFilter === "assigned"
                       ? "bg-surface text-blue-600 dark:text-blue-400 shadow-xs font-semibold"
                       : "text-text-muted hover:text-text-main"
@@ -1639,15 +1654,40 @@ export default function RedminePageClient() {
                 <button
                   type="button"
                   onClick={() => setProjectPathFilter("unassigned")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] cursor-pointer ${
                     projectPathFilter === "unassigned"
                       ? "bg-surface text-amber-600 dark:text-amber-400 shadow-xs font-semibold"
                       : "text-text-muted hover:text-text-main"
                   }`}
                 >
-                  Unassigned ({projectMetrics.unassignedCount})
+                  Awaiting Path ({projectMetrics.awaitingPathCount})
                 </button>
               </div>
+
+              {/* Scope Switcher: Relevant (default) vs All Org Projects */}
+              <button
+                type="button"
+                onClick={() => {
+                  const nextScope = projectScope === "relevant" ? "all" : "relevant";
+                  setProjectScope(nextScope);
+                  fetchProjects(false, nextScope);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium transition min-h-[44px] cursor-pointer ${
+                  projectScope === "all"
+                    ? "bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400"
+                    : "bg-surface hover:bg-surface-2 border-border text-text-muted hover:text-text-main shadow-2xs"
+                }`}
+                title={
+                  projectScope === "all"
+                    ? "Sedang menampilkan SEMUA project di Redmine (org-wide). Klik untuk kembali ke My & Assigned Projects."
+                    : "Hanya menampilkan project dengan task Anda atau yang sudah di-assign path. Klik jika ingin browse seluruh project org."
+                }
+              >
+                <span className="material-symbols-outlined text-[16px]">
+                  {projectScope === "all" ? "filter_alt" : "travel_explore"}
+                </span>
+                <span>{projectScope === "all" ? "Org-Wide: ON" : "Browse All Org"}</span>
+              </button>
             </div>
           </section>
 
@@ -1684,19 +1724,33 @@ export default function RedminePageClient() {
               <p className="text-xs text-text-muted max-w-sm mx-auto mt-1 mb-4">
                 {projectSearchQuery || projectPathFilter !== "all"
                   ? "No projects match the active search or filter. Try clearing filters."
-                  : "No projects loaded from Redmine. Please check connection and permissions."}
+                  : "No projects with assigned tasks or local paths found."}
               </p>
-              {(projectSearchQuery || projectPathFilter !== "all") && (
-                <button
-                  onClick={() => {
-                    setProjectSearchQuery("");
-                    setProjectPathFilter("all");
-                  }}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-surface-2 hover:bg-surface-3 text-text-main border border-border font-medium text-xs transition min-h-[44px]"
-                >
-                  Reset Project Filters
-                </button>
-              )}
+              <div className="flex items-center justify-center gap-2">
+                {(projectSearchQuery || projectPathFilter !== "all") && (
+                  <button
+                    onClick={() => {
+                      setProjectSearchQuery("");
+                      setProjectPathFilter("all");
+                    }}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-surface-2 hover:bg-surface-3 text-text-main border border-border font-medium text-xs transition min-h-[44px]"
+                  >
+                    Reset Project Filters
+                  </button>
+                )}
+                {projectScope === "relevant" && (
+                  <button
+                    onClick={() => {
+                      setProjectScope("all");
+                      fetchProjects(false, "all");
+                    }}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary hover:bg-primary-hover text-white font-medium text-xs transition min-h-[44px]"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">travel_explore</span>
+                    Browse All Org Projects
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
             /* Projects Table */
@@ -1707,6 +1761,7 @@ export default function RedminePageClient() {
                     <tr>
                       <th className="px-4 py-3.5 w-16"># ID</th>
                       <th className="px-4 py-3.5 min-w-[200px]">Project Name & Identifier</th>
+                      <th className="px-4 py-3.5 whitespace-nowrap">My Tasks</th>
                       <th className="px-4 py-3.5">Status</th>
                       <th className="px-4 py-3.5 whitespace-nowrap">Auto Work AI</th>
                       <th className="px-4 py-3.5 min-w-[240px]">Assigned Local Path</th>
@@ -1745,6 +1800,28 @@ export default function RedminePageClient() {
                                 </>
                               )}
                             </div>
+                          </td>
+
+                          {/* My Tasks Column */}
+                          <td className="px-4 py-3.5 whitespace-nowrap">
+                            {project.userTasksCount > 0 ? (
+                              <button
+                                type="button"
+                                onClick={(e) => handleFilterTasksByProject(project.id, e)}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 hover:bg-primary/20 border border-primary/25 text-primary text-xs font-semibold transition cursor-pointer"
+                                title={`Klik untuk melihat ${project.userTasksCount} task Anda di project ini`}
+                              >
+                                <span className="material-symbols-outlined text-[14px]">assignment</span>
+                                <span>{project.userTasksCount} Tasks</span>
+                                {project.openTasksCount > 0 && (
+                                  <span className="text-[10px] opacity-80 font-normal">
+                                    ({project.openTasksCount} open)
+                                  </span>
+                                )}
+                              </button>
+                            ) : (
+                              <span className="text-text-subtle text-[11px] font-mono px-1">0 tasks</span>
+                            )}
                           </td>
 
                           <td className="px-4 py-3.5 whitespace-nowrap">

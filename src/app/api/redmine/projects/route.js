@@ -20,9 +20,15 @@ export async function GET(req) {
     const { searchParams } = new URL(req.url);
     const search = searchParams.get("search") || "";
     const assignedOnly = searchParams.get("assignedOnly") === "true";
+    const scope = searchParams.get("scope") || "relevant";
+    const showAll = searchParams.get("all") === "true" || scope === "all";
 
     const [projects, knownWorkspaces] = await Promise.all([
-      getRedmineProjects(config, { all: true, search }),
+      getRedmineProjects(config, {
+        all: true,
+        search,
+        relevantOnly: !showAll,
+      }),
       getKnownWorkspaces().catch(() => []),
     ]);
 
@@ -34,6 +40,7 @@ export async function GET(req) {
       ok: true,
       projects: filtered,
       totalCount: filtered.length,
+      scope: showAll ? "all" : "relevant",
       knownWorkspaces,
     });
   } catch (err) {

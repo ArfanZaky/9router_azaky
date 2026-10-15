@@ -171,6 +171,47 @@ export async function verifyRedmineConnection(customConfig = null) {
   return data?.user || null;
 }
 
+export async function getUserAssignedProjectStats(customConfig = null) {
+  const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) return new Map();
+
+  const stats = new Map(); // projectId -> { count, openCount }
+  try {
+    const res = await fetch(
+      `${config.baseUrl}/issues.json?assigned_to_id=me&status_id=*&limit=100`,
+      {
+        headers: getHeaders(config.apiKey),
+        cache: "no-store",
+      }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const issues = data?.issues || [];
+      for (const issue of issues) {
+        if (issue.project?.id) {
+          const pid = Number(issue.project.id);
+          const curr = stats.get(pid) || { count: 0, openCount: 0 };
+          curr.count++;
+          const s = (issue.status?.name || "").toLowerCase();
+          if (
+            !s.includes("done") &&
+            !s.includes("close") &&
+            !s.includes("resolved") &&
+            !s.includes("reject") &&
+            !s.includes("cancel")
+          ) {
+            curr.openCount++;
+          }
+          stats.set(pid, curr);
+        }
+      }
+    }
+  } catch {
+    // quiet fallback
+  }
+  return stats;
+}
+
 export async function getRedmineIssues({
   statusId = "open",
   assignedToId = "me",
@@ -299,7 +340,7 @@ export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio, 
   return { ok: true, issueId };
 }
 
-export async function getRedmineProjects(customConfig = null, { all = true, search = "" } = {}) {
+export async function getRedmineProjects(customConfig = null, { all = true, search = "", relevantOnly = true } = {}) {
   const config = customConfig || (await getRedmineConfig());
   if (!config.apiKey) return [];
   
@@ -308,19 +349,24 @@ export async function getRedmineProjects(customConfig = null, { all = true, sear
   let offset = 0;
   let totalCount = 0;
 
-  do {
-    const res = await fetch(`${config.baseUrl}/projects.json?limit=${limit}&offset=${offset}`, {
-      headers: getHeaders(config.apiKey),
-      cache: "no-store",
-    });
-    if (!res.ok) break;
-    const data = await res.json();
-    totalCount = data?.total_count || 0;
-    const batch = data?.projects || [];
-    allProjects.push(...batch);
-    if (!all || allProjects.length >= totalCount || batch.length === 0) break;
-    offset += limit;
-  } while (offset < totalCount);
+  const [_, userTaskStats] = await Promise.all([
+    (async () => {
+      do {
+        const res = await fetch(`${config.baseUrl}/projects.json?limit=${limit}&offset=${offset}`, {
+          headers: getHeaders(config.apiKey),
+          cache: "no-store",
+        });
+        if (!res.ok) break;
+        const data = await res.json();
+        totalCount = data?.total_count || 0;
+        const batch = data?.projects || [];
+        allProjects.push(...batch);
+        if (!all || allProjects.length >= totalCount || batch.length === 0) break;
+        offset += limit;
+      } while (offset < totalCount);
+    })(),
+    getUserAssignedProjectStats(config).catch(() => new Map()),
+  ]);
 
   const projectPaths = config.projectPaths || {};
   let enriched = allProjects.map((p) => {
@@ -329,6 +375,11 @@ export async function getRedmineProjects(customConfig = null, { all = true, sear
     const assignedAt = assigned?.assignedAt || null;
     const autoWork = assigned ? (assigned.autoWork !== undefined ? Boolean(assigned.autoWork) : true) : false;
     const inspection = localPath ? inspectLocalPath(localPath) : null;
+    const taskInfo = userTaskStats.get(Number(p.id)) || userTaskStats.get(String(p.id)) || { count: 0, openCount: 0 };
+    const hasUserTasks = taskInfo.count > 0;
+    const hasAssignedPath = Boolean(localPath);
+    const isRelevant = hasUserTasks || hasAssignedPath;
+
     return {
       ...p,
       localPath,
@@ -336,8 +387,17 @@ export async function getRedmineProjects(customConfig = null, { all = true, sear
       autoWork,
       pathExists: inspection?.exists ?? null,
       isGitRepo: inspection?.isGit ?? null,
+      userTasksCount: taskInfo.count,
+      openTasksCount: taskInfo.openCount,
+      hasUserTasks,
+      hasAssignedPath,
+      isRelevant,
     };
   });
+
+  if (relevantOnly) {
+    enriched = enriched.filter((p) => p.isRelevant);
+  }
 
   if (search && search.trim()) {
     const term = search.toLowerCase().trim();
@@ -348,6 +408,17 @@ export async function getRedmineProjects(customConfig = null, { all = true, sear
       (p.localPath && p.localPath.toLowerCase().includes(term))
     );
   }
+
+  // Sort: open tasks desc, then assigned path desc, then name asc
+  enriched.sort((a, b) => {
+    if ((b.openTasksCount || 0) !== (a.openTasksCount || 0)) {
+      return (b.openTasksCount || 0) - (a.openTasksCount || 0);
+    }
+    if (Boolean(b.localPath) !== Boolean(a.localPath)) {
+      return b.localPath ? 1 : -1;
+    }
+    return (a.name || "").localeCompare(b.name || "");
+  });
 
   return enriched;
 }
