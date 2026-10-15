@@ -133,7 +133,7 @@ export async function getRedmineIssueDetail(issueId, customConfig = null) {
   return data?.issue || null;
 }
 
-export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio }, customConfig = null) {
+export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio, uploads }, customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
   if (!config.apiKey) {
     throw new Error("Redmine API key is not configured");
@@ -142,6 +142,7 @@ export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio }
   if (notes) issueUpdate.notes = notes;
   if (statusId) issueUpdate.status_id = Number(statusId);
   if (doneRatio !== undefined && doneRatio !== null) issueUpdate.done_ratio = Number(doneRatio);
+  if (Array.isArray(uploads) && uploads.length > 0) issueUpdate.uploads = uploads;
 
   const res = await fetch(`${config.baseUrl}/issues/${issueId}.json`, {
     method: "PUT",
@@ -190,4 +191,97 @@ export async function getRedmineTrackers(customConfig = null) {
   if (!res.ok) return [];
   const data = await res.json();
   return data?.trackers || [];
+}
+
+export async function getTimeEntryActivities(customConfig = null) {
+  const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) return [];
+  const res = await fetch(`${config.baseUrl}/enumerations/time_entry_activities.json`, {
+    headers: getHeaders(config.apiKey),
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data?.time_entry_activities || [];
+}
+
+export async function getTimeEntries({ issueId = null, userId = null, limit = 50, offset = 0, customConfig = null } = {}) {
+  const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) return [];
+  const params = new URLSearchParams();
+  if (issueId) params.append("issue_id", String(issueId));
+  if (userId) params.append("user_id", String(userId));
+  params.append("limit", String(limit));
+  params.append("offset", String(offset));
+
+  const res = await fetch(`${config.baseUrl}/time_entries.json?${params.toString()}`, {
+    headers: getHeaders(config.apiKey),
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data?.time_entries || [];
+}
+
+export async function createRedmineTimeEntry({ issueId, hours, activityId, comments = "", spentOn = null }, customConfig = null) {
+  const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) {
+    throw new Error("Redmine API key is not configured");
+  }
+  if (!issueId || !hours || !activityId) {
+    throw new Error("issueId, hours, and activityId are required to log time");
+  }
+
+  const payload = {
+    time_entry: {
+      issue_id: Number(issueId),
+      hours: Number(hours),
+      activity_id: Number(activityId),
+      comments: String(comments || "").trim(),
+      spent_on: spentOn || new Date().toISOString().slice(0, 10),
+    },
+  };
+
+  const res = await fetch(`${config.baseUrl}/time_entries.json`, {
+    method: "POST",
+    headers: getHeaders(config.apiKey),
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok && res.status !== 201) {
+    const errorText = await res.text();
+    throw new Error(`Failed to log time (${res.status}): ${errorText || res.statusText}`);
+  }
+
+  const data = await res.json().catch(() => ({}));
+  return data?.time_entry || { ok: true };
+}
+
+export async function uploadRedmineFile({ buffer, filename, contentType = "application/octet-stream" }, customConfig = null) {
+  const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) {
+    throw new Error("Redmine API key is not configured");
+  }
+
+  const res = await fetch(`${config.baseUrl}/uploads.json?filename=${encodeURIComponent(filename)}`, {
+    method: "POST",
+    headers: {
+      "X-Redmine-API-Key": config.apiKey,
+      "Content-Type": "application/octet-stream",
+    },
+    body: buffer,
+  });
+
+  if (!res.ok && res.status !== 201) {
+    const errorText = await res.text();
+    throw new Error(`Failed to upload attachment to Redmine (${res.status}): ${errorText || res.statusText}`);
+  }
+
+  const data = await res.json();
+  return {
+    token: data?.upload?.token,
+    id: data?.upload?.id,
+    filename,
+    contentType,
+  };
 }
