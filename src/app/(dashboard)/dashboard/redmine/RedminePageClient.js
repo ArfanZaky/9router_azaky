@@ -956,10 +956,9 @@ export default function RedminePageClient() {
                       return (
                         <tr
                           key={issue.id}
-                          onClick={() => openIssueDetail(issue.id)}
-                          className="hover:bg-surface-2/60 cursor-pointer transition-colors group"
+                          className="hover:bg-surface-2/40 transition-colors"
                         >
-                          <td className="px-4 py-3.5 font-mono text-xs text-primary font-semibold group-hover:underline">
+                          <td className="px-4 py-3.5 font-mono text-xs text-primary font-semibold">
                             #{issue.id}
                           </td>
 
