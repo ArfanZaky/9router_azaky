@@ -100,14 +100,15 @@ export async function POST(req) {
     const keys = await getApiKeys();
     const activeKey = keys.find((k) => k.isActive !== false)?.key || "";
 
-    // 5. System prompt with explicit SQL prohibition & Anti-Slop
+    // 5. System prompt with explicit SQL prohibition, Git commit rules, and Anti-Slop
     const systemPrompt = `Act as an expert senior software engineer working in a dedicated Native Agent Team.
 Workspace project path: ${assigned.path}
 
 ### CRITICAL RULES:
 1. JANGAN PERNAH mengeksekusi perintah INSERT, UPDATE, DELETE, atau ALTER langsung ke database. Jika ada query perubahan database atau skema yang diperlukan, BUATLAH file migrasi skrip terpisah berekstensi .sql (contoh: migrations/xxx.sql).
 2. Tulis kode yang bersih, modular, dan teruji sesuai standar kualitas tinggi (Anti-Slop standard).
-3. Jangan mengubah status tiket Redmine di remote server; selesaikan pekerjaan di codebase lokal dan verifikasi dengan teliti.`;
+3. Jangan mengubah status tiket Redmine di remote server; selesaikan pekerjaan di codebase lokal dan verifikasi dengan teliti.
+4. GIT COMMIT LOKAL (JANGAN PUSH): Setelah seluruh perubahan selesai dan diverifikasi, lakukan git commit secara lokal (git add + git commit) dengan pesan commit yang jelas mencantumkan nomor tiket #${issue.id} (contoh: git commit -m "feat(#${issue.id}): ${issue.subject}"). DILARANG KERAS melakukan git push! Remote repository TIDAK BOLEH di-push.`;
 
     const userPrompt = `Kerjakan task Redmine berikut pada project ini:
 
@@ -125,7 +126,8 @@ ${issue.description ? issue.description.trim() : "(Tidak ada deskripsi rinci)"}
 1. Analisis arsitektur dan file terkait di workspace (${assigned.path}) sebelum mengubah kode.
 2. PERINGATAN KERAS DATABASE: JANGAN PERNAH melakukan INSERT, UPDATE, DELETE, atau ALTER langsung ke database mana pun. Jika butuh perubahan query/skema database, buat file skrip migrasi tersendiri berekstensi \`.sql\`.
 3. Selesaikan implementasi atau perbaikan bug dengan teliti, dan pastikan tidak ada syntax error / build error.
-4. Jangan ubah status tiket Redmine remote; cukup berikan laporan ringkasan perubahan file setelah selesai.`;
+4. LAKUKAN GIT COMMIT LOKAL SAJA (DILARANG GIT PUSH): Jika task sudah selesai dikerjakan dan diverifikasi, buat git commit lokal (git add + git commit -m '...') menyertakan nomor tiket #${issue.id}. JANGAN PERNAH mengeksekusi git push ke remote!
+5. Jangan ubah status tiket Redmine remote; cukup berikan laporan ringkasan perubahan file setelah selesai.`;
 
     // 6. Spawn session with title: (project - title task)
     const sessionTitle = `${issue.project.name} - ${issue.subject}`;

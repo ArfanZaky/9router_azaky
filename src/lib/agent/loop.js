@@ -275,6 +275,7 @@ export async function runAgentLoop({
   mcpTools = [],
   depth = 0,
   reasoning_effort,
+  isRedmineTask = false,
 }) {
   const emit = async (event, data) => {
     if (signal?.aborted) return;
@@ -562,6 +563,7 @@ export async function runAgentLoop({
           apiKey,
           origin,
           accessMode: mode,
+          isRedmineTask,
           onTaskUpdate,
           onDelegate: depth < 1 ? onDelegate : null,
           onTeamRoster: depth < 2 ? onTeamRoster : null,

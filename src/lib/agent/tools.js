@@ -128,12 +128,21 @@ function resolveShell(shell, cmd, isWin) {
     : { shell: "/bin/sh", args: ["-c", cmd] };
 }
 
-async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress, shell, workspace, sessionId } = {}) {
+async function runBash(command, { cwd, timeoutMs = BASH_TIMEOUT_MS, onProgress, shell, workspace, sessionId, isRedmineTask } = {}) {
   const cmd = String(command || "").trim();
   if (!cmd) return { ok: false, error: "Empty command" };
   for (const re of DENY_CMD) {
     if (re.test(cmd)) return { ok: false, error: `Blocked dangerous command pattern` };
   }
+
+  // Strict guard for Redmine tasks: NEVER allow git push to remote
+  if (isRedmineTask && /\bgit\s+push\b/i.test(cmd)) {
+    return {
+      ok: false,
+      error: "Action blocked: 'git push' is strictly forbidden on Redmine tasks. You must only commit locally using 'git commit -m \"...\"' without pushing to remote.",
+    };
+  }
+
   const isWin = process.platform === "win32";
   const { shell: sh, args } = resolveShell(shell, cmd, isWin);
   return await new Promise((resolve) => {
@@ -652,6 +661,7 @@ export async function executeTool(name, args = {}, ctx = {}) {
   const accessMode = ctx.accessMode === "full" ? "full" : "sandbox";
   const apiKey = ctx.apiKey || "";
   const origin = ctx.origin || "http://127.0.0.1:20128";
+  const isRedmineTask = Boolean(ctx.isRedmineTask);
 
   const need = TOOL_ACCESS[name] || "full";
   if (accessMode === "sandbox" && need === "full") {
@@ -685,6 +695,14 @@ export async function executeTool(name, args = {}, ctx = {}) {
           : path.resolve(workspace || process.cwd());
 
         const cmdTrimmed = String(args.command || "").trim();
+
+        // Strict guard: block git push on Redmine tasks
+        if (isRedmineTask && /\bgit\s+push\b/i.test(cmdTrimmed)) {
+          return JSON.stringify({
+            ok: false,
+            error: "Action blocked: 'git push' is strictly forbidden on Redmine tasks. You must only commit locally using 'git commit -m \"...\"' without pushing to remote.",
+          });
+        }
 
         // Self-Preservation Guard:
         // When running inside 9Router under PM2, executing direct self-restart/kill commands
@@ -739,6 +757,7 @@ export async function executeTool(name, args = {}, ctx = {}) {
           onProgress: ctx.onProgress,
           workspace,
           sessionId: ctx.sessionId,
+          isRedmineTask,
         });
         return JSON.stringify(result);
       }

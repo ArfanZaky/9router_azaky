@@ -501,6 +501,7 @@ async function runPlainChat(run) {
 
 async function runAgent(run) {
   const mcp = await loadMcpTools();
+  const isRedmineTask = Boolean(run.projectMeta?.redmineIssueId);
 
   // Dynamic context injection: provide current Task Board & Roster so model sees existing tasks on subsequent turns
   let teamContextPrompt = "";
@@ -546,6 +547,7 @@ async function runAgent(run) {
     reasoning_effort: run.request.params.reasoning_effort || "",
     signal: run.abortController.signal,
     activeGoal: run.goal,
+    isRedmineTask,
     mcpTools: mcp.tools,
     onMcpCall: async (name, args) => {
       const entry = mcp.registry.find((r) => r.name === name);
@@ -740,6 +742,7 @@ async function runAgent(run) {
           maxSteps: run.request.maxSteps > 0 ? Math.min(run.request.maxSteps, 8) : 8,
           signal: run.abortController.signal,
           depth: 1,
+          isRedmineTask,
           onEvent: async (type, data) => {
             const event = { seq: ++sub.seq, type, data, createdAt: new Date().toISOString() };
             sub.events.push(event);
@@ -825,6 +828,7 @@ async function runSubAgent(parent, { role, task }) {
       maxSteps: parent.request.maxSteps > 0 ? Math.min(parent.request.maxSteps, 6) : 6,
       signal: parent.abortController.signal,
       depth: 1,
+      isRedmineTask: Boolean(parent.projectMeta?.redmineIssueId),
       onEvent: async (type, data) => {
         const event = { seq: ++sub.seq, type, data, createdAt: new Date().toISOString() };
         sub.events.push(event);
@@ -969,6 +973,41 @@ async function execute(run) {
             updatedAt: new Date().toISOString(),
           };
           await updateSettings({ redmineTaskStatuses: rts }).catch(() => {});
+
+          // Auto-commit any remaining uncommitted changes locally (NEVER PUSH)
+          try {
+            const projectDir = sess.workspacePath || run.workspace;
+            if (projectDir) {
+              const { execSync } = await import("node:child_process");
+              const gitStatus = execSync("git status --porcelain", {
+                cwd: projectDir,
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "ignore"],
+                timeout: 10000,
+              });
+              if (gitStatus && gitStatus.trim().length > 0) {
+                const rawSubject = sess.projectMeta.redmineIssueSubject || sess.title || "resolve redmine task";
+                const cleanSubject = String(rawSubject).replace(/[\r\n"\\`$]/g, " ").trim();
+                const commitMsg = `feat(#${rIssueId}): ${cleanSubject}`;
+                execSync("git add -A", { cwd: projectDir, stdio: "ignore", timeout: 15000 });
+                try {
+                  execSync(`git commit -m "${commitMsg}"`, { cwd: projectDir, stdio: "ignore", timeout: 15000 });
+                } catch {
+                  // Fallback author if no user.name/email set in repo
+                  execSync(`git -c user.name="9Router Agent" -c user.email="agent@9router.local" commit -m "${commitMsg}"`, {
+                    cwd: projectDir,
+                    stdio: "ignore",
+                    timeout: 15000,
+                  });
+                }
+                await emit(run, "notice", {
+                  message: `Task changes automatically committed locally: "${commitMsg}" (remote push skipped as requested).`,
+                }).catch(() => {});
+              }
+            }
+          } catch {
+            // Not a git repository or commit error, safely ignore
+          }
         }
       } catch {
         // ignore
@@ -1092,6 +1131,7 @@ export async function startServerChatRun(input) {
     titleSeed: input.titleSeed || "",
     workspace,
     codebase,
+    projectMeta: session.projectMeta || input.projectMeta || null,
     steering: [],
     tasks: Array.isArray(session.tasks) ? [...session.tasks] : [],
     subAgents: new Map(),
