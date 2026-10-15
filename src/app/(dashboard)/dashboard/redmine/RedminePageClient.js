@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 
 function getStatusBadgeClass(statusName = "") {
   const s = statusName.toLowerCase();
@@ -67,11 +68,34 @@ function getAttachmentProxyUrl(attachment) {
 }
 
 export default function RedminePageClient() {
+  const router = useRouter();
+
+  // Top level active tab: "tasks" | "projects"
+  const [activeTab, setActiveTab] = useState("tasks");
+
+  // Tasks state
   const [issues, setIssues] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+
+  // Projects state
+  const [projectsList, setProjectsList] = useState([]);
+  const [knownWorkspaces, setKnownWorkspaces] = useState([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsRefreshing, setProjectsRefreshing] = useState(false);
+  const [projectsError, setProjectsError] = useState("");
+  const [projectSearchQuery, setProjectSearchQuery] = useState("");
+  const [projectPathFilter, setProjectPathFilter] = useState("all"); // "all" | "assigned" | "unassigned"
+
+  // Assign Path Modal
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [assignTargetProject, setAssignTargetProject] = useState(null);
+  const [assignPathInput, setAssignPathInput] = useState("");
+  const [assigningPath, setAssigningPath] = useState(false);
+  const [assignMsg, setAssignMsg] = useState("");
+  const [assignError, setAssignError] = useState("");
 
   const [meta, setMeta] = useState({
     projects: [],
@@ -170,13 +194,40 @@ export default function RedminePageClient() {
     }
   }, [statusFilter, projectFilter, trackerFilter, searchQuery]);
 
+  const fetchProjects = useCallback(async (isRefresh = false) => {
+    try {
+      if (isRefresh) setProjectsRefreshing(true);
+      else setProjectsLoading(true);
+      setProjectsError("");
+
+      const res = await fetch("/api/redmine/projects");
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to fetch projects list from Redmine");
+      }
+
+      setProjectsList(data.projects || []);
+      setKnownWorkspaces(data.knownWorkspaces || []);
+    } catch (err) {
+      setProjectsError(err.message || "Failed to load Redmine projects");
+    } finally {
+      setProjectsLoading(false);
+      setProjectsRefreshing(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadMeta();
   }, [loadMeta]);
 
   useEffect(() => {
-    fetchIssues();
-  }, [fetchIssues]);
+    if (activeTab === "tasks") {
+      fetchIssues();
+    } else if (activeTab === "projects") {
+      fetchProjects();
+    }
+  }, [activeTab, fetchIssues, fetchProjects]);
 
   const openIssueDetail = useCallback(async (id, silent = false) => {
     setSelectedIssueId(id);
@@ -203,7 +254,6 @@ export default function RedminePageClient() {
   }, []);
 
   const closeIssueDetail = () => {
-    // Revoke any pending attachment object URLs
     pendingAttachments.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
     });
@@ -215,14 +265,12 @@ export default function RedminePageClient() {
     setChatInputText("");
   };
 
-  // Scroll to chat bottom when issue detail loads or changes
   useEffect(() => {
     if (issueDetail && chatBottomRef.current) {
       chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [issueDetail?.journals?.length, issueDetail?.id]);
 
-  // Handle files attached (from input or clipboard)
   const addFilesToPending = (files) => {
     if (!files || files.length === 0) return;
     const newItems = Array.from(files).map((f) => {
@@ -246,7 +294,6 @@ export default function RedminePageClient() {
     });
   };
 
-  // Clipboard paste listener: paste screenshot/image directly into chat input
   const handleChatPaste = (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -255,9 +302,7 @@ export default function RedminePageClient() {
       const item = items[i];
       if (item.kind === "file") {
         const file = item.getAsFile();
-        if (file) {
-          filesToUpload.push(file);
-        }
+        if (file) filesToUpload.push(file);
       }
     }
     if (filesToUpload.length > 0) {
@@ -266,7 +311,6 @@ export default function RedminePageClient() {
     }
   };
 
-  // Send message / comment in chat view
   const handleSendChatMessage = async (e) => {
     if (e) e.preventDefault();
     if (!selectedIssueId) return;
@@ -310,7 +354,6 @@ export default function RedminePageClient() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to post message to Redmine");
 
-      // Revoke previews
       pendingAttachments.forEach((a) => {
         if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
       });
@@ -326,7 +369,6 @@ export default function RedminePageClient() {
     }
   };
 
-  // Open Log Time modal
   const openLogTimeModal = (issue, e) => {
     if (e) e.stopPropagation();
     setLogTimeTargetIssue(issue);
@@ -336,7 +378,6 @@ export default function RedminePageClient() {
     setLogTimeMsg("");
     setLogTimeError("");
 
-    // Set default activity (prefer Coding id 12 or first item)
     const codingAct = meta.timeEntryActivities?.find(
       (a) => a.name?.toLowerCase().includes("coding") || a.name?.toLowerCase().includes("development")
     ) || meta.timeEntryActivities?.[0];
@@ -384,6 +425,111 @@ export default function RedminePageClient() {
     }
   };
 
+  // Open Assign Local Path Modal
+  const openAssignModal = (project, e) => {
+    if (e) e.stopPropagation();
+    setAssignTargetProject(project);
+    setAssignPathInput(project.localPath || "");
+    setAssignMsg("");
+    setAssignError("");
+    setShowAssignModal(true);
+  };
+
+  const handleSaveProjectPath = async (e) => {
+    if (e) e.preventDefault();
+    if (!assignTargetProject) return;
+    setAssigningPath(true);
+    setAssignMsg("");
+    setAssignError("");
+
+    try {
+      const res = await fetch("/api/redmine/projects/assign-path", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: assignTargetProject.id,
+          path: assignPathInput.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to assign project path");
+
+      setAssignMsg(assignPathInput.trim() ? "Local path assigned successfully." : "Local path assignment cleared.");
+      setTimeout(() => {
+        setShowAssignModal(false);
+        setAssignMsg("");
+        fetchProjects(true);
+      }, 800);
+    } catch (err) {
+      setAssignError(err.message || "Failed to save project path assignment");
+    } finally {
+      setAssigningPath(false);
+    }
+  };
+
+  const handleClearProjectPath = async () => {
+    if (!assignTargetProject) return;
+    setAssigningPath(true);
+    setAssignMsg("");
+    setAssignError("");
+
+    try {
+      const res = await fetch("/api/redmine/projects/assign-path", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: assignTargetProject.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to clear project path");
+
+      setAssignPathInput("");
+      setAssignMsg("Assignment cleared.");
+      setTimeout(() => {
+        setShowAssignModal(false);
+        setAssignMsg("");
+        fetchProjects(true);
+      }, 800);
+    } catch (err) {
+      setAssignError(err.message || "Failed to clear path");
+    } finally {
+      setAssigningPath(false);
+    }
+  };
+
+  // Quick Open in Chat Session with preloaded workspace
+  const handleOpenInChat = async (project, e) => {
+    if (e) e.stopPropagation();
+    if (!project.localPath) return;
+
+    try {
+      const res = await fetch("/api/chat/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: `Redmine: ${project.name}`,
+          workspacePath: project.localPath,
+          codebase: project.localPath,
+        }),
+      });
+
+      const session = await res.json();
+      if (session?.id) {
+        router.push(`/dashboard/chat?session=${session.id}`);
+      } else {
+        router.push(`/dashboard/chat?workspace=${encodeURIComponent(project.localPath)}`);
+      }
+    } catch {
+      router.push(`/dashboard/chat?workspace=${encodeURIComponent(project.localPath)}`);
+    }
+  };
+
+  const handleFilterTasksByProject = (projectId, e) => {
+    if (e) e.stopPropagation();
+    setProjectFilter(String(projectId));
+    setActiveTab("tasks");
+  };
+
   const handleSaveConfig = async (e) => {
     e.preventDefault();
     setSavingConfig(true);
@@ -406,6 +552,7 @@ export default function RedminePageClient() {
       setConfigMsg("Redmine connection verified and saved.");
       loadMeta();
       fetchIssues(true);
+      if (activeTab === "projects") fetchProjects(true);
       setTimeout(() => setShowConfigModal(false), 1200);
     } catch (err) {
       setConfigMsg(`Error: ${err.message}`);
@@ -431,6 +578,44 @@ export default function RedminePageClient() {
     return { readyCount, inProgressCount, doneCount, totalSpent: totalSpent.toFixed(1) };
   }, [issues]);
 
+  const projectMetrics = useMemo(() => {
+    let assignedCount = 0;
+    let gitCount = 0;
+
+    for (const p of projectsList) {
+      if (p.localPath) {
+        assignedCount++;
+        if (p.isGitRepo) gitCount++;
+      }
+    }
+
+    return {
+      total: projectsList.length,
+      assignedCount,
+      unassignedCount: projectsList.length - assignedCount,
+      gitCount,
+    };
+  }, [projectsList]);
+
+  // Filtered projects list
+  const filteredProjects = useMemo(() => {
+    return projectsList.filter((p) => {
+      if (projectPathFilter === "assigned" && !p.localPath) return false;
+      if (projectPathFilter === "unassigned" && p.localPath) return false;
+
+      if (projectSearchQuery.trim()) {
+        const q = projectSearchQuery.toLowerCase().trim();
+        const matchName = p.name && p.name.toLowerCase().includes(q);
+        const matchId = p.identifier && p.identifier.toLowerCase().includes(q);
+        const matchNum = String(p.id).includes(q);
+        const matchPath = p.localPath && p.localPath.toLowerCase().includes(q);
+        const matchDesc = p.description && p.description.toLowerCase().includes(q);
+        return matchName || matchId || matchNum || matchPath || matchDesc;
+      }
+      return true;
+    });
+  }, [projectsList, projectPathFilter, projectSearchQuery]);
+
   return (
     <div className="flex min-w-0 flex-col gap-6 pb-12">
       {/* Top Header */}
@@ -441,7 +626,7 @@ export default function RedminePageClient() {
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2.5 flex-wrap">
-              <h1 className="text-xl sm:text-2xl font-bold text-text-main tracking-tight">Redmine Tasks</h1>
+              <h1 className="text-xl sm:text-2xl font-bold text-text-main tracking-tight">Redmine Workspace</h1>
               <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium flex items-center gap-1.5 shadow-xs">
                 <span className="size-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400 animate-pulse" />
                 Live Sync
@@ -450,7 +635,7 @@ export default function RedminePageClient() {
             <p className="text-xs sm:text-sm text-text-muted mt-0.5 truncate">
               {meta.config?.userName
                 ? `Assigned to ${meta.config.userName} (${meta.config.userEmail || "azaky"})`
-                : "Active task monitoring and issue management from Profescipta Redmine"}
+                : "Active task monitoring, issue management, and local project workspace linking"}
             </p>
           </div>
         </div>
@@ -467,12 +652,19 @@ export default function RedminePageClient() {
           </a>
 
           <button
-            onClick={() => fetchIssues(true)}
-            disabled={refreshing || loading}
+            onClick={() => {
+              if (activeTab === "tasks") fetchIssues(true);
+              else fetchProjects(true);
+            }}
+            disabled={refreshing || loading || projectsRefreshing || projectsLoading}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-surface hover:bg-surface-2 text-text-main text-xs font-medium border border-border shadow-xs transition disabled:opacity-50 min-h-[44px]"
-            title="Refresh issues"
+            title="Refresh data"
           >
-            <span className={`material-symbols-outlined text-[16px] text-text-muted ${refreshing ? "animate-spin text-primary" : ""}`}>
+            <span
+              className={`material-symbols-outlined text-[16px] text-text-muted ${
+                refreshing || projectsRefreshing ? "animate-spin text-primary" : ""
+              }`}
+            >
               refresh
             </span>
             Refresh
@@ -488,306 +680,824 @@ export default function RedminePageClient() {
         </div>
       </div>
 
-      {/* Metric Cards */}
-      <section aria-label="Task Summary" className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
-        <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-primary/40 transition-all">
-          <div className="flex items-center justify-between text-text-muted mb-1.5">
-            <span className="text-xs font-medium">Total Assigned</span>
-            <span className="material-symbols-outlined text-[20px] text-text-subtle">assignment</span>
-          </div>
-          <div className="text-2xl sm:text-3xl font-bold text-text-main">{totalCount}</div>
-          <span className="text-[11px] text-text-subtle block mt-0.5">Current filter scope</span>
-        </div>
-
-        <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-blue-500/40 transition-all">
-          <div className="flex items-center justify-between text-blue-600 dark:text-blue-400 mb-1.5">
-            <span className="text-xs font-medium">Ready To Start</span>
-            <span className="material-symbols-outlined text-[20px]">play_circle</span>
-          </div>
-          <div className="text-2xl sm:text-3xl font-bold text-text-main">{metrics.readyCount}</div>
-          <span className="text-[11px] text-blue-600/70 dark:text-blue-400/70 block mt-0.5">Awaiting development</span>
-        </div>
-
-        <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-amber-500/40 transition-all">
-          <div className="flex items-center justify-between text-amber-600 dark:text-amber-400 mb-1.5">
-            <span className="text-xs font-medium">In Progress</span>
-            <span className="material-symbols-outlined text-[20px]">engineering</span>
-          </div>
-          <div className="text-2xl sm:text-3xl font-bold text-text-main">{metrics.inProgressCount}</div>
-          <span className="text-[11px] text-amber-600/70 dark:text-amber-400/70 block mt-0.5">Active work items</span>
-        </div>
-
-        <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-emerald-500/40 transition-all">
-          <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400 mb-1.5">
-            <span className="text-xs font-medium">Total Logged Time</span>
-            <span className="material-symbols-outlined text-[20px]">schedule</span>
-          </div>
-          <div className="text-2xl sm:text-3xl font-bold text-text-main">{metrics.totalSpent}h</div>
-          <span className="text-[11px] text-emerald-600/70 dark:text-emerald-400/70 block mt-0.5">
-            {metrics.doneCount} issues closed
+      {/* Primary Tab Navigation: Tasks vs List Project */}
+      <div className="flex items-center gap-2 border-b border-border pb-1">
+        <button
+          onClick={() => setActiveTab("tasks")}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-xs sm:text-sm transition-all min-h-[44px] cursor-pointer ${
+            activeTab === "tasks"
+              ? "bg-primary text-white shadow-sm shadow-primary/25 font-semibold"
+              : "bg-surface hover:bg-surface-2 text-text-muted hover:text-text-main border border-border"
+          }`}
+        >
+          <span className="material-symbols-outlined text-[18px]">assignment</span>
+          <span>My Tasks</span>
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+              activeTab === "tasks" ? "bg-white/20 text-white" : "bg-surface-2 text-text-muted"
+            }`}
+          >
+            {totalCount}
           </span>
-        </div>
-      </section>
+        </button>
 
-      {/* Filter and Search Bar */}
-      <section aria-label="Filters" className="bg-surface border border-border rounded-[14px] p-3 sm:p-4 shadow-[var(--shadow-soft)] flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
-        <div className="flex-1 flex items-center gap-2 bg-bg border border-border rounded-xl px-3.5 py-2 max-w-md focus-within:border-primary transition-colors">
-          <span className="material-symbols-outlined text-[18px] text-text-muted">search</span>
-          <input
-            type="text"
-            placeholder="Search by subject, issue ID, or project..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="bg-transparent border-none outline-none text-xs text-text-main placeholder:text-text-muted flex-1"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery("")}
-              className="text-text-muted hover:text-text-main flex items-center p-0.5"
-              aria-label="Clear search"
-            >
-              <span className="material-symbols-outlined text-[16px]">close</span>
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Status Filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            aria-label="Filter by Status"
-            className="bg-bg border border-border text-text-main rounded-xl px-3 py-2 text-xs outline-none focus:border-primary transition-colors min-h-[44px]"
+        <button
+          onClick={() => setActiveTab("projects")}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-xs sm:text-sm transition-all min-h-[44px] cursor-pointer ${
+            activeTab === "projects"
+              ? "bg-primary text-white shadow-sm shadow-primary/25 font-semibold"
+              : "bg-surface hover:bg-surface-2 text-text-muted hover:text-text-main border border-border"
+          }`}
+        >
+          <span className="material-symbols-outlined text-[18px]">domain</span>
+          <span>List Project</span>
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+              activeTab === "projects" ? "bg-white/20 text-white" : "bg-surface-2 text-text-muted"
+            }`}
           >
-            <option value="open">Status: Open</option>
-            <option value="*">Status: All (Open & Closed)</option>
-            <option value="closed">Status: Closed</option>
-            {meta.statuses.map((s) => (
-              <option key={s.id} value={String(s.id)}>
-                Status: {s.name}
-              </option>
-            ))}
-          </select>
-
-          {/* Project Filter */}
-          <select
-            value={projectFilter}
-            onChange={(e) => setProjectFilter(e.target.value)}
-            aria-label="Filter by Project"
-            className="bg-bg border border-border text-text-main rounded-xl px-3 py-2 text-xs outline-none focus:border-primary transition-colors max-w-[220px] truncate min-h-[44px]"
-          >
-            <option value="">All Projects</option>
-            {meta.projects.map((p) => (
-              <option key={p.id} value={String(p.id)}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-
-          {/* Tracker Filter */}
-          <select
-            value={trackerFilter}
-            onChange={(e) => setTrackerFilter(e.target.value)}
-            aria-label="Filter by Tracker"
-            className="bg-bg border border-border text-text-main rounded-xl px-3 py-2 text-xs outline-none focus:border-primary transition-colors min-h-[44px]"
-          >
-            <option value="">All Trackers</option>
-            {meta.trackers.map((t) => (
-              <option key={t.id} value={String(t.id)}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </section>
-
-      {/* Error State */}
-      {error && (
-        <div className="p-4 rounded-[14px] bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center justify-between gap-3 shadow-xs">
-          <div className="flex items-center gap-2.5">
-            <span className="material-symbols-outlined text-[20px] shrink-0">error</span>
-            <span>{error}</span>
-          </div>
-          <button
-            onClick={() => fetchIssues(true)}
-            className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-700 dark:text-rose-200 font-medium text-xs transition shrink-0 min-h-[44px]"
-          >
-            Retry
-          </button>
-        </div>
-      )}
-
-      {/* Loading State */}
-      {loading ? (
-        <div className="space-y-3">
-          {[1, 2, 3, 4, 5].map((n) => (
-            <div key={n} className="h-16 rounded-[14px] bg-surface border border-border-subtle animate-pulse" />
-          ))}
-        </div>
-      ) : issues.length === 0 ? (
-        /* Empty State */
-        <div className="text-center py-16 border border-dashed border-border rounded-[14px] bg-surface shadow-[var(--shadow-soft)]">
-          <span className="material-symbols-outlined text-[48px] text-text-subtle mx-auto mb-3 block">
-            task
+            {projectsList.length || meta.projects.length}
           </span>
-          <h3 className="text-sm font-semibold text-text-main">No Redmine Tasks Found</h3>
-          <p className="text-xs text-text-muted max-w-sm mx-auto mt-1 mb-4">
-            {searchQuery || projectFilter || trackerFilter
-              ? "No tasks match the active filters. Try resetting search or project filters."
-              : "No issues currently assigned to you with the selected status."}
-          </p>
-          {(searchQuery || projectFilter || trackerFilter || statusFilter !== "open") && (
-            <button
-              onClick={() => {
-                setSearchQuery("");
-                setProjectFilter("");
-                setTrackerFilter("");
-                setStatusFilter("open");
-              }}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-surface-2 hover:bg-surface-3 text-text-main border border-border font-medium text-xs transition min-h-[44px]"
-            >
-              Reset Filters
-            </button>
+        </button>
+      </div>
+
+      {/* ──────────────── TAB 1: TASKS ──────────────── */}
+      {activeTab === "tasks" && (
+        <>
+          {/* Metric Cards */}
+          <section aria-label="Task Summary" className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-primary/40 transition-all">
+              <div className="flex items-center justify-between text-text-muted mb-1.5">
+                <span className="text-xs font-medium">Total Assigned</span>
+                <span className="material-symbols-outlined text-[20px] text-text-subtle">assignment</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{totalCount}</div>
+              <span className="text-[11px] text-text-subtle block mt-0.5">Current filter scope</span>
+            </div>
+
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-blue-500/40 transition-all">
+              <div className="flex items-center justify-between text-blue-600 dark:text-blue-400 mb-1.5">
+                <span className="text-xs font-medium">Ready To Start</span>
+                <span className="material-symbols-outlined text-[20px]">play_circle</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{metrics.readyCount}</div>
+              <span className="text-[11px] text-blue-600/70 dark:text-blue-400/70 block mt-0.5">Awaiting development</span>
+            </div>
+
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-amber-500/40 transition-all">
+              <div className="flex items-center justify-between text-amber-600 dark:text-amber-400 mb-1.5">
+                <span className="text-xs font-medium">In Progress</span>
+                <span className="material-symbols-outlined text-[20px]">engineering</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{metrics.inProgressCount}</div>
+              <span className="text-[11px] text-amber-600/70 dark:text-amber-400/70 block mt-0.5">Active work items</span>
+            </div>
+
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-emerald-500/40 transition-all">
+              <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400 mb-1.5">
+                <span className="text-xs font-medium">Total Logged Time</span>
+                <span className="material-symbols-outlined text-[20px]">schedule</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{metrics.totalSpent}h</div>
+              <span className="text-[11px] text-emerald-600/70 dark:text-emerald-400/70 block mt-0.5">
+                {metrics.doneCount} issues closed
+              </span>
+            </div>
+          </section>
+
+          {/* Filter and Search Bar */}
+          <section aria-label="Filters" className="bg-surface border border-border rounded-[14px] p-3 sm:p-4 shadow-[var(--shadow-soft)] flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+            <div className="flex-1 flex items-center gap-2 bg-bg border border-border rounded-xl px-3.5 py-2 max-w-md focus-within:border-primary transition-colors">
+              <span className="material-symbols-outlined text-[18px] text-text-muted">search</span>
+              <input
+                type="text"
+                placeholder="Search by subject, issue ID, or project..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="bg-transparent border-none outline-none text-xs text-text-main placeholder:text-text-muted flex-1"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="text-text-muted hover:text-text-main flex items-center p-0.5"
+                  aria-label="Clear search"
+                >
+                  <span className="material-symbols-outlined text-[16px]">close</span>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                aria-label="Filter by Status"
+                className="bg-bg border border-border text-text-main rounded-xl px-3 py-2 text-xs outline-none focus:border-primary transition-colors min-h-[44px]"
+              >
+                <option value="open">Status: Open</option>
+                <option value="*">Status: All (Open & Closed)</option>
+                <option value="closed">Status: Closed</option>
+                {meta.statuses.map((s) => (
+                  <option key={s.id} value={String(s.id)}>
+                    Status: {s.name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={projectFilter}
+                onChange={(e) => setProjectFilter(e.target.value)}
+                aria-label="Filter by Project"
+                className="bg-bg border border-border text-text-main rounded-xl px-3 py-2 text-xs outline-none focus:border-primary transition-colors max-w-[220px] truncate min-h-[44px]"
+              >
+                <option value="">All Projects</option>
+                {meta.projects.map((p) => (
+                  <option key={p.id} value={String(p.id)}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={trackerFilter}
+                onChange={(e) => setTrackerFilter(e.target.value)}
+                aria-label="Filter by Tracker"
+                className="bg-bg border border-border text-text-main rounded-xl px-3 py-2 text-xs outline-none focus:border-primary transition-colors min-h-[44px]"
+              >
+                <option value="">All Trackers</option>
+                {meta.trackers.map((t) => (
+                  <option key={t.id} value={String(t.id)}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </section>
+
+          {/* Error State */}
+          {error && (
+            <div className="p-4 rounded-[14px] bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-2.5">
+                <span className="material-symbols-outlined text-[20px] shrink-0">error</span>
+                <span>{error}</span>
+              </div>
+              <button
+                onClick={() => fetchIssues(true)}
+                className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-700 dark:text-rose-200 font-medium text-xs transition shrink-0 min-h-[44px]"
+              >
+                Retry
+              </button>
+            </div>
           )}
-        </div>
-      ) : (
-        /* Table of Issues with Log Time column */
-        <div className="border border-border rounded-[14px] overflow-hidden bg-surface shadow-[var(--shadow-soft)]">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-surface-2 border-b border-border text-text-muted uppercase tracking-wider text-[11px] font-semibold">
-                <tr>
-                  <th className="px-4 py-3.5 w-20"># ID</th>
-                  <th className="px-4 py-3.5">Tracker & Project</th>
-                  <th className="px-4 py-3.5">Subject</th>
-                  <th className="px-4 py-3.5">Status</th>
-                  <th className="px-4 py-3.5">Priority</th>
-                  <th className="px-4 py-3.5 whitespace-nowrap">Log Time</th>
-                  <th className="px-4 py-3.5 w-28">% Done</th>
-                  <th className="px-4 py-3.5">Updated</th>
-                  <th className="px-4 py-3.5 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border-subtle">
-                {issues.map((issue) => {
-                  const spent = Number(issue.spent_hours ?? issue.total_spent_hours ?? 0);
-                  const estimated = issue.estimated_hours ? Number(issue.estimated_hours) : null;
 
-                  return (
-                    <tr
-                      key={issue.id}
-                      onClick={() => openIssueDetail(issue.id)}
-                      className="hover:bg-surface-2/60 cursor-pointer transition-colors group"
-                    >
-                      <td className="px-4 py-3.5 font-mono text-xs text-primary font-semibold group-hover:underline">
-                        #{issue.id}
-                      </td>
-
-                      <td className="px-4 py-3.5 max-w-[200px]">
-                        <div className="font-medium text-text-main truncate" title={issue.project?.name}>
-                          {issue.project?.name || "General"}
-                        </div>
-                        <div className="text-[11px] text-text-muted font-mono mt-0.5">
-                          {issue.tracker?.name || "Task"}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3.5 max-w-sm">
-                        <div className="font-medium text-text-main truncate" title={issue.subject}>
-                          {issue.subject}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3.5 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${getStatusBadgeClass(
-                            issue.status?.name
-                          )}`}
-                        >
-                          {issue.status?.name || "Open"}
-                        </span>
-                      </td>
-
-                      <td className="px-4 py-3.5 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border ${getPriorityBadgeClass(
-                            issue.priority?.name
-                          )}`}
-                        >
-                          {issue.priority?.name || "Normal"}
-                        </span>
-                      </td>
-
-                      {/* Log Time Column with Quick Log action */}
-                      <td className="px-4 py-3.5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={(e) => openLogTimeModal(issue, e)}
-                            className="p-1 rounded-md bg-surface-2 hover:bg-surface-3 text-text-muted hover:text-primary border border-border-subtle transition flex items-center justify-center"
-                            title="Log work time for this task"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">schedule</span>
-                          </button>
-                          <span className="font-mono text-xs text-text-main font-medium">
-                            {spent.toFixed(1)}h
-                          </span>
-                          {estimated ? (
-                            <span className="text-[11px] text-text-muted font-mono" title={`Estimated: ${estimated}h`}>
-                              / {estimated}h
-                            </span>
-                          ) : null}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3.5">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-1.5 rounded-full bg-surface-2 overflow-hidden border border-border-subtle min-w-[50px]">
-                            <div
-                              className="h-full bg-primary rounded-full transition-all"
-                              style={{ width: `${issue.done_ratio || 0}%` }}
-                            />
-                          </div>
-                          <span className="text-[11px] text-text-muted font-mono w-7 text-right">
-                            {issue.done_ratio || 0}%
-                          </span>
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3.5 text-text-muted text-[11px] whitespace-nowrap">
-                        {issue.updated_on ? new Date(issue.updated_on).toLocaleDateString() : "-"}
-                      </td>
-
-                      <td className="px-4 py-3.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => openLogTimeModal(issue)}
-                            className="px-2.5 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium text-xs transition border border-border inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
-                            title="Log work time"
-                          >
-                            <span className="material-symbols-outlined text-[14px] text-primary">more_time</span>
-                            Log Time
-                          </button>
-
-                          <button
-                            onClick={() => openIssueDetail(issue.id)}
-                            className="px-2.5 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium text-xs transition border border-border inline-flex items-center gap-0.5 shadow-2xs min-h-[36px]"
-                          >
-                            Detail
-                            <span className="material-symbols-outlined text-[14px]">chevron_right</span>
-                          </button>
-                        </div>
-                      </td>
+          {/* Loading State */}
+          {loading ? (
+            <div className="space-y-3">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <div key={n} className="h-16 rounded-[14px] bg-surface border border-border-subtle animate-pulse" />
+              ))}
+            </div>
+          ) : issues.length === 0 ? (
+            /* Empty State */
+            <div className="text-center py-16 border border-dashed border-border rounded-[14px] bg-surface shadow-[var(--shadow-soft)]">
+              <span className="material-symbols-outlined text-[48px] text-text-subtle mx-auto mb-3 block">
+                task
+              </span>
+              <h3 className="text-sm font-semibold text-text-main">No Redmine Tasks Found</h3>
+              <p className="text-xs text-text-muted max-w-sm mx-auto mt-1 mb-4">
+                {searchQuery || projectFilter || trackerFilter
+                  ? "No tasks match the active filters. Try resetting search or project filters."
+                  : "No issues currently assigned to you with the selected status."}
+              </p>
+              {(searchQuery || projectFilter || trackerFilter || statusFilter !== "open") && (
+                <button
+                  onClick={() => {
+                    setSearchQuery("");
+                    setProjectFilter("");
+                    setTrackerFilter("");
+                    setStatusFilter("open");
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-surface-2 hover:bg-surface-3 text-text-main border border-border font-medium text-xs transition min-h-[44px]"
+                >
+                  Reset Filters
+                </button>
+              )}
+            </div>
+          ) : (
+            /* Table of Issues with Log Time column */
+            <div className="border border-border rounded-[14px] overflow-hidden bg-surface shadow-[var(--shadow-soft)]">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-surface-2 border-b border-border text-text-muted uppercase tracking-wider text-[11px] font-semibold">
+                    <tr>
+                      <th className="px-4 py-3.5 w-20"># ID</th>
+                      <th className="px-4 py-3.5">Tracker & Project</th>
+                      <th className="px-4 py-3.5">Subject</th>
+                      <th className="px-4 py-3.5">Status</th>
+                      <th className="px-4 py-3.5">Priority</th>
+                      <th className="px-4 py-3.5 whitespace-nowrap">Log Time</th>
+                      <th className="px-4 py-3.5 w-28">% Done</th>
+                      <th className="px-4 py-3.5">Updated</th>
+                      <th className="px-4 py-3.5 text-right">Action</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody className="divide-y divide-border-subtle">
+                    {issues.map((issue) => {
+                      const spent = Number(issue.spent_hours ?? issue.total_spent_hours ?? 0);
+                      const estimated = issue.estimated_hours ? Number(issue.estimated_hours) : null;
+
+                      return (
+                        <tr
+                          key={issue.id}
+                          onClick={() => openIssueDetail(issue.id)}
+                          className="hover:bg-surface-2/60 cursor-pointer transition-colors group"
+                        >
+                          <td className="px-4 py-3.5 font-mono text-xs text-primary font-semibold group-hover:underline">
+                            #{issue.id}
+                          </td>
+
+                          <td className="px-4 py-3.5 max-w-[200px]">
+                            <div className="font-medium text-text-main truncate" title={issue.project?.name}>
+                              {issue.project?.name || "General"}
+                            </div>
+                            <div className="text-[11px] text-text-muted font-mono mt-0.5">
+                              {issue.tracker?.name || "Task"}
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3.5 max-w-sm">
+                            <div className="font-medium text-text-main truncate" title={issue.subject}>
+                              {issue.subject}
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3.5 whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${getStatusBadgeClass(
+                                issue.status?.name
+                              )}`}
+                            >
+                              {issue.status?.name || "Open"}
+                            </span>
+                          </td>
+
+                          <td className="px-4 py-3.5 whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border ${getPriorityBadgeClass(
+                                issue.priority?.name
+                              )}`}
+                            >
+                              {issue.priority?.name || "Normal"}
+                            </span>
+                          </td>
+
+                          <td className="px-4 py-3.5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={(e) => openLogTimeModal(issue, e)}
+                                className="p-1 rounded-md bg-surface-2 hover:bg-surface-3 text-text-muted hover:text-primary border border-border-subtle transition flex items-center justify-center min-h-[32px] min-w-[32px]"
+                                title="Log work time for this task"
+                              >
+                                <span className="material-symbols-outlined text-[15px]">schedule</span>
+                              </button>
+                              <span className="font-mono text-xs text-text-main font-medium">
+                                {spent.toFixed(1)}h
+                              </span>
+                              {estimated ? (
+                                <span className="text-[11px] text-text-muted font-mono" title={`Estimated: ${estimated}h`}>
+                                  / {estimated}h
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3.5">
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-1.5 rounded-full bg-surface-2 overflow-hidden border border-border-subtle min-w-[50px]">
+                                <div
+                                  className="h-full bg-primary rounded-full transition-all"
+                                  style={{ width: `${issue.done_ratio || 0}%` }}
+                                />
+                              </div>
+                              <span className="text-[11px] text-text-muted font-mono w-7 text-right">
+                                {issue.done_ratio || 0}%
+                              </span>
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3.5 text-text-muted text-[11px] whitespace-nowrap">
+                            {issue.updated_on ? new Date(issue.updated_on).toLocaleDateString() : "-"}
+                          </td>
+
+                          <td className="px-4 py-3.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => openLogTimeModal(issue)}
+                                className="px-2.5 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium text-xs transition border border-border inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
+                                title="Log work time"
+                              >
+                                <span className="material-symbols-outlined text-[14px] text-primary">more_time</span>
+                                Log Time
+                              </button>
+
+                              <button
+                                onClick={() => openIssueDetail(issue.id)}
+                                className="px-2.5 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium text-xs transition border border-border inline-flex items-center gap-0.5 shadow-2xs min-h-[36px]"
+                              >
+                                Detail
+                                <span className="material-symbols-outlined text-[14px]">chevron_right</span>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ──────────────── TAB 2: LIST PROJECT ──────────────── */}
+      {activeTab === "projects" && (
+        <>
+          {/* Projects Metric Cards */}
+          <section aria-label="Project Summary" className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-primary/40 transition-all">
+              <div className="flex items-center justify-between text-text-muted mb-1.5">
+                <span className="text-xs font-medium">Total Redmine Projects</span>
+                <span className="material-symbols-outlined text-[20px] text-text-subtle">domain</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.total}</div>
+              <span className="text-[11px] text-text-subtle block mt-0.5">Projects from Redmine</span>
+            </div>
+
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-emerald-500/40 transition-all">
+              <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400 mb-1.5">
+                <span className="text-xs font-medium">Assigned Local Path</span>
+                <span className="material-symbols-outlined text-[20px]">folder_check</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.assignedCount}</div>
+              <span className="text-[11px] text-emerald-600/70 dark:text-emerald-400/70 block mt-0.5">
+                Linked to workspace folder
+              </span>
+            </div>
+
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-amber-500/40 transition-all">
+              <div className="flex items-center justify-between text-amber-600 dark:text-amber-400 mb-1.5">
+                <span className="text-xs font-medium">Unassigned Projects</span>
+                <span className="material-symbols-outlined text-[20px]">folder_off</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.unassignedCount}</div>
+              <span className="text-[11px] text-amber-600/70 dark:text-amber-400/70 block mt-0.5">
+                No local folder linked yet
+              </span>
+            </div>
+
+            <div className="bg-surface border border-border rounded-[14px] p-4 sm:p-5 shadow-[var(--shadow-soft)] hover:border-blue-500/40 transition-all">
+              <div className="flex items-center justify-between text-blue-600 dark:text-blue-400 mb-1.5">
+                <span className="text-xs font-medium">Git Repositories</span>
+                <span className="material-symbols-outlined text-[20px]">commit</span>
+              </div>
+              <div className="text-2xl sm:text-3xl font-bold text-text-main">{projectMetrics.gitCount}</div>
+              <span className="text-[11px] text-blue-600/70 dark:text-blue-400/70 block mt-0.5">
+                Valid Git repos detected
+              </span>
+            </div>
+          </section>
+
+          {/* Search & Filter Bar for Projects */}
+          <section aria-label="Project Filters" className="bg-surface border border-border rounded-[14px] p-3 sm:p-4 shadow-[var(--shadow-soft)] flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+            <div className="flex-1 flex items-center gap-2 bg-bg border border-border rounded-xl px-3.5 py-2 max-w-md focus-within:border-primary transition-colors">
+              <span className="material-symbols-outlined text-[18px] text-text-muted">search</span>
+              <input
+                type="text"
+                placeholder="Search projects by name, identifier, or local path..."
+                value={projectSearchQuery}
+                onChange={(e) => setProjectSearchQuery(e.target.value)}
+                className="bg-transparent border-none outline-none text-xs text-text-main placeholder:text-text-muted flex-1"
+              />
+              {projectSearchQuery && (
+                <button
+                  onClick={() => setProjectSearchQuery("")}
+                  className="text-text-muted hover:text-text-main flex items-center p-0.5"
+                  aria-label="Clear project search"
+                >
+                  <span className="material-symbols-outlined text-[16px]">close</span>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center bg-bg border border-border rounded-xl p-1 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setProjectPathFilter("all")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
+                    projectPathFilter === "all"
+                      ? "bg-surface text-primary shadow-xs font-semibold"
+                      : "text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  All ({projectsList.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProjectPathFilter("assigned")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
+                    projectPathFilter === "assigned"
+                      ? "bg-surface text-emerald-600 dark:text-emerald-400 shadow-xs font-semibold"
+                      : "text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  Assigned ({projectMetrics.assignedCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProjectPathFilter("unassigned")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition min-h-[36px] ${
+                    projectPathFilter === "unassigned"
+                      ? "bg-surface text-amber-600 dark:text-amber-400 shadow-xs font-semibold"
+                      : "text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  Unassigned ({projectMetrics.unassignedCount})
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* Project Error State */}
+          {projectsError && (
+            <div className="p-4 rounded-[14px] bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-2.5">
+                <span className="material-symbols-outlined text-[20px] shrink-0">error</span>
+                <span>{projectsError}</span>
+              </div>
+              <button
+                onClick={() => fetchProjects(true)}
+                className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-700 dark:text-rose-200 font-medium text-xs transition shrink-0 min-h-[44px]"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {/* Projects Loading State */}
+          {projectsLoading ? (
+            <div className="space-y-3">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <div key={n} className="h-16 rounded-[14px] bg-surface border border-border-subtle animate-pulse" />
+              ))}
+            </div>
+          ) : filteredProjects.length === 0 ? (
+            /* Projects Empty State */
+            <div className="text-center py-16 border border-dashed border-border rounded-[14px] bg-surface shadow-[var(--shadow-soft)]">
+              <span className="material-symbols-outlined text-[48px] text-text-subtle mx-auto mb-3 block">
+                folder_open
+              </span>
+              <h3 className="text-sm font-semibold text-text-main">No Projects Found</h3>
+              <p className="text-xs text-text-muted max-w-sm mx-auto mt-1 mb-4">
+                {projectSearchQuery || projectPathFilter !== "all"
+                  ? "No projects match the active search or filter. Try clearing filters."
+                  : "No projects loaded from Redmine. Please check connection and permissions."}
+              </p>
+              {(projectSearchQuery || projectPathFilter !== "all") && (
+                <button
+                  onClick={() => {
+                    setProjectSearchQuery("");
+                    setProjectPathFilter("all");
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-surface-2 hover:bg-surface-3 text-text-main border border-border font-medium text-xs transition min-h-[44px]"
+                >
+                  Reset Project Filters
+                </button>
+              )}
+            </div>
+          ) : (
+            /* Projects Table */
+            <div className="border border-border rounded-[14px] overflow-hidden bg-surface shadow-[var(--shadow-soft)]">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-surface-2 border-b border-border text-text-muted uppercase tracking-wider text-[11px] font-semibold">
+                    <tr>
+                      <th className="px-4 py-3.5 w-16"># ID</th>
+                      <th className="px-4 py-3.5 min-w-[220px]">Project Name & Identifier</th>
+                      <th className="px-4 py-3.5">Status</th>
+                      <th className="px-4 py-3.5 min-w-[260px]">Assigned Local Path</th>
+                      <th className="px-4 py-3.5 text-right min-w-[240px]">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border-subtle">
+                    {filteredProjects.map((project) => {
+                      const hasPath = Boolean(project.localPath);
+                      const isGit = project.isGitRepo;
+                      const pathExists = project.pathExists;
+
+                      return (
+                        <tr
+                          key={project.id}
+                          className="hover:bg-surface-2/60 transition-colors group"
+                        >
+                          <td className="px-4 py-3.5 font-mono text-xs text-primary font-semibold">
+                            #{project.id}
+                          </td>
+
+                          <td className="px-4 py-3.5">
+                            <div className="font-semibold text-text-main text-xs sm:text-sm">
+                              {project.name}
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                              <span className="font-mono text-[11px] text-text-muted">
+                                {project.identifier}
+                              </span>
+                              {project.description && (
+                                <>
+                                  <span className="text-text-subtle">•</span>
+                                  <span className="text-[11px] text-text-subtle truncate max-w-xs" title={project.description}>
+                                    {project.description}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3.5 whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${
+                                project.status === 1 || project.status === undefined
+                                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                                  : "bg-surface-2 text-text-muted border-border"
+                              }`}
+                            >
+                              {project.status === 1 || project.status === undefined ? "Active" : "Closed"}
+                            </span>
+                          </td>
+
+                          {/* Assigned Local Path Column */}
+                          <td className="px-4 py-3.5">
+                            {hasPath ? (
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-mono text-[11px] text-text-main bg-bg px-2 py-1 rounded-md border border-border inline-block break-all max-w-md">
+                                    {project.localPath}
+                                  </span>
+
+                                  {pathExists === true && (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                      <span className="size-1 rounded-full bg-emerald-500" />
+                                      Folder exists
+                                    </span>
+                                  )}
+
+                                  {pathExists === false && (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+                                      <span className="size-1 rounded-full bg-rose-500" />
+                                      Not found on disk
+                                    </span>
+                                  )}
+
+                                  {isGit && (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                                      <span className="material-symbols-outlined text-[11px]">commit</span>
+                                      Git repo
+                                    </span>
+                                  )}
+                                </div>
+
+                                {project.assignedAt && (
+                                  <div className="text-[10px] text-text-subtle font-mono">
+                                    Assigned: {new Date(project.assignedAt).toLocaleDateString()}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-text-subtle text-[11px] italic">
+                                No local workspace assigned
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Action Buttons */}
+                          <td className="px-4 py-3.5 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                              {hasPath && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleOpenInChat(project, e)}
+                                  className="px-2.5 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-white font-medium text-xs shadow-xs shadow-primary/20 transition inline-flex items-center gap-1 min-h-[36px]"
+                                  title="Open new chat session with this workspace"
+                                >
+                                  <span className="material-symbols-outlined text-[15px]">chat</span>
+                                  Open in Chat
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={(e) => handleFilterTasksByProject(project.id, e)}
+                                className="px-2.5 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium text-xs transition border border-border inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
+                                title="View tasks for this project"
+                              >
+                                <span className="material-symbols-outlined text-[14px] text-text-muted">list_alt</span>
+                                Tasks
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={(e) => openAssignModal(project, e)}
+                                className={`px-2.5 py-1.5 rounded-lg font-medium text-xs transition border inline-flex items-center gap-1 shadow-2xs min-h-[36px] ${
+                                  hasPath
+                                    ? "bg-surface-2 hover:bg-surface-3 text-text-main border-border"
+                                    : "bg-surface-2 hover:bg-surface-3 text-primary border-primary/30"
+                                }`}
+                                title={hasPath ? "Change assigned local path" : "Assign local folder path"}
+                              >
+                                <span className="material-symbols-outlined text-[15px]">
+                                  {hasPath ? "edit" : "add_link"}
+                                </span>
+                                {hasPath ? "Edit Path" : "Assign Path"}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ──────────────── MODAL: ASSIGN LOCAL PATH ──────────────── */}
+      {showAssignModal && assignTargetProject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-surface border border-border rounded-[14px] w-full max-w-lg overflow-hidden shadow-2xl text-text-main">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-surface-2/40">
+              <div className="min-w-0 pr-3">
+                <h3 className="text-sm font-semibold text-text-main flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-primary">folder_open</span>
+                  Assign Local Workspace Path
+                </h3>
+                <p className="text-[11px] text-text-muted mt-0.5 truncate">
+                  #{assignTargetProject.id}: {assignTargetProject.name} ({assignTargetProject.identifier})
+                </p>
+              </div>
+              <button
+                onClick={() => setShowAssignModal(false)}
+                className="text-text-muted hover:text-text-main flex items-center p-1"
+                aria-label="Close assign modal"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveProjectPath} className="p-5 space-y-4">
+              {assignMsg && (
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">check_circle</span>
+                  <span>{assignMsg}</span>
+                </div>
+              )}
+
+              {assignError && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">error</span>
+                  <span>{assignError}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-text-main mb-1">
+                  Local Folder Path
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="e.g. F:\project\ckb-customer-portal"
+                    value={assignPathInput}
+                    onChange={(e) => setAssignPathInput(e.target.value)}
+                    className="w-full bg-bg border border-border rounded-xl px-3.5 py-2.5 text-xs font-mono text-text-main placeholder:text-text-muted focus:border-primary outline-none transition-colors"
+                  />
+                  {assignPathInput && (
+                    <button
+                      type="button"
+                      onClick={() => setAssignPathInput("")}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main"
+                      title="Clear path"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">close</span>
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-text-muted mt-1">
+                  Enter absolute folder path on host where this project repository is located.
+                </p>
+              </div>
+
+              {/* Suggestions from Detected Workspaces */}
+              {knownWorkspaces.length > 0 && (
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium text-text-muted flex items-center justify-between">
+                    <span>Suggested Workspaces ({knownWorkspaces.length})</span>
+                    <span className="text-[10px] text-text-subtle">Click to autofill</span>
+                  </label>
+
+                  <div className="max-h-40 overflow-y-auto space-y-1 bg-bg p-2 rounded-xl border border-border custom-scrollbar">
+                    {knownWorkspaces.map((ws) => {
+                      const isMatch =
+                        assignTargetProject.identifier &&
+                        ws.name.toLowerCase().includes(assignTargetProject.identifier.toLowerCase().replace(/_/g, "-"));
+                      const isSelected = assignPathInput.toLowerCase() === ws.path.toLowerCase();
+
+                      return (
+                        <div
+                          key={ws.path}
+                          onClick={() => setAssignPathInput(ws.path)}
+                          className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition text-xs ${
+                            isSelected
+                              ? "bg-primary/10 border border-primary/30 text-text-main"
+                              : isMatch
+                              ? "bg-surface-2 hover:bg-surface-3 border border-primary/20 text-text-main"
+                              : "bg-surface/60 hover:bg-surface-2 border border-border-subtle text-text-muted hover:text-text-main"
+                          }`}
+                        >
+                          <div className="min-w-0 pr-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-semibold text-text-main">{ws.name}</span>
+                              {isMatch && (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] bg-primary/15 text-primary font-medium">
+                                  Smart match
+                                </span>
+                              )}
+                              {ws.isGit && (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                                  Git
+                                </span>
+                              )}
+                            </div>
+                            <span className="font-mono text-[10px] text-text-subtle block truncate mt-0.5">
+                              {ws.path}
+                            </span>
+                          </div>
+
+                          <span className="material-symbols-outlined text-[16px] text-text-subtle shrink-0">
+                            {isSelected ? "check_circle" : "arrow_forward"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="pt-2 flex items-center justify-between gap-2">
+                {assignTargetProject.localPath ? (
+                  <button
+                    type="button"
+                    onClick={handleClearProjectPath}
+                    disabled={assigningPath}
+                    className="px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-medium border border-rose-500/20 transition disabled:opacity-50 min-h-[44px]"
+                  >
+                    Remove Path
+                  </button>
+                ) : (
+                  <div />
+                )}
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAssignModal(false)}
+                    className="px-4 py-2 rounded-xl bg-surface-2 hover:bg-surface-3 text-xs font-medium text-text-main border border-border transition min-h-[44px]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={assigningPath || !assignPathInput.trim()}
+                    className="px-4 py-2 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-medium shadow-sm shadow-primary/20 transition disabled:opacity-50 flex items-center gap-1.5 min-h-[44px]"
+                  >
+                    {assigningPath && (
+                      <span className="material-symbols-outlined text-[16px] animate-spin">
+                        progress_activity
+                      </span>
+                    )}
+                    Save Assignment
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}
 
-      {/* Detail & Chat Modal */}
+      {/* ──────────────── MODAL: ISSUE DETAIL & CHAT ──────────────── */}
       {selectedIssueId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-surface border border-border rounded-[14px] w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden shadow-2xl text-text-main">
@@ -925,7 +1635,6 @@ export default function RedminePageClient() {
                     <div className="p-4 text-xs text-text-main leading-relaxed whitespace-pre-wrap font-sans border-t border-border-subtle bg-bg">
                       {issueDetail.description || "(No description provided)"}
 
-                      {/* Initial attachments if any */}
                       {Array.isArray(issueDetail.attachments) && issueDetail.attachments.length > 0 && (
                         <div className="mt-3 pt-3 border-t border-border-subtle">
                           <span className="text-[11px] font-medium text-text-muted block mb-2">
@@ -1004,13 +1713,11 @@ export default function RedminePageClient() {
                           const detailsList = Array.isArray(journal.details) ? journal.details : [];
                           const hasDetails = detailsList.length > 0;
 
-                          // Check if current user is author
                           const isCurrentUser = meta.config?.userId
                             ? journal.user?.id === meta.config.userId
                             : (journal.user?.name?.toLowerCase().includes("arfan") ||
                                journal.user?.name?.toLowerCase().includes("zaky"));
 
-                          // Find attachments linked to this journal
                           const journalAttachments = detailsList
                             .filter((d) => d.property === "attachment")
                             .map((d) => {
@@ -1027,7 +1734,6 @@ export default function RedminePageClient() {
 
                           return (
                             <div key={journal.id} className="space-y-2">
-                              {/* System audit log chip (status changes, % done changes) */}
                               {hasDetails && (
                                 <div className="flex justify-center my-1.5">
                                   <div className="px-3 py-1 rounded-full bg-surface-2 border border-border text-[11px] text-text-muted flex items-center gap-1.5 shadow-xs max-w-full truncate">
@@ -1054,7 +1760,6 @@ export default function RedminePageClient() {
                                 </div>
                               )}
 
-                              {/* Chat bubble if notes or attachment exists */}
                               {(hasNotes || journalAttachments.length > 0) && (
                                 <div className={`flex items-start gap-2.5 ${isCurrentUser ? "justify-end" : "justify-start"}`}>
                                   {!isCurrentUser && (
@@ -1090,7 +1795,6 @@ export default function RedminePageClient() {
                                         </div>
                                       )}
 
-                                      {/* Journal Attachments */}
                                       {journalAttachments.length > 0 && (
                                         <div className="mt-2.5 pt-2 border-t border-border/40 space-y-2">
                                           {journalAttachments.map((att, attIdx) => {
@@ -1152,7 +1856,6 @@ export default function RedminePageClient() {
 
                   {/* Chat Input Bar & Controls */}
                   <div className="border border-border rounded-xl bg-surface p-3.5 shadow-sm space-y-3">
-                    {/* Pending Attachments Strip (File & Clipboard Preview) */}
                     {pendingAttachments.length > 0 && (
                       <div className="flex items-center gap-2 overflow-x-auto pb-1.5 custom-scrollbar">
                         {pendingAttachments.map((item, idx) => (
@@ -1196,7 +1899,6 @@ export default function RedminePageClient() {
                     )}
 
                     <form onSubmit={handleSendChatMessage} className="space-y-3">
-                      {/* Optional Status / Progress row alongside chat */}
                       <div className="flex flex-wrap items-center gap-3 text-xs bg-bg p-2.5 rounded-lg border border-border">
                         <div className="flex items-center gap-1.5">
                           <label className="text-[11px] text-text-muted">Status:</label>
@@ -1229,7 +1931,6 @@ export default function RedminePageClient() {
                         </div>
                       </div>
 
-                      {/* Main Message Input Area with Paste support */}
                       <div className="relative bg-bg rounded-xl border border-border focus-within:border-primary transition-colors">
                         <textarea
                           rows={3}
@@ -1246,10 +1947,8 @@ export default function RedminePageClient() {
                           className="w-full bg-transparent px-3.5 py-2.5 text-xs text-text-main placeholder:text-text-muted outline-none resize-none font-sans"
                         />
 
-                        {/* Input bottom action toolbar */}
                         <div className="flex items-center justify-between px-3 py-2 border-t border-border-subtle bg-surface-2/20">
                           <div className="flex items-center gap-2">
-                            {/* Hidden file input */}
                             <input
                               type="file"
                               ref={fileInputRef}
@@ -1313,7 +2012,7 @@ export default function RedminePageClient() {
         </div>
       )}
 
-      {/* Log Time Popup Modal */}
+      {/* ──────────────── MODAL: LOG TIME ──────────────── */}
       {showLogTimeModal && logTimeTargetIssue && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-surface border border-border rounded-[14px] w-full max-w-md overflow-hidden shadow-2xl text-text-main">
@@ -1441,7 +2140,7 @@ export default function RedminePageClient() {
         </div>
       )}
 
-      {/* Image Lightbox Preview Modal */}
+      {/* ──────────────── MODAL: IMAGE PREVIEW LIGHTBOX ──────────────── */}
       {activeImagePreview && (
         <div
           className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
@@ -1483,7 +2182,7 @@ export default function RedminePageClient() {
         </div>
       )}
 
-      {/* Config Modal */}
+      {/* ──────────────── MODAL: CONFIGURATION ──────────────── */}
       {showConfigModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-surface border border-border rounded-[14px] w-full max-w-md overflow-hidden shadow-2xl text-text-main">

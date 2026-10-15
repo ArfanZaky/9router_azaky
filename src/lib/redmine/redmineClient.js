@@ -1,4 +1,6 @@
-import { getSettings, updateSettings } from "@/lib/localDb";
+import fs from "node:fs";
+import path from "node:path";
+import { getSettings, updateSettings, listChatSessions } from "@/lib/localDb";
 
 export const DEFAULT_REDMINE_CONFIG = {
   baseUrl: "https://redmine.profescipta.co.id",
@@ -6,6 +8,7 @@ export const DEFAULT_REDMINE_CONFIG = {
   userEmail: "",
   userId: null,
   userName: "",
+  projectPaths: {},
 };
 
 export async function getRedmineConfig() {
@@ -17,6 +20,7 @@ export async function getRedmineConfig() {
     userEmail: stored.userEmail || DEFAULT_REDMINE_CONFIG.userEmail,
     userId: stored.userId || DEFAULT_REDMINE_CONFIG.userId,
     userName: stored.userName || DEFAULT_REDMINE_CONFIG.userName,
+    projectPaths: stored.projectPaths || {},
   };
 }
 
@@ -37,6 +41,98 @@ function getHeaders(apiKey) {
     "Content-Type": "application/json",
     Accept: "application/json",
   };
+}
+
+export function inspectLocalPath(targetPath) {
+  if (!targetPath || typeof targetPath !== "string") {
+    return { exists: false, isDir: false, isGit: false, path: "" };
+  }
+  try {
+    const normalized = path.normalize(targetPath.trim());
+    if (!fs.existsSync(normalized)) {
+      return { exists: false, isDir: false, isGit: false, path: normalized };
+    }
+    const stat = fs.statSync(normalized);
+    const isDir = stat.isDirectory();
+    const isGit = isDir && (fs.existsSync(path.join(normalized, ".git")) || fs.existsSync(path.join(normalized, ".gitmodules")));
+    return { exists: true, isDir, isGit, path: normalized };
+  } catch {
+    return { exists: false, isDir: false, isGit: false, path: targetPath };
+  }
+}
+
+export async function assignRedmineProjectPath(projectId, localPath) {
+  const current = await getRedmineConfig();
+  const projectPaths = { ...(current.projectPaths || {}) };
+  const pid = String(projectId);
+  const cleanPath = localPath ? String(localPath).trim() : "";
+  if (!cleanPath) {
+    delete projectPaths[pid];
+  } else {
+    projectPaths[pid] = {
+      path: cleanPath,
+      assignedAt: new Date().toISOString(),
+    };
+  }
+  await saveRedmineConfig({ projectPaths });
+  return projectPaths;
+}
+
+export async function removeRedmineProjectPath(projectId) {
+  const current = await getRedmineConfig();
+  const projectPaths = { ...(current.projectPaths || {}) };
+  delete projectPaths[String(projectId)];
+  await saveRedmineConfig({ projectPaths });
+  return projectPaths;
+}
+
+export async function getKnownWorkspaces() {
+  const pathsSet = new Set();
+  const results = [];
+
+  // 1. Scan chat sessions
+  try {
+    const sessions = await listChatSessions({ limit: 100 });
+    for (const s of sessions || []) {
+      const p = s.workspacePath || s.codebase;
+      if (p && typeof p === "string" && !pathsSet.has(p)) {
+        pathsSet.add(p);
+      }
+    }
+  } catch {
+    // Ignore error if sessions table query fails
+  }
+
+  // 2. Scan common development roots
+  const rootsToScan = ["F:\\project", "C:\\project", process.cwd()];
+  for (const root of rootsToScan) {
+    try {
+      if (fs.existsSync(root)) {
+        pathsSet.add(path.normalize(root));
+        const entries = fs.readdirSync(root, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && !entry.name.startsWith(".")) {
+            pathsSet.add(path.join(root, entry.name));
+          }
+        }
+      }
+    } catch {
+      // Ignore directory access error
+    }
+  }
+
+  for (const p of pathsSet) {
+    const inspection = inspectLocalPath(p);
+    results.push({
+      path: p,
+      name: path.basename(p) || p,
+      exists: inspection.exists,
+      isDir: inspection.isDir,
+      isGit: inspection.isGit,
+    });
+  }
+
+  return results.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function verifyRedmineConnection(customConfig = null) {
@@ -157,16 +253,55 @@ export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio, 
   return { ok: true, issueId };
 }
 
-export async function getRedmineProjects(customConfig = null) {
+export async function getRedmineProjects(customConfig = null, { all = true, search = "" } = {}) {
   const config = customConfig || (await getRedmineConfig());
   if (!config.apiKey) return [];
-  const res = await fetch(`${config.baseUrl}/projects.json?limit=100`, {
-    headers: getHeaders(config.apiKey),
-    cache: "no-store",
+  
+  const allProjects = [];
+  const limit = 100;
+  let offset = 0;
+  let totalCount = 0;
+
+  do {
+    const res = await fetch(`${config.baseUrl}/projects.json?limit=${limit}&offset=${offset}`, {
+      headers: getHeaders(config.apiKey),
+      cache: "no-store",
+    });
+    if (!res.ok) break;
+    const data = await res.json();
+    totalCount = data?.total_count || 0;
+    const batch = data?.projects || [];
+    allProjects.push(...batch);
+    if (!all || allProjects.length >= totalCount || batch.length === 0) break;
+    offset += limit;
+  } while (offset < totalCount);
+
+  const projectPaths = config.projectPaths || {};
+  let enriched = allProjects.map((p) => {
+    const assigned = projectPaths[String(p.id)] || projectPaths[String(p.identifier)];
+    const localPath = assigned?.path || null;
+    const assignedAt = assigned?.assignedAt || null;
+    const inspection = localPath ? inspectLocalPath(localPath) : null;
+    return {
+      ...p,
+      localPath,
+      assignedAt,
+      pathExists: inspection?.exists ?? null,
+      isGitRepo: inspection?.isGit ?? null,
+    };
   });
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data?.projects || [];
+
+  if (search && search.trim()) {
+    const term = search.toLowerCase().trim();
+    enriched = enriched.filter((p) =>
+      (p.name && p.name.toLowerCase().includes(term)) ||
+      (p.identifier && p.identifier.toLowerCase().includes(term)) ||
+      (p.description && p.description.toLowerCase().includes(term)) ||
+      (p.localPath && p.localPath.toLowerCase().includes(term))
+    );
+  }
+
+  return enriched;
 }
 
 export async function getRedmineStatuses(customConfig = null) {
