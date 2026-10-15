@@ -1389,7 +1389,7 @@ export default function RedminePageClient() {
                                 </span>
                               )}
                               {issue.localStatus === "pending" && (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30" title="Menunggu koneksi database atau review">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30" title={issue.localStatusReason || "Menunggu konfirmasi pertanyaan atau koneksi database"}>
                                   <span className="material-symbols-outlined text-[12px]">pause_circle</span>
                                   9Router: Pending
                                 </span>
@@ -2263,9 +2263,12 @@ export default function RedminePageClient() {
                           </span>
                         )}
                         {issueDetail.localStatus === "pending" && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30">
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30"
+                            title={issueDetail.localStatusReason || "Menunggu konfirmasi pertanyaan atau koneksi DB"}
+                          >
                             <span className="material-symbols-outlined text-[13px]">pause_circle</span>
-                            Pending (Need DB / Verification)
+                            Pending ({issueDetail.localStatusReason ? (issueDetail.localStatusReason.includes("pertanyaan") ? "Need Clarification" : "Need DB") : "Need Question / DB"})
                           </span>
                         )}
                         {!issueDetail.localStatus && (
@@ -2386,7 +2389,7 @@ export default function RedminePageClient() {
                     </div>
 
                     <p className="text-[10px] text-text-subtle italic">
-                      Catatan: AI hanya diizinkan query SELECT (read-only) pada database dan dilarang mengubah data/skema langsung. Untuk setiap perubahan data maupun skema (INSERT, UPDATE, DELETE, ALTER, migrasi), AI wajib membuat file .sql tersendiri. Jika database gagal terkoneksi dan task memerlukan database, status task dijadikan Pending.
+                      Catatan: AI hanya query SELECT (read-only) ke database; perubahan skema/data wajib via file .sql terpisah. Jika deskripsi tiket kurang jelas dan butuh pertanyaan konfirmasi, atau database gagal terhubung saat dibutuhkan, status task otomatis dijadikan Pending beserta daftar pertanyaannya.
                     </p>
                   </div>
 
@@ -3109,14 +3112,20 @@ export default function RedminePageClient() {
                   </p>
                 </div>
 
-                {/* Database Access Rule Note */}
-                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-text-main text-[11px] leading-relaxed space-y-1">
+                {/* Database & Task Rules Note */}
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-text-main text-[11px] leading-relaxed space-y-1.5">
                   <div className="font-semibold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
                     <span className="material-symbols-outlined text-[15px]">security</span>
-                    Aturan Akses Database AI
+                    Aturan Kerja AI & Status Pending
                   </div>
                   <p className="text-text-muted">
-                    AI diizinkan mengakses database <strong>hanya untuk SELECT (read-only)</strong>. Dilarang keras mengeksekusi INSERT, UPDATE, DELETE, atau ALTER/DROP langsung ke database. Untuk segala perubahan data maupun skema (seperti INSERT, UPDATE, DELETE, ALTER, seeder, migrasi), AI wajib membuat file <code>.sql</code> tersendiri. Jika database tidak bisa terhubung dan task membutuhkan database, status task otomatis menjadi <strong>Pending</strong>.
+                    1. <strong>Akses Database:</strong> AI hanya boleh query <strong>SELECT (read-only)</strong>. Dilarang modifikasi langsung; buat file <code>.sql</code> untuk setiap INSERT, UPDATE, DELETE, ALTER, atau migrasi.
+                  </p>
+                  <p className="text-text-muted">
+                    2. <strong>Deskripsi Kurang Jelas:</strong> Jika deskripsi tiket kurang jelas, ambigu, atau butuh pertanyaan/klarifikasi sebelum dikerjakan, AI otomatis memberi status <strong>Pending</strong> dan mencantumkan daftar pertanyaan konfirmasi secara rinci.
+                  </p>
+                  <p className="text-text-muted">
+                    3. <strong>Koneksi Database:</strong> Jika task memerlukan database namun koneksi gagal terhubung, status task juga otomatis menjadi <strong>Pending</strong>.
                   </p>
                 </div>
               </div>

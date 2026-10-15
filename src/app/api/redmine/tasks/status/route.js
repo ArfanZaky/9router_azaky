@@ -35,6 +35,7 @@ export async function POST(req) {
       rts[issueKey] = {
         ...(rts[issueKey] || {}),
         status,
+        reason: body.reason !== undefined ? body.reason : (status === "done" ? null : (rts[issueKey]?.reason || null)),
         updatedAt: new Date().toISOString(),
       };
     }

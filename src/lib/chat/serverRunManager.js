@@ -965,12 +965,28 @@ async function execute(run) {
             /\[STATUS:\s*PENDING\]/i.test(content) ||
             /(?:status\s*[:=]\s*pending)/i.test(content) ||
             /(?:pending|gagal\s+konek).*database/i.test(content) ||
+            /(?:deskripsi|kebutuhan|spesifikasi).*(?:kurang\s+jelas|ambigu|pertanyaan|klarifikasi)/i.test(content) ||
             sess?.projectMeta?.localStatus === "pending";
 
           const finalLocalStatus = isPending ? "pending" : "done";
 
+          let pendingReason = null;
+          if (isPending) {
+            if (/(?:pertanyaan|deskripsi|kurang\s+jelas|klarifikasi|butuh\s+konfirmasi|ambigu|tanya)/i.test(content)) {
+              pendingReason = "Deskripsi kurang jelas / butuh konfirmasi pertanyaan";
+            } else if (/(?:koneksi|database|db|connect)/i.test(content)) {
+              pendingReason = "Koneksi database dibutuhkan atau gagal terhubung";
+            } else {
+              pendingReason = "Memerlukan konfirmasi atau review lebih lanjut";
+            }
+          }
+
           await updateChatSession(run.sessionId, {
-            projectMeta: { ...sess.projectMeta, localStatus: finalLocalStatus },
+            projectMeta: {
+              ...sess.projectMeta,
+              localStatus: finalLocalStatus,
+              localStatusReason: pendingReason,
+            },
           }).catch(() => {});
 
           const currentSettings = await getSettings();
@@ -982,13 +998,13 @@ async function execute(run) {
             sessionTitle: sess.title,
             finishedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
-            reason: isPending ? "Database connection needed or pending verification" : null,
+            reason: isPending ? pendingReason : null,
           };
           await updateSettings({ redmineTaskStatuses: rts }).catch(() => {});
 
           if (isPending) {
             await emit(run, "notice", {
-              message: `Task #${rIssueId} status marked as PENDING in 9Router (requires database connection / further review).`,
+              message: `Task #${rIssueId} status marked as PENDING in 9Router (${pendingReason}).`,
             }).catch(() => {});
           } else {
             // Auto-commit any remaining uncommitted changes locally (NEVER PUSH)

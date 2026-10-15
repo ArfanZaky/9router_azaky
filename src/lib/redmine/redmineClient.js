@@ -243,6 +243,7 @@ export async function getRedmineIssues({
       localPath,
       projectAutoWork,
       localStatus: localTask?.status || null,
+      localStatusReason: localTask?.reason || null,
       localSessionId: localTask?.sessionId || null,
       localSessionTitle: localTask?.sessionTitle || null,
     };

@@ -35,6 +35,7 @@ export async function GET(request, { params }) {
       ...issue,
       localPath,
       localStatus: localTask?.status || null,
+      localStatusReason: localTask?.reason || null,
       localSessionId: localTask?.sessionId || null,
       localSessionTitle: localTask?.sessionTitle || null,
     });
