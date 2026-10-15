@@ -25,6 +25,8 @@ export async function GET() {
         userEmail: config.userEmail,
         userId: config.userId,
         userName: config.userName,
+        autoWorkWithAi: config.autoWorkWithAi === true,
+        aiModel: config.aiModel || "anthropic/claude-3-7-sonnet",
       },
       projects,
       statuses,

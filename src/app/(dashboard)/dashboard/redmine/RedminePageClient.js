@@ -634,6 +634,33 @@ export default function RedminePageClient() {
     setActiveTab("tasks");
   };
 
+  const handleToggleAutoWorkQuick = async () => {
+    const nextVal = !meta.config?.autoWorkWithAi;
+    setMeta((prev) => ({
+      ...prev,
+      config: { ...prev.config, autoWorkWithAi: nextVal },
+    }));
+    setCfgAutoWorkWithAi(nextVal);
+    try {
+      await fetch("/api/redmine/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoWorkWithAi: nextVal }),
+      });
+      if (nextVal) {
+        fetch("/api/redmine/tasks/auto-work", { method: "POST" })
+          .then(() => fetchIssues(false))
+          .catch(() => {});
+      }
+    } catch {
+      setMeta((prev) => ({
+        ...prev,
+        config: { ...prev.config, autoWorkWithAi: !nextVal },
+      }));
+      setCfgAutoWorkWithAi(!nextVal);
+    }
+  };
+
   const handleSaveConfig = async (e) => {
     e.preventDefault();
     setSavingConfig(true);
@@ -656,6 +683,16 @@ export default function RedminePageClient() {
       if (!res.ok) throw new Error(data.error || "Failed to verify and save Redmine config");
 
       setConfigMsg("Redmine configuration saved successfully.");
+      if (data.config) {
+        setMeta((prev) => ({
+          ...prev,
+          config: {
+            ...prev.config,
+            ...data.config,
+            autoWorkWithAi: data.config.autoWorkWithAi === true,
+          },
+        }));
+      }
       loadMeta();
       fetchIssues(true);
 
@@ -746,18 +783,25 @@ export default function RedminePageClient() {
               </span>
 
               {meta.config?.autoWorkWithAi ? (
-                <span
-                  className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium flex items-center gap-1.5 shadow-xs"
-                  title={`Auto Work with AI aktif dengan model: ${meta.config.aiModel || "Default"}`}
+                <button
+                  type="button"
+                  onClick={handleToggleAutoWorkQuick}
+                  className="px-2 py-0.5 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-[11px] font-medium flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+                  title={`Auto Work with AI AKTIF (${meta.config.aiModel || "Default"}). Klik untuk toggle ON/OFF.`}
                 >
                   <span className="material-symbols-outlined text-[13px]">smart_toy</span>
                   Auto AI: ON ({meta.config.aiModel ? meta.config.aiModel.split("/").pop() : "Active"})
-                </span>
+                </button>
               ) : (
-                <span className="px-2 py-0.5 rounded-md bg-surface-2 border border-border text-text-subtle text-[11px] font-medium flex items-center gap-1.5 shadow-xs">
+                <button
+                  type="button"
+                  onClick={handleToggleAutoWorkQuick}
+                  className="px-2 py-0.5 rounded-md bg-surface-2 hover:bg-surface-3 border border-border text-text-muted hover:text-text-main text-[11px] font-medium flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+                  title="Auto Work with AI NONAKTIF. Klik untuk toggle ON/OFF."
+                >
                   <span className="size-1.5 rounded-full bg-text-subtle" />
                   Auto AI: OFF
-                </span>
+                </button>
               )}
             </div>
             <p className="text-xs sm:text-sm text-text-muted mt-0.5 truncate">
