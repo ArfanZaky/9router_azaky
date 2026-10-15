@@ -15,6 +15,8 @@ import {
   bumpChatGoalIteration,
   completeChatGoal,
   listChatMcpServers,
+  getSettings,
+  updateSettings,
 } from "@/lib/localDb";
 import { resolveProjectWorkspace } from "./projectWorkspace.js";
 import { saveDualTierMemory } from "@/lib/agent/memory.js";
@@ -947,6 +949,31 @@ async function execute(run) {
     const result = { messages: run.messages, finalText: content, title, tokenUsage: run.tokenUsage || null };
     await updateChatRunRecord(run.id, { status, result, finishedAt: new Date().toISOString() });
     await emit(run, "done", { ...result, stopped });
+
+    // Redmine Task tracking: if session is linked to Redmine task, mark 9router status as done (without touching remote Redmine)
+    if (!stopped && status === "completed") {
+      try {
+        const sess = await getChatSession(run.sessionId, { includeMessages: false });
+        if (sess?.projectMeta?.redmineIssueId) {
+          const rIssueId = String(sess.projectMeta.redmineIssueId);
+          await updateChatSession(run.sessionId, {
+            projectMeta: { ...sess.projectMeta, localStatus: "done" },
+          }).catch(() => {});
+          const currentSettings = await getSettings();
+          const rts = { ...(currentSettings?.redmineTaskStatuses || {}) };
+          rts[rIssueId] = {
+            status: "done",
+            sessionId: run.sessionId,
+            sessionTitle: sess.title,
+            finishedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          await updateSettings({ redmineTaskStatuses: rts }).catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     // Self-Improving AI: background post-turn reflection
     if (!stopped && status === "completed") {

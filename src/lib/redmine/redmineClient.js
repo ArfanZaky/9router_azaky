@@ -203,6 +203,30 @@ export async function getRedmineIssues({
     totalCount = issues.length;
   }
 
+  const projectPaths = config.projectPaths || {};
+  let localTaskStatuses = {};
+  try {
+    const settings = await getSettings();
+    localTaskStatuses = settings?.redmineTaskStatuses || {};
+  } catch {
+    // ignore
+  }
+
+  issues = issues.map((i) => {
+    const pid = String(i.project?.id || "");
+    const pident = String(i.project?.identifier || "");
+    const assigned = projectPaths[pid] || projectPaths[pident] || null;
+    const localPath = assigned?.path || null;
+    const localTask = localTaskStatuses[String(i.id)] || null;
+    return {
+      ...i,
+      localPath,
+      localStatus: localTask?.status || null,
+      localSessionId: localTask?.sessionId || null,
+      localSessionTitle: localTask?.sessionTitle || null,
+    };
+  });
+
   return {
     issues,
     totalCount,

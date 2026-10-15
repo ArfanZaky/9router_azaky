@@ -498,6 +498,53 @@ export default function RedminePageClient() {
   };
 
   // Quick Open in Chat Session with preloaded workspace
+  const [spawningIssueId, setSpawningIssueId] = useState(null);
+
+  const handleSpawnTaskSession = async (issue, e) => {
+    if (e) e.stopPropagation();
+    if (!issue || spawningIssueId) return;
+    setSpawningIssueId(issue.id);
+
+    try {
+      const res = await fetch("/api/redmine/tasks/spawn", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueId: issue.id }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to start AI session");
+
+      fetchIssues(false);
+      if (data.sessionId) {
+        router.push(`/dashboard/chat?sessionId=${data.sessionId}`);
+      }
+    } catch (err) {
+      alert(`Error starting AI session: ${err.message}`);
+    } finally {
+      setSpawningIssueId(null);
+    }
+  };
+
+  const handleSetLocalTaskStatus = async (issueId, status, e) => {
+    if (e) e.stopPropagation();
+    try {
+      const res = await fetch("/api/redmine/tasks/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueId, status }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update local status");
+      fetchIssues(false);
+      if (issueDetail && (issueDetail.id === issueId || String(issueDetail.id) === String(issueId))) {
+        setIssueDetail((prev) => (prev ? { ...prev, localStatus: status } : prev));
+      }
+    } catch (err) {
+      alert(`Error updating local status: ${err.message}`);
+    }
+  };
+
   const handleOpenInChat = async (project, e) => {
     if (e) e.stopPropagation();
     if (!project.localPath) return;
@@ -920,8 +967,17 @@ export default function RedminePageClient() {
                             <div className="font-medium text-text-main truncate" title={issue.project?.name}>
                               {issue.project?.name || "General"}
                             </div>
-                            <div className="text-[11px] text-text-muted font-mono mt-0.5">
-                              {issue.tracker?.name || "Task"}
+                            <div className="flex items-center gap-1.5 text-[11px] text-text-muted font-mono mt-0.5 flex-wrap">
+                              <span>{issue.tracker?.name || "Task"}</span>
+                              {issue.localPath ? (
+                                <span
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px]"
+                                  title={`Local folder: ${issue.localPath}`}
+                                >
+                                  <span className="material-symbols-outlined text-[11px]">folder_open</span>
+                                  {issue.localPath.split(/[\\/]/).filter(Boolean).pop()}
+                                </span>
+                              ) : null}
                             </div>
                           </td>
 
@@ -932,13 +988,28 @@ export default function RedminePageClient() {
                           </td>
 
                           <td className="px-4 py-3.5 whitespace-nowrap">
-                            <span
-                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${getStatusBadgeClass(
-                                issue.status?.name
-                              )}`}
-                            >
-                              {issue.status?.name || "Open"}
-                            </span>
+                            <div className="flex flex-col gap-1 items-start">
+                              <span
+                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${getStatusBadgeClass(
+                                  issue.status?.name
+                                )}`}
+                              >
+                                {issue.status?.name || "Open"}
+                              </span>
+
+                              {issue.localStatus === "working" && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/30 animate-pulse">
+                                  <span className="size-1.5 rounded-full bg-sky-500" />
+                                  9Router: Working
+                                </span>
+                              )}
+                              {issue.localStatus === "done" && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
+                                  <span className="material-symbols-outlined text-[12px]">task_alt</span>
+                                  9Router: Done
+                                </span>
+                              )}
+                            </div>
                           </td>
 
                           <td className="px-4 py-3.5 whitespace-nowrap">
@@ -992,13 +1063,58 @@ export default function RedminePageClient() {
 
                           <td className="px-4 py-3.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex items-center justify-end gap-1.5">
+                              {issue.localPath ? (
+                                issue.localStatus === "working" ? (
+                                  <button
+                                    onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-700 dark:text-sky-300 font-medium text-xs transition border border-sky-500/30 inline-flex items-center gap-1.5 shadow-2xs min-h-[36px]"
+                                    title="Open working session in Chat"
+                                  >
+                                    <span className="material-symbols-outlined text-[14px] animate-spin text-sky-500">progress_activity</span>
+                                    Open Chat
+                                  </button>
+                                ) : issue.localStatus === "done" ? (
+                                  <button
+                                    onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-medium text-xs transition border border-emerald-500/30 inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
+                                    title="View completed session in Chat"
+                                  >
+                                    <span className="material-symbols-outlined text-[14px] text-emerald-500">task_alt</span>
+                                    Done · Chat
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={(e) => handleSpawnTaskSession(issue, e)}
+                                    disabled={spawningIssueId === issue.id}
+                                    className="px-2.5 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-white font-medium text-xs transition inline-flex items-center gap-1.5 shadow-2xs min-h-[36px] disabled:opacity-50"
+                                    title="Spawn session and run AI on this project"
+                                  >
+                                    <span className="material-symbols-outlined text-[15px]">
+                                      {spawningIssueId === issue.id ? "sync" : "smart_toy"}
+                                    </span>
+                                    {spawningIssueId === issue.id ? "Starting..." : "Work with AI"}
+                                  </button>
+                                )
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    setActiveTab("projects");
+                                    setProjectSearch(issue.project?.name || "");
+                                  }}
+                                  className="px-2 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-muted hover:text-text-main text-[11px] transition border border-dashed border-border inline-flex items-center gap-1 min-h-[36px]"
+                                  title="Assign local workspace path to enable AI worker"
+                                >
+                                  <span className="material-symbols-outlined text-[13px]">folder_open</span>
+                                  Assign Path
+                                </button>
+                              )}
+
                               <button
                                 onClick={() => openLogTimeModal(issue)}
-                                className="px-2.5 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium text-xs transition border border-border inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
+                                className="px-2 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-muted hover:text-primary font-medium text-xs transition border border-border inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
                                 title="Log work time"
                               >
-                                <span className="material-symbols-outlined text-[14px] text-primary">more_time</span>
-                                Log Time
+                                <span className="material-symbols-outlined text-[14px]">more_time</span>
                               </button>
 
                               <button
@@ -1522,12 +1638,55 @@ export default function RedminePageClient() {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
+                {issueDetail && issueDetail.localPath ? (
+                  issueDetail.localStatus === "working" ? (
+                    <button
+                      onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 text-sky-700 dark:text-sky-300 text-xs font-semibold border border-sky-500/30 transition min-h-[44px]"
+                    >
+                      <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
+                      <span>Working in Chat</span>
+                    </button>
+                  ) : issueDetail.localStatus === "done" ? (
+                    <button
+                      onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-semibold border border-emerald-500/30 transition min-h-[44px]"
+                    >
+                      <span className="material-symbols-outlined text-[16px] text-emerald-500">task_alt</span>
+                      <span>Done · View Chat</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => handleSpawnTaskSession(issueDetail, e)}
+                      disabled={spawningIssueId === issueDetail.id}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-medium shadow-sm shadow-primary/20 transition min-h-[44px] disabled:opacity-50"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">
+                        {spawningIssueId === issueDetail.id ? "sync" : "smart_toy"}
+                      </span>
+                      <span>{spawningIssueId === issueDetail.id ? "Starting..." : "Work with AI"}</span>
+                    </button>
+                  )
+                ) : issueDetail ? (
+                  <button
+                    onClick={() => {
+                      closeIssueDetail();
+                      setActiveTab("projects");
+                      setProjectSearch(issueDetail.project?.name || "");
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-surface-2 hover:bg-surface-3 text-text-muted hover:text-text-main border border-dashed border-border text-xs font-medium min-h-[44px]"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">folder_open</span>
+                    <span className="hidden sm:inline">Assign Path</span>
+                  </button>
+                ) : null}
+
                 {issueDetail && (
                   <button
                     onClick={() => openLogTimeModal(issueDetail)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-medium shadow-sm shadow-primary/20 transition min-h-[44px]"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-2 hover:bg-surface-3 text-text-main border border-border text-xs font-medium transition min-h-[44px]"
                   >
-                    <span className="material-symbols-outlined text-[16px]">more_time</span>
+                    <span className="material-symbols-outlined text-[16px] text-primary">more_time</span>
                     <span className="hidden sm:inline">Log Time</span>
                   </button>
                 )}
@@ -1616,6 +1775,135 @@ export default function RedminePageClient() {
                         {issueDetail.assigned_to?.name || "-"}
                       </span>
                     </div>
+                  </div>
+
+                  {/* ──────────────── 9ROUTER WORKSPACE & AI STATUS CARD ──────────────── */}
+                  <div className="bg-surface border border-border rounded-xl p-3.5 sm:p-4 text-xs space-y-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-[20px] text-primary">smart_toy</span>
+                        <span className="font-semibold text-text-main text-xs sm:text-sm">9Router AI Worker</span>
+                        {issueDetail.localStatus === "working" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/30 animate-pulse">
+                            <span className="size-1.5 rounded-full bg-sky-500" />
+                            Working in Background
+                          </span>
+                        )}
+                        {issueDetail.localStatus === "done" && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
+                            <span className="material-symbols-outlined text-[13px]">task_alt</span>
+                            Done in 9Router
+                          </span>
+                        )}
+                        {!issueDetail.localStatus && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-2 text-text-muted border border-border">
+                            Not started
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {issueDetail.localPath ? (
+                          <>
+                            {issueDetail.localSessionId && (
+                              <button
+                                type="button"
+                                onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
+                                className="px-2.5 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium text-xs transition border border-border inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
+                              >
+                                <span className="material-symbols-outlined text-[15px] text-primary">chat</span>
+                                Open Chat Session
+                              </button>
+                            )}
+
+                            {issueDetail.localStatus !== "working" && (
+                              <button
+                                type="button"
+                                onClick={(e) => handleSpawnTaskSession(issueDetail, e)}
+                                disabled={spawningIssueId === issueDetail.id}
+                                className="px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-white font-medium text-xs transition inline-flex items-center gap-1.5 shadow-2xs min-h-[36px] disabled:opacity-50"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">
+                                  {spawningIssueId === issueDetail.id ? "sync" : "play_arrow"}
+                                </span>
+                                {spawningIssueId === issueDetail.id
+                                  ? "Starting..."
+                                  : issueDetail.localStatus === "done"
+                                  ? "Re-run with AI"
+                                  : "Start AI on Task"}
+                              </button>
+                            )}
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              closeIssueDetail();
+                              setActiveTab("projects");
+                              setProjectSearch(issueDetail.project?.name || "");
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-medium text-xs transition border border-amber-500/30 inline-flex items-center gap-1.5 min-h-[36px]"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">folder_open</span>
+                            Assign Local Path First
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 pt-2 border-t border-border-subtle flex-wrap text-[11px]">
+                      <div className="flex items-center gap-1.5 text-text-muted truncate max-w-md">
+                        <span className="material-symbols-outlined text-[14px] text-text-subtle">folder</span>
+                        <span>Workspace:</span>
+                        {issueDetail.localPath ? (
+                          <span className="font-mono text-text-main truncate" title={issueDetail.localPath}>
+                            {issueDetail.localPath}
+                          </span>
+                        ) : (
+                          <span className="text-amber-600 dark:text-amber-400 font-mono">
+                            Belum ada folder lokal di-assign
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Manual local status controls */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-text-subtle">Status 9Router:</span>
+                        {issueDetail.localStatus !== "done" ? (
+                          <button
+                            type="button"
+                            onClick={(e) => handleSetLocalTaskStatus(issueDetail.id, "done", e)}
+                            className="px-2 py-0.5 rounded bg-surface-2 hover:bg-surface-3 text-emerald-600 dark:text-emerald-400 border border-border text-[11px] font-medium transition"
+                            title="Tandai Done di 9Router (tanpa mengubah status tiket Redmine di server)"
+                          >
+                            Mark Done
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => handleSetLocalTaskStatus(issueDetail.id, "working", e)}
+                            className="px-2 py-0.5 rounded bg-surface-2 hover:bg-surface-3 text-sky-600 dark:text-sky-400 border border-border text-[11px] font-medium transition"
+                            title="Tandai Working di 9Router"
+                          >
+                            Mark Working
+                          </button>
+                        )}
+                        {issueDetail.localStatus && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleSetLocalTaskStatus(issueDetail.id, "reset", e)}
+                            className="px-1.5 py-0.5 rounded bg-surface-2 hover:bg-surface-3 text-text-subtle hover:text-rose-500 border border-border text-[10px] transition"
+                            title="Reset status 9Router"
+                          >
+                            Reset
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className="text-[10px] text-text-subtle italic">
+                      Catatan: AI tidak pernah mengubah skema atau data database langsung (jika ada alter, AI membuat file .sql). Status di atas adalah status lokal 9Router dan tidak mengubah status tiket Redmine remote.
+                    </p>
                   </div>
 
                   {/* Task Description (Ticket Brief) */}
