@@ -316,7 +316,7 @@ export async function getRedmineIssueDetail(issueId, customConfig = null) {
   return data?.issue || null;
 }
 
-export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio, uploads }, customConfig = null) {
+export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio, assignedToId, uploads }, customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
   if (!config.apiKey) {
     throw new Error("Redmine API key is not configured");
@@ -325,6 +325,15 @@ export async function updateRedmineIssue(issueId, { notes, statusId, doneRatio, 
   if (notes) issueUpdate.notes = notes;
   if (statusId) issueUpdate.status_id = Number(statusId);
   if (doneRatio !== undefined && doneRatio !== null) issueUpdate.done_ratio = Number(doneRatio);
+  if (assignedToId !== undefined) {
+    if (assignedToId === null || assignedToId === "") {
+      issueUpdate.assigned_to_id = "";
+    } else if (/^[1-9]\d*$/.test(String(assignedToId))) {
+      issueUpdate.assigned_to_id = Number(assignedToId);
+    } else {
+      throw new Error("Invalid assignedToId");
+    }
+  }
   if (Array.isArray(uploads) && uploads.length > 0) issueUpdate.uploads = uploads;
 
   const res = await fetch(`${config.baseUrl}/issues/${issueId}.json`, {
@@ -423,6 +432,41 @@ export async function getRedmineProjects(customConfig = null, { all = true, sear
   return enriched;
 }
 
+export async function getRedmineProjectAssignees(projectId, customConfig = null) {
+  if (!/^[1-9]\d*$/.test(String(projectId))) throw new Error("Invalid project ID");
+  const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) throw new Error("Redmine API key is not configured");
+
+  const assignees = new Map();
+  const limit = 100;
+  let offset = 0;
+  let total = 0;
+  do {
+    const url = `${config.baseUrl}/projects/${projectId}/memberships.json?limit=${limit}&offset=${offset}`;
+    const res = await fetch(url, { headers: getHeaders(config.apiKey), cache: "no-store" });
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Failed to fetch project members (${res.status}): ${errorText || res.statusText}`);
+    }
+    const data = await res.json();
+    const memberships = data?.memberships || [];
+    total = data?.total_count ?? memberships.length;
+    for (const membership of memberships) {
+      const assignee = membership.user || membership.group;
+      if (assignee?.id && assignee?.name) {
+        assignees.set(String(assignee.id), {
+          id: assignee.id,
+          name: assignee.name,
+          type: membership.group ? "group" : "user",
+        });
+      }
+    }
+    offset += memberships.length;
+    if (memberships.length === 0) break;
+  } while (offset < total);
+
+  return [...assignees.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
 export async function getRedmineStatuses(customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
   if (!config.apiKey) return [];

@@ -622,6 +622,10 @@ export default function RedminePageClient() {
   const [chatInputText, setChatInputText] = useState("");
   const [chatStatusChange, setChatStatusChange] = useState("");
   const [chatDoneRatioChange, setChatDoneRatioChange] = useState(null);
+  const [chatAssignedToChange, setChatAssignedToChange] = useState("");
+  const [projectAssignees, setProjectAssignees] = useState([]);
+  const [assigneesLoading, setAssigneesLoading] = useState(false);
+  const [assigneesError, setAssigneesError] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [sendingChat, setSendingChat] = useState(false);
   const [chatError, setChatError] = useState("");
@@ -837,6 +841,9 @@ export default function RedminePageClient() {
       setChatInputText("");
       setPendingAttachments([]);
       setChatError("");
+      setProjectAssignees([]);
+      setAssigneesError("");
+      setAssigneesLoading(true);
     }
 
     try {
@@ -846,6 +853,7 @@ export default function RedminePageClient() {
       setIssueDetail(data);
       setChatStatusChange(String(data.status?.id || ""));
       setChatDoneRatioChange(data.done_ratio ?? 0);
+      setChatAssignedToChange(String(data.assigned_to?.id || ""));
     } catch (err) {
       setDetailError(err.message || "Failed to load issue details");
     } finally {
@@ -853,6 +861,29 @@ export default function RedminePageClient() {
     }
   }, []);
 
+  const loadProjectAssignees = useCallback((projectId) => {
+    if (!projectId) return;
+    setAssigneesLoading(true);
+    setAssigneesError("");
+    fetch(`/api/redmine/projects/${projectId}/assignees`)
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to load project members");
+        setProjectAssignees(data.assignees || []);
+      })
+      .catch((err) => {
+        setAssigneesError(err.message || "Failed to load project members");
+      })
+      .finally(() => {
+        setAssigneesLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    const projectId = issueDetail?.project?.id;
+    if (!projectId || !selectedIssueId) return;
+    loadProjectAssignees(projectId);
+  }, [issueDetail?.project?.id, selectedIssueId, loadProjectAssignees]);
   const closeIssueDetail = () => {
     pendingAttachments.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
@@ -863,6 +894,9 @@ export default function RedminePageClient() {
     setDetailError("");
     setChatError("");
     setChatInputText("");
+    setProjectAssignees([]);
+    setAssigneesError("");
+    setAssigneesLoading(false);
   };
 
   useEffect(() => {
@@ -914,7 +948,8 @@ export default function RedminePageClient() {
   const handleSendChatMessage = async (e) => {
     if (e) e.preventDefault();
     if (!selectedIssueId) return;
-    if (!chatInputText.trim() && pendingAttachments.length === 0 && chatStatusChange === String(issueDetail?.status?.id) && chatDoneRatioChange === issueDetail?.done_ratio) {
+    if (!chatInputText.trim() && pendingAttachments.length === 0 && chatStatusChange === String(issueDetail?.status?.id) && chatDoneRatioChange === issueDetail?.done_ratio &&
+      chatAssignedToChange === String(issueDetail?.assigned_to?.id || "")) {
       return;
     }
     setSendingChat(true);
@@ -943,6 +978,9 @@ export default function RedminePageClient() {
         uploads: uploadedTokens.length > 0 ? uploadedTokens : undefined,
         statusId: chatStatusChange ? Number(chatStatusChange) : undefined,
         doneRatio: chatDoneRatioChange !== null ? Number(chatDoneRatioChange) : undefined,
+        assignedToId: chatAssignedToChange !== String(issueDetail?.assigned_to?.id || "")
+          ? (chatAssignedToChange || null)
+          : undefined,
       };
 
       const res = await fetch(`/api/redmine/issues/${selectedIssueId}`, {
@@ -3158,6 +3196,40 @@ export default function RedminePageClient() {
                         </div>
                       </div>
 
+                      <div className="flex items-center gap-2 text-xs bg-bg p-2.5 rounded-lg border border-border">
+                        <label htmlFor="redmine-assignee" className="text-[11px] text-text-muted whitespace-nowrap">Assignment:</label>
+                        <select
+                          id="redmine-assignee"
+                          value={chatAssignedToChange}
+                          onChange={(e) => setChatAssignedToChange(e.target.value)}
+                          disabled={assigneesLoading}
+                          className="bg-surface border border-border rounded-lg px-2.5 py-1 text-xs text-text-main outline-none focus:border-primary min-w-0 flex-1 disabled:opacity-60 min-h-[36px]"
+                        >
+                          <option value="">Unassigned</option>
+                          {issueDetail.assigned_to?.id && !projectAssignees.some((assignee) => String(assignee.id) === String(issueDetail.assigned_to.id)) && (
+                            <option value={String(issueDetail.assigned_to.id)}>{issueDetail.assigned_to.name}</option>
+                          )}
+                          {projectAssignees.map((assignee) => (
+                            <option key={`${assignee.type}-${assignee.id}`} value={String(assignee.id)}>
+                              {assignee.name}{assignee.type === "group" ? " (Group)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                        {assigneesLoading && <span className="text-[10px] text-text-muted">Loading...</span>}
+                        {assigneesError && (
+                          <span className="text-[10px] text-rose-500 flex items-center gap-1 shrink-0">
+                            <span title={assigneesError}>Failed to load</span>
+                            <button
+                              type="button"
+                              onClick={() => loadProjectAssignees(issueDetail?.project?.id)}
+                              className="text-primary hover:underline font-medium"
+                            >
+                              Retry
+                            </button>
+                          </span>
+                        )}
+                      </div>
+
                       <div className="relative bg-bg rounded-xl border border-border focus-within:border-primary transition-colors">
                         <textarea
                           rows={3}
@@ -3214,7 +3286,8 @@ export default function RedminePageClient() {
                                 (!chatInputText.trim() &&
                                   pendingAttachments.length === 0 &&
                                   chatStatusChange === String(issueDetail?.status?.id) &&
-                                  chatDoneRatioChange === issueDetail?.done_ratio)
+                                  chatDoneRatioChange === issueDetail?.done_ratio &&
+                                  chatAssignedToChange === String(issueDetail?.assigned_to?.id || ""))
                               }
                               className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-primary hover:bg-primary-hover text-white font-medium text-xs shadow-sm shadow-primary/20 transition disabled:opacity-40 min-h-[38px]"
                             >
