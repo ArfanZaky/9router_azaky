@@ -726,41 +726,28 @@ export default function RedminePageClient() {
 
   const triggerAutoWorkIfEnabled = useCallback(async (currentIssues, currentConfig) => {
     if (!currentConfig?.autoWorkWithAi || autoWorkingRef.current) return;
-    const eligible = (currentIssues || []).filter(
-      (i) => i.localPath && i.projectAutoWork && !i.localStatus && !i.localSessionId
+    const candidates = (currentIssues || []).filter(
+      (i) => i.localPath && i.projectAutoWork &&
+        ((!i.localStatus && !i.localSessionId) || i.localStatus === "pending")
     );
-    if (eligible.length === 0) return;
+    if (!candidates.length) return;
 
     autoWorkingRef.current = true;
-    for (const issue of eligible) {
-      try {
-        await fetch("/api/redmine/tasks/spawn", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ issueId: issue.id, model: currentConfig.aiModel }),
-        });
-        await new Promise((r) => setTimeout(r, 1200));
-      } catch {
-        // ignore individual failure
+    try {
+      const response = await fetch("/api/redmine/tasks/auto-work", { method: "POST" });
+      const data = await response.json();
+      if (response.ok && data.spawnedCount > 0) {
+        // Reflect tasks moved back to working without an extra Redmine request.
+        const started = new Set(data.spawned.map((issue) => String(issue.issueId)));
+        setIssues((current) => current.map((issue) => started.has(String(issue.id))
+          ? { ...issue, localStatus: "working" } : issue));
       }
+    } catch {
+      // A failed background check must not interrupt the dashboard.
+    } finally {
+      autoWorkingRef.current = false;
     }
-    autoWorkingRef.current = false;
-    // Re-fetch issues silently to reflect new working status
-    const params = new URLSearchParams();
-    if (statusFilter) params.append("status_id", statusFilter);
-    if (projectFilter) params.append("project_id", projectFilter);
-    if (trackerFilter) params.append("tracker_id", trackerFilter);
-    if (searchQuery.trim()) params.append("q", searchQuery.trim());
-    params.append("limit", "100");
-    params.append("sort", "due_date:asc");
-
-    const refreshRes = await fetch(`/api/redmine/issues?${params.toString()}`).catch(() => null);
-    if (refreshRes && refreshRes.ok) {
-      const refreshData = await refreshRes.json();
-      setIssues(refreshData.issues || []);
-      setTotalCount(refreshData.totalCount ?? (refreshData.issues?.length || 0));
-    }
-  }, [statusFilter, projectFilter, trackerFilter, searchQuery]);
+  }, []);
 
   const fetchIssues = useCallback(async (isRefresh = false) => {
     try {
@@ -796,7 +783,19 @@ export default function RedminePageClient() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [statusFilter, projectFilter, trackerFilter, searchQuery, meta?.config, triggerAutoWorkIfEnabled]);
+  }, [statusFilter, projectFilter, trackerFilter, searchQuery, meta, triggerAutoWorkIfEnabled]);
+
+  // Check Redmine for new comments even while the dashboard remains open.
+  useEffect(() => {
+    if (activeTab !== "tasks" || !meta?.config?.autoWorkWithAi) return;
+    const timer = setInterval(() => {
+      fetch("/api/redmine/tasks/auto-work", { method: "POST" })
+        .then((response) => response.json())
+        .then((data) => { if (data.spawnedCount > 0) fetchIssues(false); })
+        .catch(() => {});
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [activeTab, meta?.config?.autoWorkWithAi, fetchIssues]);
 
   const fetchProjects = useCallback(async (isRefresh = false, scopeOverride = null) => {
     try {

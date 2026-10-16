@@ -85,8 +85,11 @@ export async function handleImageGenerationCore({
     try {
       log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." ref=${hasRef} (executor)`);
       const responseBody = await adapter.executeViaExecutor(model, body, credentials, log);
-      if (onRequestSuccess) await onRequestSuccess();
       const normalized = adapter.normalize(responseBody, body.prompt);
+      if (provider === "codebuddy" && !normalized.data?.length) {
+        return createErrorResult(HTTP_STATUS.BAD_GATEWAY, normalized.error?.message || "CodeBuddy returned no image");
+      }
+      if (onRequestSuccess) await onRequestSuccess();
       const finalBody = (normalized.created && Array.isArray(normalized.data)) ? normalized : responseBody;
 
       if (binaryOutput) {

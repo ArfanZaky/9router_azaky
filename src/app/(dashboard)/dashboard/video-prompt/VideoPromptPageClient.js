@@ -1683,6 +1683,7 @@ export default function VideoPromptPageClient() {
         selectedModel={videoModel}
         activeProviders={activeProviders}
         modelAliases={modelAliases}
+        kindFilter="video"
         title="Select AI Video Generation Model"
       />
 

@@ -12,6 +12,7 @@ export default {
     notice: { signupUrl: "https://www.codebuddy.ai" },
   },
   category: "oauth",
+  serviceKinds: ["llm", "image", "video"],
   authModes: ["oauth", "apikey"],
   hasOAuth: true,
   transport: {
@@ -98,5 +99,10 @@ export default {
   features: {
     usage: true,
     usageApikey: true,
+  },
+  // Async video jobs (POST /videos → { id, status }, GET /videos/{id} polls).
+  // CodeBuddy video API: https://www.codebuddy.ai/v2/videos
+  videoConfig: {
+    baseUrl: "https://www.codebuddy.ai/v2/videos",
   },
 };

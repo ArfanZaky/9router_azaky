@@ -1065,7 +1065,7 @@ async function execute(run) {
             /(?:status\s*[:=]\s*pending)/i.test(content) ||
             /(?:pending|gagal\s+konek).*database/i.test(content) ||
             /(?:deskripsi|kebutuhan|spesifikasi).*(?:kurang\s+jelas|ambigu|pertanyaan|klarifikasi)/i.test(content) ||
-            sess?.projectMeta?.localStatus === "pending";
+            (sess?.projectMeta?.localStatus === "pending" && !run.redmineFollowUp);
 
           const finalLocalStatus = isPending ? "pending" : "done";
 
@@ -1265,6 +1265,7 @@ export async function startServerChatRun(input) {
     workspace,
     codebase,
     projectMeta: session.projectMeta || input.projectMeta || null,
+    redmineFollowUp: input.redmineFollowUp === true,
     steering: [],
     tasks: Array.isArray(session.tasks) ? [...session.tasks] : [],
     subAgents: new Map(),

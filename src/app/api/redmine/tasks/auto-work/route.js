@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
+import { getSettings, getActiveChatRunForSession } from "@/lib/localDb";
+import { getInstructionComments, getNewInstructionComments } from "@/lib/redmine/commentInstructions";
+import { isRunLiveForSession } from "@/lib/chat/serverRunManager";
 import {
   getRedmineConfig,
   getRedmineIssues,
+  getRedmineIssueDetail,
 } from "@/lib/redmine/redmineClient";
 
 export const dynamic = "force-dynamic";
@@ -33,10 +37,33 @@ export async function POST(req) {
       customConfig: config,
     });
 
-    // Eligible issues: has localPath assigned, projectAutoWork is TRUE, no localStatus yet, and no session yet
-    const eligible = (issues || []).filter(
-      (i) => i.localPath && i.projectAutoWork && !i.localStatus && !i.localSessionId
+    // New issues start normally. Pending issues only resume when a later
+    // nonempty Redmine note is found; changes to status/attachments do not count.
+    const candidates = (issues || []).filter(
+      (i) => i.localPath && i.projectAutoWork &&
+        ((!i.localStatus && !i.localSessionId) || i.localStatus === "pending")
     );
+    const settings = await getSettings();
+    const eligible = [];
+    for (const issue of candidates) {
+      if (issue.localStatus !== "pending") {
+        eligible.push(issue);
+        continue;
+      }
+      const tracked = settings?.redmineTaskStatuses?.[String(issue.id)];
+      if (!tracked?.sessionId || isRunLiveForSession(tracked.sessionId) ||
+        await getActiveChatRunForSession(tracked.sessionId)) continue;
+      try {
+        const detail = await getRedmineIssueDetail(issue.id, config);
+        const comments = getInstructionComments(detail);
+        const cursor = tracked.lastInstructionCommentKey;
+        const consumedAt = tracked.finishedAt || tracked.updatedAt;
+        const newComments = getNewInstructionComments(comments, cursor, consumedAt);
+        if (newComments.length) eligible.push(issue);
+      } catch {
+        // A failed Redmine detail fetch must not restart an existing session.
+      }
+    }
 
     const spawned = [];
     const origin = req.nextUrl?.origin || "http://127.0.0.1:20128";
@@ -52,7 +79,7 @@ export async function POST(req) {
           }),
         });
         const spawnData = await spawnRes.json().catch(() => ({}));
-        if (spawnRes.ok && spawnData.ok) {
+        if (spawnRes.ok && spawnData.spawned) {
           spawned.push({
             issueId: issue.id,
             subject: issue.subject,
