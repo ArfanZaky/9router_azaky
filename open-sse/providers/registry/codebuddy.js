@@ -40,22 +40,51 @@ export default {
   models: [
     { id: "default-model", name: "Default", maxInputTokens: 176000, maxOutputTokens: 24000 },
     { id: "default-model-lite", name: "Default-Lite", maxInputTokens: 176000, maxOutputTokens: 24000 },
-    { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", maxInputTokens: 176000, maxOutputTokens: 24000 },
-    { id: "claude-opus-4.7-1m", name: "Claude Opus 4.7 1M", maxInputTokens: 1000000, maxOutputTokens: 24000 },
-    { id: "claude-opus-4.6", name: "Claude Opus 4.6", maxInputTokens: 176000, maxOutputTokens: 24000 },
-    { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", maxInputTokens: 176000, maxOutputTokens: 24000 },
+    // OpenAI GPT
+    { id: "gpt-6-sol", name: "GPT 6 Sol", maxInputTokens: 1000000, maxOutputTokens: 128000 },
+    { id: "gpt-6-luna", name: "GPT 6 Luna", maxInputTokens: 1000000, maxOutputTokens: 128000 },
+    { id: "gpt-5.6-terra", name: "GPT 5.6 Terra", maxInputTokens: 1000000, maxOutputTokens: 128000 },
     { id: "gpt-5.5", name: "GPT-5.5", maxInputTokens: 1000000, maxOutputTokens: 72000 },
     { id: "gpt-5.4", name: "GPT-5.4", maxInputTokens: 272000, maxOutputTokens: 128000 },
     { id: "gpt-5.3-codex", name: "GPT-5.3-Codex", maxInputTokens: 272000, maxOutputTokens: 128000 },
     { id: "gpt-5.1-codex", name: "GPT-5.1-Codex", maxInputTokens: 272000, maxOutputTokens: 128000 },
-    { id: "gemini-3.1-pro", name: "Gemini-3.1-Pro", maxInputTokens: 400000, maxOutputTokens: 64000 },
-    { id: "gemini-3.0-flash", name: "Gemini-3.0-Flash", maxInputTokens: 400000, maxOutputTokens: 64000 },
-    { id: "gemini-3.5-flash", name: "Gemini-3.5-Flash", maxInputTokens: 1000000, maxOutputTokens: 65536 },
-    { id: "gemini-2.5-flash", name: "Gemini-2.5-Flash", maxInputTokens: 400000, maxOutputTokens: 64000 },
-    { id: "gemini-3.1-flash-lite", name: "Gemini-3.1-flash-lite", maxInputTokens: 200000, maxOutputTokens: 65536 },
-    { id: "gemini-2.5-pro", name: "Gemini-2.5-Pro", maxInputTokens: 400000, maxOutputTokens: 64000 },
-    { id: "deepseek-v3-0324", name: "DeepSeek-V3", maxInputTokens: 128000, maxOutputTokens: 8192, strip: ["image", "audio"] },
-    { id: "glm-5.0", name: "GLM-5.0", maxInputTokens: 200000, maxOutputTokens: 48000, strip: ["image", "audio"] },
+    // Anthropic Claude
+    { id: "claude-opus-4.7-1m", name: "Claude Opus 4.7 1M", maxInputTokens: 1000000, maxOutputTokens: 24000 },
+    { id: "claude-opus-4.6", name: "Claude Opus 4.6", maxInputTokens: 176000, maxOutputTokens: 24000 },
+    { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", maxInputTokens: 176000, maxOutputTokens: 24000 },
+    { id: "claude-haiku-4.5", name: "Claude Haiku 4.5", maxInputTokens: 176000, maxOutputTokens: 24000 },
+    // Google Gemini
+    { id: "gemini-3.8-flash", name: "Gemini 3.8 Flash", maxInputTokens: 1000000, maxOutputTokens: 65536 },
+    { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash", maxInputTokens: 1000000, maxOutputTokens: 65536 },
+    { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", maxInputTokens: 400000, maxOutputTokens: 64000 },
+    { id: "gemini-3.1-flash-lite", name: "Gemini 3.1 Flash Lite", maxInputTokens: 200000, maxOutputTokens: 65536 },
+    { id: "gemini-3.0-flash", name: "Gemini 3.0 Flash", maxInputTokens: 400000, maxOutputTokens: 64000 },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", maxInputTokens: 400000, maxOutputTokens: 64000 },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", maxInputTokens: 400000, maxOutputTokens: 64000 },
+    // xAI Grok
+    { id: "grok-4.7", name: "Grok 4.7", maxInputTokens: 256000, maxOutputTokens: 128000 },
+    { id: "grok-4.6", name: "Grok 4.6", maxInputTokens: 256000, maxOutputTokens: 128000 },
+    // DeepSeek
+    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", maxInputTokens: 128000, maxOutputTokens: 16384, strip: ["image", "audio"] },
+    { id: "deepseek-v3-0324", name: "DeepSeek V3", maxInputTokens: 128000, maxOutputTokens: 8192, strip: ["image", "audio"] },
+    // GLM
+    { id: "glm-5.3", name: "GLM 5.3", maxInputTokens: 200000, maxOutputTokens: 48000, strip: ["image", "audio"] },
+    { id: "glm-5.3-flash", name: "GLM 5.3 Flash", maxInputTokens: 200000, maxOutputTokens: 48000, strip: ["image", "audio"] },
+    { id: "glm-5.2", name: "GLM 5.2", maxInputTokens: 200000, maxOutputTokens: 48000, strip: ["image", "audio"] },
+    { id: "glm-5.0", name: "GLM 5.0", maxInputTokens: 200000, maxOutputTokens: 48000, strip: ["image", "audio"] },
+    // Kimi
+    { id: "kimi-k3", name: "Kimi K3", maxInputTokens: 128000, maxOutputTokens: 16384, strip: ["image", "audio"] },
+    { id: "kimi-k2.8-preview", name: "Kimi K2.8 Preview", maxInputTokens: 128000, maxOutputTokens: 16384, strip: ["image", "audio"] },
+    { id: "kimi-k2.6", name: "Kimi K2.6", maxInputTokens: 128000, maxOutputTokens: 16384, strip: ["image", "audio"] },
+    // Hunyuan
+    { id: "hy4-preview", name: "Hunyuan 4 Preview", maxInputTokens: 128000, maxOutputTokens: 16384, strip: ["image", "audio"] },
+    { id: "hy3", name: "Hunyuan 3", maxInputTokens: 128000, maxOutputTokens: 16384, strip: ["image", "audio"] },
+    // Image models
+    { id: "gpt-image-2", name: "GPT Image 2", kind: "image" },
+    { id: "gemini-2.5-flash-image", name: "Gemini 2.5 Flash Image", kind: "image" },
+    { id: "gemini-3.1-flash-image", name: "Gemini 3.1 Flash Image", kind: "image" },
+    // Video model
+    { id: "seedance-2.5", name: "Seedance 2.5", kind: "video" },
   ],
   oauth: {
     baseUrl: "https://www.codebuddy.ai",
