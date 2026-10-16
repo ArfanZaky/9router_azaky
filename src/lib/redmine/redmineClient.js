@@ -447,6 +447,18 @@ export async function getRedmineTrackers(customConfig = null) {
   return data?.trackers || [];
 }
 
+export async function getRedminePriorities(customConfig = null) {
+  const config = customConfig || (await getRedmineConfig());
+  if (!config.apiKey) return [];
+  const res = await fetch(`${config.baseUrl}/enumerations/issue_priorities.json`, {
+    headers: getHeaders(config.apiKey),
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data?.issue_priorities || [];
+}
+
 export async function getTimeEntryActivities(customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
   if (!config.apiKey) return [];

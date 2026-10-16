@@ -3,18 +3,71 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 
+// Fallback status names mapping for Profescipta Redmine
+const DEFAULT_STATUS_NAMES = {
+  "1": "New",
+  "2": "Close",
+  "3": "Re-Open",
+  "4": "Development: On-Progress",
+  "6": "Cancelled",
+  "7": "QA: On-Progress",
+  "9": "Code Review",
+  "10": "UAT : On Progress",
+  "11": "Production",
+  "16": "Development: Done",
+  "17": "Ready To Start",
+  "19": "Task: On Progress",
+  "21": "Task: Review",
+  "22": "Task: Done",
+  "24": "QA: Done/Ready To Release",
+  "25": "Reset",
+  "26": "UAT : Done",
+  "27": "SIT : On Progress",
+  "28": "SIT : Done",
+};
+
+const DEFAULT_PRIORITY_NAMES = {
+  "1": "High (Critical)",
+  "2": "Medium",
+  "3": "Low (Non-Critical)",
+  "76": "Immediate!",
+  "77": "Normal",
+};
+
+function formatMessageDateDivider(dateStr) {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return "Today";
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function formatJournalTime(dateStr) {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function getStatusBadgeClass(statusName = "") {
-  const s = statusName.toLowerCase();
+  const s = String(statusName || "").toLowerCase();
   if (s.includes("done") || s.includes("close") || s.includes("resolved")) {
     return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20";
   }
   if (s.includes("progress") || s.includes("doing") || s.includes("dev")) {
     return "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20";
   }
-  if (s.includes("ready") || s.includes("start")) {
+  if (s.includes("ready") || s.includes("start") || s.includes("new")) {
     return "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20";
   }
-  if (s.includes("qa") || s.includes("review") || s.includes("test")) {
+  if (s.includes("qa") || s.includes("review") || s.includes("test") || s.includes("sit") || s.includes("uat")) {
     return "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20";
   }
   if (s.includes("cancel") || s.includes("reject")) {
@@ -24,8 +77,8 @@ function getStatusBadgeClass(statusName = "") {
 }
 
 function getPriorityBadgeClass(priorityName = "") {
-  const p = priorityName.toLowerCase();
-  if (p.includes("urgent") || p.includes("immediate") || p.includes("high")) {
+  const p = String(priorityName || "").toLowerCase();
+  if (p.includes("urgent") || p.includes("immediate") || p.includes("high") || p.includes("critical")) {
     return "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20 font-semibold";
   }
   if (p.includes("low")) {
@@ -271,6 +324,248 @@ function RedmineFormattedText({ text, issue, onPreviewImage }) {
   );
 }
 
+function parseJournalDetails(details = [], { statusMap, trackerMap, priorityMap, issueDetail, config }) {
+  if (!Array.isArray(details)) return [];
+
+  const changes = [];
+
+  for (const d of details) {
+    if (!d || d.property === "attachment") continue;
+
+    if (d.name === "status_id") {
+      const oldName = d.old_value ? (statusMap.get(String(d.old_value)) || `Status #${d.old_value}`) : "";
+      const newName = d.new_value ? (statusMap.get(String(d.new_value)) || `Status #${d.new_value}`) : "";
+      changes.push({
+        type: "status",
+        oldName,
+        newName,
+      });
+    } else if (d.name === "tracker_id") {
+      const oldName = d.old_value ? (trackerMap.get(String(d.old_value)) || `Tracker #${d.old_value}`) : "";
+      const newName = d.new_value ? (trackerMap.get(String(d.new_value)) || `Tracker #${d.new_value}`) : "";
+      changes.push({
+        type: "tracker",
+        oldName,
+        newName,
+      });
+    } else if (d.name === "priority_id") {
+      const oldName = d.old_value ? (priorityMap.get(String(d.old_value)) || `Priority #${d.old_value}`) : "";
+      const newName = d.new_value ? (priorityMap.get(String(d.new_value)) || `Priority #${d.new_value}`) : "";
+      changes.push({
+        type: "priority",
+        oldName,
+        newName,
+      });
+    } else if (d.name === "done_ratio") {
+      changes.push({
+        type: "progress",
+        oldValue: d.old_value !== null && d.old_value !== undefined ? `${d.old_value}%` : "0%",
+        newValue: `${d.new_value ?? 0}%`,
+      });
+    } else if (d.name === "estimated_hours") {
+      changes.push({
+        type: "estimated",
+        oldValue: d.old_value ? `${d.old_value}h` : null,
+        newValue: `${d.new_value ?? 0}h`,
+      });
+    } else if (d.name === "subject") {
+      changes.push({
+        type: "subject",
+        oldValue: d.old_value || "",
+        newValue: d.new_value || "",
+      });
+    } else if (d.name === "description") {
+      changes.push({
+        type: "description",
+        oldValue: d.old_value || "",
+        newValue: d.new_value || "",
+      });
+    } else if (d.name === "child_id") {
+      changes.push({
+        type: "subtask",
+        subtaskId: d.new_value,
+      });
+    } else if (d.name === "parent_id" || d.name === "parent_issue_id") {
+      changes.push({
+        type: "parent",
+        parentId: d.new_value,
+      });
+    } else if (d.name === "assigned_to_id") {
+      let assigneeName = d.new_value ? `User #${d.new_value}` : "Unassigned";
+      if (String(d.new_value) === String(config?.userId)) {
+        assigneeName = config?.userName ? `${config.userName} (You)` : "You";
+      } else if (String(d.new_value) === String(issueDetail?.assigned_to?.id)) {
+        assigneeName = issueDetail?.assigned_to?.name || assigneeName;
+      } else if (String(d.new_value) === String(issueDetail?.author?.id)) {
+        assigneeName = issueDetail?.author?.name || assigneeName;
+      }
+      changes.push({
+        type: "assigned",
+        oldValue: d.old_value,
+        newValue: assigneeName,
+      });
+    } else {
+      changes.push({
+        type: "attr",
+        name: d.name ? d.name.replace(/_/g, " ") : "Property",
+        oldValue: d.old_value || "",
+        newValue: d.new_value || "",
+      });
+    }
+  }
+
+  return changes;
+}
+
+function JournalChangeItem({ change, issue, onPreviewImage }) {
+  if (change.type === "status") {
+    return (
+      <div className="flex items-center gap-2 flex-wrap text-xs py-1">
+        <span className="inline-flex items-center gap-1.5 text-text-muted font-medium">
+          <span className="material-symbols-outlined text-[16px] text-primary">published_with_changes</span>
+          Status changed:
+        </span>
+        {change.oldName && (
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${getStatusBadgeClass(change.oldName)} line-through opacity-85`}>
+            {change.oldName}
+          </span>
+        )}
+        {change.oldName && (
+          <span className="material-symbols-outlined text-[13px] text-text-subtle">arrow_forward</span>
+        )}
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${getStatusBadgeClass(change.newName)}`}>
+          {change.newName}
+        </span>
+      </div>
+    );
+  }
+
+  if (change.type === "progress") {
+    return (
+      <div className="flex items-center gap-1.5 text-xs py-0.5 text-text-muted flex-wrap">
+        <span className="material-symbols-outlined text-[16px] text-primary">trending_up</span>
+        <span className="font-medium">Progress updated:</span>
+        <span className="font-mono text-text-subtle line-through">{change.oldValue}</span>
+        <span className="material-symbols-outlined text-[13px] text-text-subtle">arrow_forward</span>
+        <span className="font-mono font-semibold text-text-main px-1.5 py-0.2 rounded bg-surface-2 border border-border">
+          {change.newValue}
+        </span>
+      </div>
+    );
+  }
+
+  if (change.type === "subtask") {
+    return (
+      <div className="flex items-center gap-1.5 text-xs py-0.5 text-text-muted">
+        <span className="material-symbols-outlined text-[16px] text-primary">account_tree</span>
+        <span className="font-medium">Linked subtask:</span>
+        <span className="font-mono text-primary font-semibold px-2 py-0.5 rounded-md bg-primary/10 border border-primary/20">
+          #{change.subtaskId}
+        </span>
+      </div>
+    );
+  }
+
+  if (change.type === "parent") {
+    return (
+      <div className="flex items-center gap-1.5 text-xs py-0.5 text-text-muted">
+        <span className="material-symbols-outlined text-[16px] text-primary">lan</span>
+        <span className="font-medium">Parent issue:</span>
+        <span className="font-mono text-primary font-semibold px-2 py-0.5 rounded-md bg-primary/10 border border-primary/20">
+          #{change.parentId}
+        </span>
+      </div>
+    );
+  }
+
+  if (change.type === "subject") {
+    return (
+      <div className="space-y-1.5 py-1 text-xs w-full">
+        <div className="flex items-center gap-1.5 font-medium text-text-muted">
+          <span className="material-symbols-outlined text-[16px] text-primary">edit</span>
+          <span>Updated Subject:</span>
+        </div>
+        <div className="bg-surface-2/70 border border-border rounded-xl p-2.5 text-xs text-text-main font-semibold leading-relaxed break-words">
+          {change.newValue}
+        </div>
+        {change.oldValue && (
+          <div className="text-[11px] text-text-subtle px-1 break-words line-through">
+            Previous: {change.oldValue}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (change.type === "description") {
+    return (
+      <div className="space-y-1.5 py-1 text-xs w-full">
+        <div className="flex items-center gap-1.5 font-medium text-text-muted">
+          <span className="material-symbols-outlined text-[16px] text-primary">description</span>
+          <span>Updated Description:</span>
+        </div>
+        <div className="bg-surface-2/70 border border-border rounded-xl p-3 text-xs text-text-main leading-relaxed font-sans max-h-96 overflow-y-auto custom-scrollbar break-words">
+          <RedmineFormattedText text={change.newValue} issue={issue} onPreviewImage={onPreviewImage} />
+        </div>
+      </div>
+    );
+  }
+
+  if (change.type === "tracker") {
+    return (
+      <div className="flex items-center gap-1.5 text-xs py-0.5 text-text-muted flex-wrap">
+        <span className="material-symbols-outlined text-[16px] text-primary">label</span>
+        <span className="font-medium">Tracker:</span>
+        {change.oldName && <span className="font-mono text-text-subtle line-through">{change.oldName}</span>}
+        {change.oldName && <span className="material-symbols-outlined text-[13px] text-text-subtle">arrow_forward</span>}
+        <span className="font-medium text-text-main px-1.5 py-0.2 rounded bg-surface-2 border border-border">
+          {change.newName}
+        </span>
+      </div>
+    );
+  }
+
+  if (change.type === "priority") {
+    return (
+      <div className="flex items-center gap-1.5 text-xs py-0.5 text-text-muted flex-wrap">
+        <span className="material-symbols-outlined text-[16px] text-primary">flag</span>
+        <span className="font-medium">Priority:</span>
+        {change.oldName && (
+          <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${getPriorityBadgeClass(change.oldName)} line-through opacity-85`}>
+            {change.oldName}
+          </span>
+        )}
+        {change.oldName && <span className="material-symbols-outlined text-[13px] text-text-subtle">arrow_forward</span>}
+        <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${getPriorityBadgeClass(change.newName)}`}>
+          {change.newName}
+        </span>
+      </div>
+    );
+  }
+
+  if (change.type === "assigned") {
+    return (
+      <div className="flex items-center gap-1.5 text-xs py-0.5 text-text-muted flex-wrap">
+        <span className="material-symbols-outlined text-[16px] text-primary">person</span>
+        <span className="font-medium">Assigned to:</span>
+        <span className="font-semibold text-text-main px-1.5 py-0.2 rounded bg-surface-2 border border-border">
+          {change.newValue}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 text-xs py-0.5 text-text-muted flex-wrap">
+      <span className="material-symbols-outlined text-[15px] text-text-subtle">tune</span>
+      <span className="font-medium capitalize">{change.name}:</span>
+      {change.oldValue && <span className="line-through text-text-subtle">{change.oldValue}</span>}
+      {change.oldValue && <span className="material-symbols-outlined text-[12px] text-text-subtle">arrow_forward</span>}
+      <span className="text-text-main font-medium">{change.newValue}</span>
+    </div>
+  );
+}
+
 export default function RedminePageClient() {
   const router = useRouter();
 
@@ -307,6 +602,7 @@ export default function RedminePageClient() {
     projects: [],
     statuses: [],
     trackers: [],
+    priorities: [],
     timeEntryActivities: [],
     config: null,
   });
@@ -357,6 +653,45 @@ export default function RedminePageClient() {
   const chatBottomRef = useRef(null);
   const chatContainerRef = useRef(null);
   const autoWorkingRef = useRef(false);
+
+  // Status map (ID -> human readable status name)
+  const statusMap = useMemo(() => {
+    const map = new Map();
+    for (const [k, v] of Object.entries(DEFAULT_STATUS_NAMES)) {
+      map.set(String(k), v);
+    }
+    if (Array.isArray(meta.statuses)) {
+      for (const s of meta.statuses) {
+        if (s?.id && s?.name) map.set(String(s.id), s.name);
+      }
+    }
+    return map;
+  }, [meta.statuses]);
+
+  // Priority map (ID -> human readable priority name)
+  const priorityMap = useMemo(() => {
+    const map = new Map();
+    for (const [k, v] of Object.entries(DEFAULT_PRIORITY_NAMES)) {
+      map.set(String(k), v);
+    }
+    if (Array.isArray(meta.priorities)) {
+      for (const p of meta.priorities) {
+        if (p?.id && p?.name) map.set(String(p.id), p.name);
+      }
+    }
+    return map;
+  }, [meta.priorities]);
+
+  // Tracker map (ID -> human readable tracker name)
+  const trackerMap = useMemo(() => {
+    const map = new Map();
+    if (Array.isArray(meta.trackers)) {
+      for (const t of meta.trackers) {
+        if (t?.id && t?.name) map.set(String(t.id), t.name);
+      }
+    }
+    return map;
+  }, [meta.trackers]);
 
   const loadMeta = useCallback(async () => {
     try {
@@ -2547,7 +2882,7 @@ export default function RedminePageClient() {
                     </div>
                   </details>
 
-                  {/* Chat / Conversation Timeline */}
+                  {/* ──────────────── CHAT / CONVERSATION TIMELINE ──────────────── */}
                   <div>
                     <div className="flex items-center justify-between mb-3 px-1">
                       <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
@@ -2559,24 +2894,33 @@ export default function RedminePageClient() {
                       </span>
                     </div>
 
-                    <div className="space-y-3 bg-bg/50 border border-border rounded-xl p-3 sm:p-4 min-h-[220px]">
+                    <div className="space-y-4 bg-bg/50 border border-border rounded-xl p-3 sm:p-4 min-h-[220px]">
                       {(!issueDetail.journals || issueDetail.journals.length === 0) ? (
-                        <div className="text-center py-8 text-text-muted text-xs">
-                          <span className="material-symbols-outlined text-[32px] text-text-subtle block mb-1">
-                            chat_bubble_outline
+                        <div className="text-center py-10 text-text-muted text-xs">
+                          <div className="size-12 rounded-2xl bg-surface-2 border border-border flex items-center justify-center mx-auto mb-2.5 text-text-subtle shadow-xs">
+                            <span className="material-symbols-outlined text-[24px]">chat_bubble_outline</span>
+                          </div>
+                          <span className="font-semibold text-text-main block">No Discussion Yet</span>
+                          <span className="text-[11px] text-text-subtle mt-0.5 block">
+                            Be the first to leave a comment or update the task status below.
                           </span>
-                          No discussion comments yet. Be the first to start the thread.
                         </div>
                       ) : (
-                        issueDetail.journals.map((journal) => {
-                          const hasNotes = Boolean(journal.notes?.trim());
-                          const detailsList = Array.isArray(journal.details) ? journal.details : [];
-                          const hasDetails = detailsList.length > 0;
-
+                        issueDetail.journals.map((journal, jIdx) => {
                           const isCurrentUser = meta.config?.userId
                             ? journal.user?.id === meta.config.userId
                             : (journal.user?.name?.toLowerCase().includes("arfan") ||
                                journal.user?.name?.toLowerCase().includes("zaky"));
+
+                          const hasNotes = Boolean(journal.notes?.trim());
+                          const detailsList = Array.isArray(journal.details) ? journal.details : [];
+                          const detailChanges = parseJournalDetails(detailsList, {
+                            statusMap,
+                            trackerMap,
+                            priorityMap,
+                            issueDetail,
+                            config: meta.config,
+                          });
 
                           const allJournalAttachments = detailsList
                             .filter((d) => d.property === "attachment")
@@ -2598,122 +2942,137 @@ export default function RedminePageClient() {
                             return !journal.notes.toLowerCase().includes(att.filename?.toLowerCase());
                           });
 
+                          // Date divider between different days
+                          const journalDateStr = journal.created_on
+                            ? new Date(journal.created_on).toDateString()
+                            : "";
+                          const prevJournal = jIdx > 0 ? issueDetail.journals[jIdx - 1] : null;
+                          const prevDateStr = prevJournal?.created_on
+                            ? new Date(prevJournal.created_on).toDateString()
+                            : "";
+                          const showDateHeader = journalDateStr && journalDateStr !== prevDateStr;
+
                           return (
-                            <div key={journal.id} className="space-y-2">
-                              {hasDetails && (
-                                <div className="flex justify-center my-1.5">
-                                  <div className="px-3 py-1 rounded-full bg-surface-2 border border-border text-[11px] text-text-muted flex items-center gap-1.5 shadow-xs max-w-full truncate">
-                                    <span className="material-symbols-outlined text-[13px] text-text-subtle shrink-0">
-                                      tune
-                                    </span>
-                                    <span className="font-medium text-text-main shrink-0">
-                                      {journal.user?.name || "System"}
-                                    </span>
-                                    <span className="truncate">
-                                      {detailsList
-                                        .filter((d) => d.property !== "attachment")
-                                        .map((d) => {
-                                          const field = d.name === "status_id" ? "Status" : d.name === "done_ratio" ? "% Done" : d.name;
-                                          return `${field}: ${d.old_value || "(none)"} -> ${d.new_value || "(none)"}`;
-                                        })
-                                        .join(", ")}
-                                    </span>
-                                    <span className="text-text-subtle shrink-0">•</span>
-                                    <span className="text-text-subtle text-[10px] shrink-0">
-                                      {new Date(journal.created_on).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                    </span>
-                                  </div>
+                            <div key={journal.id || jIdx} className="space-y-3">
+                              {showDateHeader && (
+                                <div className="flex items-center justify-center my-3">
+                                  <span className="px-3 py-1 rounded-full bg-surface-2 border border-border text-[10px] font-semibold text-text-muted shadow-2xs tracking-wide uppercase">
+                                    {formatMessageDateDivider(journal.created_on)}
+                                  </span>
                                 </div>
                               )}
 
-                              {(hasNotes || journalAttachments.length > 0) && (
-                                <div className={`flex items-start gap-2.5 ${isCurrentUser ? "justify-end" : "justify-start"}`}>
-                                  {!isCurrentUser && (
-                                    <div className="size-8 rounded-full bg-surface-2 border border-border text-text-main flex items-center justify-center font-bold text-[11px] shrink-0 shadow-xs">
-                                      {getInitials(journal.user?.name)}
-                                    </div>
-                                  )}
+                              <div className={`flex items-start gap-2.5 sm:gap-3 ${isCurrentUser ? "justify-end" : "justify-start"}`}>
+                                {!isCurrentUser && (
+                                  <div
+                                    className="size-8 rounded-full bg-surface-2 border border-border text-text-main flex items-center justify-center font-bold text-[11px] shrink-0 shadow-xs mt-0.5"
+                                    title={journal.user?.name || "Team Member"}
+                                  >
+                                    {getInitials(journal.user?.name)}
+                                  </div>
+                                )}
+
+                                <div
+                                  className={`flex flex-col max-w-[94%] sm:max-w-[82%] ${
+                                    isCurrentUser ? "items-end" : "items-start"
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1.5 mb-1 px-1 flex-wrap">
+                                    <span className="text-[11px] font-semibold text-text-main">
+                                      {isCurrentUser ? "You" : journal.user?.name || "Team Member"}
+                                    </span>
+                                    <span className="text-text-subtle">•</span>
+                                    <span className="text-[10px] text-text-subtle font-mono">
+                                      {formatJournalTime(journal.created_on)}
+                                    </span>
+                                  </div>
 
                                   <div
-                                    className={`flex flex-col max-w-[85%] sm:max-w-[75%] ${
-                                      isCurrentUser ? "items-end" : "items-start"
+                                    className={`rounded-2xl px-4 py-3 text-xs leading-relaxed shadow-xs w-full sm:w-auto ${
+                                      isCurrentUser
+                                        ? "bg-primary/10 border border-primary/25 text-text-main rounded-tr-xs"
+                                        : "bg-surface border border-border text-text-main rounded-tl-xs"
                                     }`}
                                   >
-                                    <div className="flex items-center gap-1.5 mb-1 px-1">
-                                      <span className="text-[11px] font-semibold text-text-main">
-                                        {isCurrentUser ? "You" : journal.user?.name || "Team Member"}
-                                      </span>
-                                      <span className="text-[10px] text-text-subtle">
-                                        {new Date(journal.created_on).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                      </span>
-                                    </div>
+                                    {/* Action changes (Status, Tracker, Subject, Description, Subtask, etc.) */}
+                                    {detailChanges.length > 0 && (
+                                      <div className="space-y-2">
+                                        {detailChanges.map((change, cIdx) => (
+                                          <JournalChangeItem
+                                            key={cIdx}
+                                            change={change}
+                                            issue={issueDetail}
+                                            onPreviewImage={setActiveImagePreview}
+                                          />
+                                        ))}
+                                      </div>
+                                    )}
 
-                                    <div
-                                      className={`rounded-2xl px-4 py-3 text-xs leading-relaxed shadow-xs ${
-                                        isCurrentUser
-                                          ? "bg-primary/10 border border-primary/25 text-text-main rounded-tr-xs"
-                                          : "bg-surface border border-border text-text-main rounded-tl-xs"
-                                      }`}
-                                    >
-                                      {hasNotes && (
+                                    {/* Notes / Chat text */}
+                                    {hasNotes && (
+                                      <div className={detailChanges.length > 0 ? "pt-2.5 mt-2.5 border-t border-border/40" : ""}>
                                         <RedmineFormattedText
                                           text={journal.notes}
                                           issue={issueDetail}
                                           onPreviewImage={setActiveImagePreview}
                                         />
-                                      )}
+                                      </div>
+                                    )}
 
-                                      {journalAttachments.length > 0 && (
-                                        <div className="mt-2.5 pt-2 border-t border-border/40 space-y-2">
-                                          {journalAttachments.map((att, attIdx) => {
-                                            const isImg = isImageFile(att.filename, att.content_type);
-                                            const proxyUrl = getAttachmentProxyUrl(att, issueDetail.id);
+                                    {/* Attachments */}
+                                    {journalAttachments.length > 0 && (
+                                      <div className="mt-2.5 pt-2 border-t border-border/40 space-y-2">
+                                        {journalAttachments.map((att, attIdx) => {
+                                          const isImg = isImageFile(att.filename, att.content_type);
+                                          const proxyUrl = getAttachmentProxyUrl(att, issueDetail.id);
 
-                                            return (
-                                              <div key={att.id || attIdx} className="space-y-1">
-                                                {isImg ? (
-                                                  <div className="relative group/img">
-                                                    <img
-                                                      src={proxyUrl}
-                                                      alt={att.filename}
-                                                      className="max-h-60 max-w-full rounded-xl border border-border object-contain bg-black/10 cursor-pointer hover:opacity-95 transition"
-                                                      onClick={() => setActiveImagePreview({ url: proxyUrl, name: att.filename })}
-                                                      loading="lazy"
-                                                    />
-                                                    <span className="text-[10px] text-text-subtle block mt-0.5 truncate">
-                                                      {att.filename}
-                                                    </span>
-                                                  </div>
-                                                ) : (
-                                                  <a
-                                                    href={proxyUrl}
-                                                    download={att.filename}
-                                                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border transition text-[11px] text-text-main"
-                                                  >
-                                                    <span className="material-symbols-outlined text-[16px] text-primary">
-                                                      description
-                                                    </span>
-                                                    <span className="truncate flex-1 font-medium">{att.filename}</span>
-                                                    <span className="material-symbols-outlined text-[14px] text-text-muted">
-                                                      download
-                                                    </span>
-                                                  </a>
-                                                )}
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                      )}
-                                    </div>
+                                          return (
+                                            <div key={att.id || attIdx} className="space-y-1">
+                                              {isImg ? (
+                                                <div className="relative group/img">
+                                                  <img
+                                                    src={proxyUrl}
+                                                    alt={att.filename}
+                                                    className="max-h-60 max-w-full rounded-xl border border-border object-contain bg-black/10 cursor-pointer hover:opacity-95 transition"
+                                                    onClick={() => setActiveImagePreview({ url: proxyUrl, name: att.filename })}
+                                                    loading="lazy"
+                                                  />
+                                                  <span className="text-[10px] text-text-subtle block mt-0.5 truncate">
+                                                    {att.filename}
+                                                  </span>
+                                                </div>
+                                              ) : (
+                                                <a
+                                                  href={proxyUrl}
+                                                  download={att.filename}
+                                                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border transition text-[11px] text-text-main"
+                                                >
+                                                  <span className="material-symbols-outlined text-[16px] text-primary">
+                                                    description
+                                                  </span>
+                                                  <span className="truncate flex-1 font-medium">{att.filename}</span>
+                                                  <span className="material-symbols-outlined text-[14px] text-text-muted">
+                                                    download
+                                                  </span>
+                                                </a>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
                                   </div>
-
-                                  {isCurrentUser && (
-                                    <div className="size-8 rounded-full bg-primary/15 border border-primary/30 text-primary flex items-center justify-center font-bold text-[11px] shrink-0 shadow-xs">
-                                      {getInitials(meta.config?.userName || "Me")}
-                                    </div>
-                                  )}
                                 </div>
-                              )}
+
+                                {isCurrentUser && (
+                                  <div
+                                    className="size-8 rounded-full bg-primary/15 border border-primary/30 text-primary flex items-center justify-center font-bold text-[11px] shrink-0 shadow-xs mt-0.5"
+                                    title={meta.config?.userName || "Me"}
+                                  >
+                                    {getInitials(meta.config?.userName || "Me")}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           );
                         })
