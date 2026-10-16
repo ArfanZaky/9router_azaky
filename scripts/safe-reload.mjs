@@ -109,7 +109,7 @@ if (!isWorker) {
 // ---------------------------------------------------------------------------
 async function runWorker() {
   const delayMs = Number(getArgValue("--delay", "4000"));
-  const timeoutMs = Number(getArgValue("--timeout", "45000"));
+  const timeoutMs = Number(getArgValue("--timeout", "180000")); // Default 3 minutes
   const port = Number(getArgValue("--port", process.env.PORT || "2026"));
   const pm2Target = getArgValue("--pm2-id", "0");
   const force = hasArg("--force");
@@ -133,6 +133,7 @@ async function runWorker() {
     const startTime = Date.now();
     const token = getCliToken();
     let isIdle = false;
+    let lastActive = [];
 
     while (Date.now() - startTime < timeoutMs) {
       try {
@@ -145,6 +146,7 @@ async function runWorker() {
         if (res.ok) {
           const data = await res.json().catch(() => ({}));
           const active = Array.isArray(data.activeSessions) ? data.activeSessions : [];
+          lastActive = active;
           if (active.length === 0) {
             log("No active sessions detected (system is idle). Safe to reload.");
             isIdle = true;
@@ -165,7 +167,11 @@ async function runWorker() {
     }
 
     if (!isIdle) {
-      log(`Timeout reached (${timeoutMs}ms). Proceeding with restart to avoid indefinite freeze.`);
+      log(`Timeout reached (${timeoutMs}ms) while ${lastActive.length} session(s) are still active: [${lastActive.join(", ")}]. Aborting reload to protect active sessions.`);
+      try {
+        if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
+      } catch {}
+      process.exit(0);
     }
   }
 
