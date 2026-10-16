@@ -31,10 +31,11 @@ const PROXY_POOL_DEFAULT_PAGE_SIZE = 20;
 
 export default function ProxyPoolsPage() {
   const [proxyPools, setProxyPools] = useState([]);
-  const [publicProxyStats, setPublicProxyStats] = useState({ total: 0, maxLatencyMs: 3000, isScanning: false, proxies: [] });
+  const [publicProxyStats, setPublicProxyStats] = useState({ total: 0, maxLatencyMs: 3000, roundRobin: true, isScanning: false, proxies: [] });
   const [publicProxyLoading, setPublicProxyLoading] = useState(false);
   const [maxLatencyInput, setMaxLatencyInput] = useState("3000");
   const [savingLatency, setSavingLatency] = useState(false);
+  const [togglingRoundRobin, setTogglingRoundRobin] = useState(false);
   const latencyInitializedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [showFormModal, setShowFormModal] = useState(false);
@@ -147,6 +148,39 @@ export default function ProxyPoolsPage() {
       notify.error("Error setting latency filter: " + err.message);
     } finally {
       setSavingLatency(false);
+    }
+  };
+
+  const handleToggleRoundRobin = async () => {
+    const next = publicProxyStats.roundRobin === false ? true : false;
+    setPublicProxyStats((prev) => ({ ...prev, roundRobin: next }));
+    setTogglingRoundRobin(true);
+    try {
+      const res = await fetch("/api/proxy-pools/public", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_round_robin",
+          roundRobin: next,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        notify.success(next ? "Round Robin mode enabled (rotates each request)" : "Sticky mode enabled (switches on failure)");
+        if (data.stats) {
+          setPublicProxyStats(data.stats);
+        } else {
+          await fetchPublicProxyStats();
+        }
+      } else {
+        setPublicProxyStats((prev) => ({ ...prev, roundRobin: !next }));
+        notify.error(data?.error || "Failed to update Round Robin mode");
+      }
+    } catch (err) {
+      setPublicProxyStats((prev) => ({ ...prev, roundRobin: !next }));
+      notify.error("Error updating Round Robin mode: " + err.message);
+    } finally {
+      setTogglingRoundRobin(false);
     }
   };
 
@@ -794,7 +828,7 @@ export default function ProxyPoolsPage() {
             <div>
               <h2 className="text-base font-semibold">🌐 Public Proxy Auto-Screening</h2>
               <p className="text-xs text-text-muted">
-                Background auto-screens public HTTP/HTTPS proxies every 10 minutes. Proxies are routed round-robin and auto-ejected on error or timeout.
+                Background auto-screens public HTTP/HTTPS proxies every 10 minutes. Proxies are auto-ejected on error or timeout.
               </p>
             </div>
           </div>
@@ -806,38 +840,54 @@ export default function ProxyPoolsPage() {
         </div>
 
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-sidebar/50 p-3 rounded-lg border border-accent/20">
-          <form
-            onSubmit={handleSaveMaxLatency}
-            className="flex items-center gap-2 flex-wrap"
-          >
-            <span className="text-xs font-medium text-text-main shrink-0">Max Latency Filter:</span>
-            <div className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min="50"
-                step="50"
-                value={maxLatencyInput}
-                onChange={(e) => setMaxLatencyInput(e.target.value)}
-                className="w-24 px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono"
-                placeholder="3000"
-              />
-              <span className="text-xs text-text-muted">ms</span>
-            </div>
-            <Button
-              type="submit"
-              size="sm"
-              variant="primary"
-              icon={savingLatency ? "progress_activity" : "check"}
-              disabled={savingLatency || !maxLatencyInput || Number(maxLatencyInput) <= 0}
+          <div className="flex flex-wrap items-center gap-4">
+            <form
+              onSubmit={handleSaveMaxLatency}
+              className="flex items-center gap-2 flex-wrap"
             >
-              {savingLatency ? "Saving..." : "Submit"}
-            </Button>
-            {publicProxyStats.maxLatencyMs ? (
+              <span className="text-xs font-medium text-text-main shrink-0">Max Latency Filter:</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="50"
+                  step="50"
+                  value={maxLatencyInput}
+                  onChange={(e) => setMaxLatencyInput(e.target.value)}
+                  className="w-24 px-2 py-1 text-xs border border-border rounded-md bg-background focus:outline-none focus:border-primary font-mono"
+                  placeholder="3000"
+                />
+                <span className="text-xs text-text-muted">ms</span>
+              </div>
+              <Button
+                type="submit"
+                size="sm"
+                variant="primary"
+                icon={savingLatency ? "progress_activity" : "check"}
+                disabled={savingLatency || !maxLatencyInput || Number(maxLatencyInput) <= 0}
+              >
+                {savingLatency ? "Saving..." : "Submit"}
+              </Button>
+              {publicProxyStats.maxLatencyMs ? (
+                <span className="text-[11px] text-text-muted">
+                  (Active: ≤ {publicProxyStats.maxLatencyMs}ms)
+                </span>
+              ) : null}
+            </form>
+
+            <div className="flex items-center gap-2 border-t sm:border-t-0 sm:border-l border-border/50 pt-2 sm:pt-0 sm:pl-4">
+              <span className="text-xs font-medium text-text-main">Round Robin:</span>
+              <Toggle
+                size="sm"
+                checked={publicProxyStats.roundRobin !== false}
+                onChange={handleToggleRoundRobin}
+                disabled={togglingRoundRobin}
+                title={publicProxyStats.roundRobin !== false ? "Round Robin ON (rotates every request)" : "Round Robin OFF (sticky, switches on failure)"}
+              />
               <span className="text-[11px] text-text-muted">
-                (Active: ≤ {publicProxyStats.maxLatencyMs}ms)
+                {publicProxyStats.roundRobin !== false ? "Rotate each request" : "Sticky (switch on failure)"}
               </span>
-            ) : null}
-          </form>
+            </div>
+          </div>
 
           <div className="flex items-center gap-2">
             <Button
@@ -1143,7 +1193,7 @@ export default function ProxyPoolsPage() {
             value={cloudflareForm.apiToken}
             onChange={(e) => setCloudflareForm((prev) => ({ ...prev, apiToken: e.target.value }))}
             placeholder="your-cloudflare-api-token"
-            hint={<>Requires "Workers Scripts: Edit" permission. <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
+            hint={<>Requires "Workers Scripts: Edit" permission. <a href="https://dashcloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Get token →</a></>}
             type="password"
           />
           <Input

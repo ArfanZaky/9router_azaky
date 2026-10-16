@@ -532,6 +532,7 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
     connectionProxyEnabled: true,
     connectionProxyUrl: effectiveProxy.connectionProxyUrl,
     connectionNoProxy: effectiveProxy.connectionNoProxy || "",
+    isPublicProxy: effectiveProxy.isPublicProxy === true,
   });
 }
 
@@ -972,6 +973,10 @@ export async function testSingleConnection(id) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });
     if (!proxyResult.ok) {
       const proxyError = proxyResult.error || `Proxy test failed with status ${proxyResult.status}`;
+      if (effectiveProxy.isPublicProxy) {
+        const { publicProxyManager } = await import("@/lib/network/publicProxyManager.js");
+        publicProxyManager.reportFailure(effectiveProxy.connectionProxyUrl);
+      }
       await updateProviderConnection(id, {
         testStatus: "error",
         lastError: proxyError,

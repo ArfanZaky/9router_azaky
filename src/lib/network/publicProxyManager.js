@@ -5,6 +5,7 @@ class PublicProxyManager {
   constructor() {
     this.proxies = []; // [{ url, latency, lastChecked, failures }]
     this.currentIndex = 0;
+    this.roundRobin = true; // Default: Round Robin enabled (toggleable)
     this.isScanning = false;
     this.lastScanTime = 0;
     this.timer = null;
@@ -54,6 +55,9 @@ class PublicProxyManager {
         this.maxLatencyMs = Number(settings.publicProxyMaxLatencyMs);
         this.proxies = this.proxies.filter((p) => p.latency <= this.maxLatencyMs);
       }
+      if (typeof settings?.publicProxyRoundRobin === "boolean") {
+        this.roundRobin = settings.publicProxyRoundRobin;
+      }
     } catch {
       // ignore if db not ready yet
     }
@@ -73,10 +77,19 @@ class PublicProxyManager {
     }
   }
 
+  setRoundRobin(enabled) {
+    this.roundRobin = Boolean(enabled);
+    console.log(`[PublicProxy] Round-robin mode set to: ${this.roundRobin}`);
+    import("../db/repos/settingsRepo.js")
+      .then(({ updateSettings }) => updateSettings({ publicProxyRoundRobin: this.roundRobin }))
+      .catch(() => {});
+  }
+
   getStats() {
     return {
       total: this.proxies.length,
       maxLatencyMs: this.maxLatencyMs,
+      roundRobin: this.roundRobin,
       isScanning: this.isScanning,
       lastScanTime: this.lastScanTime,
       proxies: this.proxies.slice(0, 50).map((p) => ({
@@ -87,22 +100,35 @@ class PublicProxyManager {
     };
   }
 
-  // Get next proxy using Round-Robin
+  // Get next proxy using Round-Robin (if enabled) or Sticky (if disabled)
   getNextProxy() {
     if (this.proxies.length === 0) return null;
-    this.currentIndex = (this.currentIndex + 1) % this.proxies.length;
+    if (this.roundRobin) {
+      this.currentIndex = (this.currentIndex + 1) % this.proxies.length;
+    } else {
+      if (this.currentIndex >= this.proxies.length || this.currentIndex < 0) {
+        this.currentIndex = 0;
+      }
+    }
     return this.proxies[this.currentIndex]?.url || null;
   }
 
   // Report a dead or timed out proxy - automatically removes it from the list
   reportFailure(proxyUrl) {
     if (!proxyUrl) return;
-    const initialLen = this.proxies.length;
-    this.proxies = this.proxies.filter((p) => p.url !== proxyUrl);
-    if (this.proxies.length < initialLen) {
-      console.log(`[PublicProxy] Ejected dead/timeout proxy: ${proxyUrl} (Remaining: ${this.proxies.length})`);
+    const norm = (u) => (u || "").trim().replace(/\/+$/, "");
+    const target = norm(proxyUrl);
+    const index = this.proxies.findIndex((p) => norm(p.url) === target);
+    if (index === -1) return;
+    const removed = this.proxies.splice(index, 1)[0];
+    console.log(`[PublicProxy] Ejected dead/timeout proxy: ${removed?.url || proxyUrl} (Remaining: ${this.proxies.length})`);
+    if (this.proxies.length === 0) {
+      this.currentIndex = 0;
+      return;
     }
-    if (this.currentIndex >= this.proxies.length) {
+    if (index < this.currentIndex) {
+      this.currentIndex -= 1;
+    } else if (this.currentIndex >= this.proxies.length) {
       this.currentIndex = 0;
     }
   }
@@ -230,6 +256,10 @@ class PublicProxyManager {
         this.proxies = Array.from(map.values()).sort((a, b) => a.latency - b.latency);
       } else {
         this.proxies = this.proxies.filter((p) => p.latency <= this.maxLatencyMs);
+      }
+
+      if (this.currentIndex >= this.proxies.length) {
+        this.currentIndex = 0;
       }
 
       this.lastScanTime = Date.now();

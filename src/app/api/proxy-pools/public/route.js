@@ -24,10 +24,25 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { action, maxLatencyMs, intervalMs, autoRescan } = body;
+    const { action, maxLatencyMs, intervalMs, autoRescan, roundRobin } = body;
+
+    if (!publicProxyManager._settingsLoaded) {
+      publicProxyManager._settingsLoaded = true;
+      await publicProxyManager.initSettings().catch(() => {});
+    }
 
     if (maxLatencyMs) {
       publicProxyManager.setMaxLatency(Number(maxLatencyMs));
+    }
+
+    if (action === "set_round_robin" || typeof roundRobin === "boolean") {
+      const isRR = typeof roundRobin === "boolean" ? roundRobin : body.enabled === true;
+      publicProxyManager.setRoundRobin(isRR);
+      return NextResponse.json({
+        ok: true,
+        message: `Public proxy routing set to ${isRR ? "round-robin" : "sticky"}`,
+        stats: publicProxyManager.getStats(),
+      });
     }
 
     if (action === "scan" || autoRescan) {

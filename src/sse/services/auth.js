@@ -66,6 +66,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           connectionNoProxy: resolvedProxy.connectionNoProxy,
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+          isPublicProxy: resolvedProxy.isPublicProxy === true,
         },
       };
     }
@@ -219,6 +220,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionNoProxy: resolvedProxy.connectionNoProxy,
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+        isPublicProxy: resolvedProxy.isPublicProxy === true,
       },
       connectionId: connection.id,
       // Include current status for optimization check

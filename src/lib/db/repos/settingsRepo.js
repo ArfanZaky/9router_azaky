@@ -47,6 +47,8 @@ const DEFAULT_SETTINGS = {
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",
+  publicProxyRoundRobin: true,
+  publicProxyMaxLatencyMs: 3000,
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
   dnsToolEnabled: {},
   rtkEnabled: true,

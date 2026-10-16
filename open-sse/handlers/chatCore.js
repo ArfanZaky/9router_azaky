@@ -366,13 +366,14 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
     connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
     vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
+    isPublicProxy: credentials?.providerSpecificData?.isPublicProxy === true,
   };
 
   const proxyInfo = proxyOptions.connectionProxyEnabled || proxyOptions.vercelRelayUrl ? {
     enabled: true,
     url: proxyOptions.connectionProxyUrl || proxyOptions.vercelRelayUrl,
     poolId: credentials?.providerSpecificData?.connectionProxyPoolId || null,
-    isPublicPool: credentials?.providerSpecificData?.connectionProxyPoolId === "__public_proxy__" || credentials?.providerSpecificData?.connectionProxyUrl === "__public_proxy__"
+    isPublicPool: credentials?.providerSpecificData?.connectionProxyPoolId === "__public_proxy__" || credentials?.providerSpecificData?.connectionProxyUrl === "__public_proxy__" || credentials?.providerSpecificData?.isPublicProxy === true
   } : { enabled: false };
 
   if (proxyOptions.vercelRelayUrl) {

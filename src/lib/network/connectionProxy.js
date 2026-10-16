@@ -63,7 +63,7 @@ function normalizeLegacyProxy(providerSpecificData = {}) {
  * Resolve final proxy configuration.
  *
  * Priority:
- * 1. Public Proxy (Round Robin)
+ * 1. Public Proxy (Round Robin / Sticky)
  * 2. Proxy Pool
  * 3. Legacy Proxy
  * 4. No Proxy
@@ -76,16 +76,21 @@ export async function resolveConnectionProxyConfig(
       providerSpecificData?.proxyPoolId
     );
 
-    // Public Proxy Mode (Round-robin dynamically chosen from screened public proxies)
+    // Public Proxy Mode (Round-robin or Sticky chosen dynamically from screened public proxies)
     if (proxyPoolIdRaw === PUBLIC_PROXY_POOL_ID) {
+      if (!publicProxyManager._settingsLoaded) {
+        publicProxyManager._settingsLoaded = true;
+        await publicProxyManager.initSettings().catch(() => {});
+      }
       const publicUrl = publicProxyManager.getNextProxy();
       if (publicUrl) {
+        const modeLabel = publicProxyManager.roundRobin ? "Round Robin" : "Sticky";
         return {
           source: "public",
           proxyPoolId: PUBLIC_PROXY_POOL_ID,
           proxyPool: {
             id: PUBLIC_PROXY_POOL_ID,
-            name: "Public Proxy (Round Robin)",
+            name: `Public Proxy (${modeLabel})`,
             proxyUrl: publicUrl,
             isActive: true,
           },
