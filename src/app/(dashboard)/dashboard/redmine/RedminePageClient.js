@@ -1173,7 +1173,7 @@ export default function RedminePageClient() {
   // Quick Open in Chat Session with preloaded workspace
   const [spawningIssueId, setSpawningIssueId] = useState(null);
 
-  const handleSpawnTaskSession = async (issue, e) => {
+  const handleSpawnTaskSession = async (issue, e, forceNew = false) => {
     if (e) e.stopPropagation();
     if (!issue || spawningIssueId) return;
     setSpawningIssueId(issue.id);
@@ -1182,7 +1182,7 @@ export default function RedminePageClient() {
       const res = await fetch("/api/redmine/tasks/spawn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ issueId: issue.id, model: meta?.config?.aiModel }),
+        body: JSON.stringify({ issueId: issue.id, model: meta?.config?.aiModel, forceNew: Boolean(forceNew || issue.localStatus === 'done') }),
       });
 
       const data = await res.json();
@@ -2871,7 +2871,7 @@ export default function RedminePageClient() {
                           onPreviewImage={setActiveImagePreview}
                         />
                       ) : (
-                        <span className="text-text-muted italic">(No description provided)</span>
+                        <span className="text-text-muted italic">(Deskripsi awal tiket kosong pada form Redmine. Rincian kebutuhan dan catatan pengerjaan terdapat pada Komentar/Catatan Tiket di bawah)</span>
                       )}
 
                       {Array.isArray(issueDetail.attachments) && issueDetail.attachments.length > 0 && (

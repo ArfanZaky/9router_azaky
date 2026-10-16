@@ -1205,7 +1205,9 @@ export async function startServerChatRun(input) {
   const codebase = session.codebase || input.codebase || "";
   const assistantId = input.assistantId || randomUUID();
   const messages = Array.isArray(input.persistedMessages)
-    ? input.persistedMessages
+    ? (input.persistedMessages.some((m) => m?.id === assistantId)
+        ? input.persistedMessages
+        : [...input.persistedMessages, { id: assistantId, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }])
     : [...request.messages, { id: assistantId, role: "assistant", content: "", status: "streaming", createdAt: new Date().toISOString() }];
 
   const existingTeam = session.teamState || {};

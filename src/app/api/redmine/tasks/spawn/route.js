@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import {
   getRedmineConfig,
   getRedmineIssueDetail,
@@ -18,8 +19,13 @@ import {
   startServerChatRun,
   isRunLiveForSession,
 } from "@/lib/chat/serverRunManager";
-
-import { getInstructionComments, getNewInstructionComments, formatInstructionComments } from "@/lib/redmine/commentInstructions";
+import {
+  getInstructionComments,
+  getNewInstructionComments,
+  formatInstructionComments,
+} from "@/lib/redmine/commentInstructions";
+import { fetchRedmineImageAttachments } from "@/lib/redmine/redmineAttachments";
+import { buildUserContent } from "@/lib/chat/userContent";
 
 export const dynamic = "force-dynamic";
 
@@ -122,18 +128,45 @@ async function spawnIssue(body) {
         const activeKey = keys.find((k) => k.isActive !== false)?.key || "";
         if (!activeKey) return NextResponse.json({ error: "AI API key is not configured" }, { status: 400 });
 
-        const instruction = `Tiket Redmine #${issue.id} sebelumnya PENDING. Ada komentar baru sebagai instruksi tambahan. Lanjutkan pekerjaan pada tiket yang sama dengan mempertimbangkan deskripsi, riwayat chat, dan klarifikasi baru berikut. Jika masih kurang jelas, laporkan [STATUS: PENDING] beserta pertanyaannya.\n\n**Komentar baru:**\n${formatInstructionComments(newComments)}`;
+        // Download any image attachments from the issue/comments
+        const imageAttachments = await fetchRedmineImageAttachments(issue, config);
+        const hasImages = imageAttachments.length > 0;
+        const imagesNote = hasImages
+          ? `\n\n**Lampiran Gambar dari Redmine:**\n` + imageAttachments.map((img) => `- ${img.name} (${img.type})`).join("\n") + "\nPeriksa lampiran gambar ini untuk melihat context UI / error yang dilaporkan."
+          : "";
+
+        const instruction = `Tiket Redmine #${issue.id} sebelumnya PENDING. Ada komentar baru sebagai instruksi tambahan. Lanjutkan pekerjaan pada tiket yang sama dengan mempertimbangkan deskripsi, riwayat chat, lampiran gambar, dan klarifikasi baru berikut. Jika masih kurang jelas, laporkan [STATUS: PENDING] beserta pertanyaannya.\n\n**Komentar baru:**\n${formatInstructionComments(newComments)}${imagesNote}`;
         const session = await getChatSession(existing.id, { messageLimit: 10000 });
         if (!session) return NextResponse.json({ error: "Chat session not found" }, { status: 404 });
-        // The follow-up must preserve enough history to answer the original
-        // task, even for older sessions that have become very long.
+
         const model = body.model || session.model || config.aiModel;
         const providerId = model.includes("/") ? model.split("/")[0] : (session.providerId || "");
         const priorMessages = (session.messages || []).filter(
           (item) => item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string" && item.content.trim()
         );
-        const latestInstruction = { role: "user", content: instruction, status: "done" };
-        const history = [...priorMessages, latestInstruction];
+        const followUpUserMsgId = randomUUID();
+        const latestInstruction = {
+          id: followUpUserMsgId,
+          role: "user",
+          content: instruction,
+          attachments: imageAttachments,
+          status: "done",
+          createdAt: new Date().toISOString(),
+        };
+        const assistantId = randomUUID();
+        const streamingAssistant = {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          status: "streaming",
+          createdAt: new Date().toISOString(),
+        };
+        const persisted = [...priorMessages, latestInstruction, streamingAssistant];
+        const userContent = buildUserContent(latestInstruction);
+        const historyForRun = [
+          ...priorMessages.map(({ role, content }) => ({ role, content })),
+          { role: "user", content: userContent },
+        ];
         const sessionTitle = existing.title;
         const nextStatuses = { ...(currentSettings?.redmineTaskStatuses || {}) };
         nextStatuses[String(issue.id)] = {
@@ -141,12 +174,15 @@ async function spawnIssue(body) {
           lastInstructionCommentKey: lastCommentKey, updatedAt: new Date().toISOString(),
         };
         await updateSettings({ redmineTaskStatuses: nextStatuses });
+        await createChatMessage(existing.id, latestInstruction);
         let run;
         try {
           run = await startServerChatRun({
             sessionId: existing.id, mode: "agent", providerId, titleSeed: sessionTitle, model,
-            messages: history.map(({ role, content }) => ({ role, content })),
-            persistedMessages: history, systemPrompt: session.systemPrompt,
+            messages: historyForRun,
+            persistedMessages: persisted,
+            assistantId,
+            systemPrompt: session.systemPrompt,
             redmineFollowUp: true,
             apiKey: activeKey, accessMode: "full", autoApprove: true,
             codebase: session.workspacePath || assigned.path,
@@ -156,8 +192,7 @@ async function spawnIssue(body) {
           await updateSettings({ redmineTaskStatuses: currentSettings?.redmineTaskStatuses || {} });
           throw error;
         }
-        // The run starts asynchronously and could finish before this response.
-        // Do not overwrite its final status with an old settings snapshot.
+
         return NextResponse.json({
           ok: true, spawned: true, resumed: true, sessionId: existing.id,
           title: sessionTitle, workspacePath: session.workspacePath || assigned.path,
@@ -185,7 +220,36 @@ async function spawnIssue(body) {
     const keys = await getApiKeys();
     const activeKey = keys.find((k) => k.isActive !== false)?.key || "";
 
-    // 5. System prompt with explicit SQL prohibition, Git commit rules, ambiguity question rules, and Anti-Slop
+    // 5. Fetch image attachments and construct clear task description and context
+    const imageAttachments = await fetchRedmineImageAttachments(issue, config);
+
+    const hasDescription = Boolean(issue.description && issue.description.trim());
+    const hasComments = comments.length > 0;
+    const hasImages = imageAttachments.length > 0;
+
+    let descBlock = "";
+    if (hasDescription) {
+      descBlock = issue.description.trim();
+    } else if (hasComments) {
+      descBlock = "(Tidak ada deskripsi rinci) - Rincian kebutuhan, bug report, dan instruksi pengerjaan dijelaskan lengkap pada Komentar/Catatan Tiket di bawah";
+    } else {
+      descBlock = "(Tidak ada deskripsi rinci)";
+    }
+
+    let commentsBlock = "";
+    if (hasComments) {
+      commentsBlock = formatInstructionComments(comments);
+    } else {
+      commentsBlock = "(Tidak ada komentar)";
+    }
+
+    const imagesBlock = hasImages
+      ? `Terlampir ${imageAttachments.length} gambar/tangkapan layar dari Redmine pada pesan ini:\n` +
+        imageAttachments.map((img) => `- ${img.name} (${img.type})`).join("\n") +
+        "\nPeriksa gambar-gambar terlampir ini untuk melihat context UI / error yang dilaporkan."
+      : "";
+
+    // System prompt with explicit SQL prohibition, Git commit rules, ambiguity question rules, and Anti-Slop
     const systemPrompt = `Act as an expert senior software engineer working in a dedicated Native Agent Team.
 Workspace project path: ${assigned.path}
 
@@ -193,12 +257,14 @@ Workspace project path: ${assigned.path}
 1. ATURAN AKSES DATABASE:
    - Anda BOLEH mengakses database untuk query pembacaan data atau memeriksa skema, TETAPI HANYA QUERY SELECT SAJA (READ-ONLY).
    - JANGAN PERNAH mengeksekusi INSERT, UPDATE, DELETE, ALTER, DROP, atau TRUNCATE langsung ke database mana pun. Jika ada perubahan skema atau manipulasi data apa pun yang diperlukan (seperti INSERT data baru, UPDATE baris, DELETE, ALTER tabel, migrasi, seeder, dsb.), BUATLAH file skrip SQL tersendiri berekstensi .sql (contoh: migrations/xxx.sql atau scripts/xxx.sql). Dilarang mengeksekusi langsung ke database!
-   - KONEKSI DATABASE GAGAL / TIDAK DAPAT DIAKSES: Jika task memerlukan koneksi ke database dan koneksi database tidak dapat terhubung / gagal connect / credentials tidak tersedia, JANGAN membuat asumsi spekulatif dan JANGAN memaksakan selesai. Jadikan status task PENDING dengan menyertakan teks persis: [STATUS: PENDING] di dalam jawaban akhir Anda, serta jelaskan kredensial atau akses database apa yang dibutuhkan.
-2. ATURAN DESKRIPSI, KOMENTAR TIKET & PERTANYAAN (KLARIFIKASI):
-   - Gunakan deskripsi DAN komentar/catatan tiket sebagai sumber instruksi. Perhatikan klarifikasi terbaru pada komentar jika ada.
-   - Jika deskripsi dan komentar tiket kurang jelas, ambigu, spesifikasi kebutuhan belum lengkap, atau memerlukan konfirmasi/pertanyaan sebelum dieksekusi: JANGAN membuat asumsi spekulatif dan JANGAN memaksakan mengerjakan atau menyelesaikan task!
-   - Jadikan status task menjadi PENDING dengan menyertakan teks persis: [STATUS: PENDING] di jawaban akhir Anda.
-   - Tuliskan daftar/list pertanyaan konfirmasi yang jelas dan spesifik poin per poin (apa saja yang perlu diklarifikasi kepada user atau reporter tiket).
+   - KONEKSI DATABASE GAGAL / TIDAT DAPAT DIAKSES: Jika task memerlukan koneksi ke database dan koneksi database tidak dapat terhubung / gagal connect / credentials tidak tersedia, JANGAN membuat asumsi spekulatif dan JANGAN memaksakan selesai. Jadikan status task PENDING dengan menyertakan teks persis: [STATUS: PENDING] di dalam jawaban akhir Anda, serta jelaskan kredensial atau akses database apa yang dibutuhkan.
+2. ATURAN DESKRIPSI, KOMENTAR TIKET & LAMPIRAN GAMBAR (SCREENSHOT):
+   - Gunakan deskripsi DAN komentar/catatan tiket serta lampiran gambar (screenshots) sebagai sumber instruksi utama. Perhatikan klarifikasi terbaru pada komentar jika ada.
+   - Pada alur kerja Redmine (khususnya tiket QA / Issue / Bug Report), rincian masalah, langkah reproduksi, dan kriteria penerimaan sering kali dicatat oleh tim QA atau reporter di bagian Komentar/Catatan Tiket atau melalui Tangkapan Layar (Screenshots).
+   - Jika kolom deskripsi awal kosong tetapi Komentar/Catatan Tiket atau lampiran gambar memuat rincian keluhan, langkah, atau ekspektasi yang dapat dipahami, MAKA ANGGAP KOMENTAR & LAMPIRAN TERSEBUT SEBAGAI DESKRIPSI & SPESIFIKASI TIKET. DILARANG menyatakan tiket 'Deskripsi Kosong' atau mengubah status menjadi PENDING hanya karena kolom deskripsi awal tidak diisi!
+   - Periksa lampiran gambar (chat image attachments) yang disertakan pada pesan untuk memahami context UI, pesan error, atau letak tombol/fitur yang dilaporkan.
+   - Status PENDING hanya digunakan jika instruksi secara keseluruhan (baik dari deskripsi, komentar, maupun gambar) benar-benar membingungkan, kontradiktif, membutuhkan kredensial database yang belum ada, atau membutuhkan konfirmasi user sebelum dieksekusi.
+   - Tuliskan daftar/list pertanyaan konfirmasi yang jelas dan spesifik poin per poin jika memang butuh klarifikasi.
    - JANGAN melakukan git commit jika task berstatus PENDING.
 3. Tulis kode yang bersih, modular, dan teruji sesuai standar kualitas tinggi (Anti-Slop standard: no em dashes, no dead code, mobile responsive).
 4. Jangan mengubah status tiket Redmine di remote server; selesaikan pekerjaan di codebase lokal dan verifikasi dengan teliti.
@@ -213,12 +279,12 @@ Workspace project path: ${assigned.path}
 - **Prioritas:** ${issue.priority?.name || "Normal"}
 
 **Deskripsi Task:**
-${issue.description ? issue.description.trim() : "(Tidak ada deskripsi rinci)"}
+${descBlock}
 
 **Komentar/Catatan Tiket (urut sesuai riwayat Redmine):**
-${comments.length ? formatInstructionComments(comments) : "(Tidak ada komentar)"}
-
-Gunakan deskripsi dan komentar di atas sebagai instruksi task. Jika komentar terbaru memperjelas atau merevisi deskripsi/komentar sebelumnya, pertimbangkan klarifikasi tersebut.
+${commentsBlock}
+${imagesBlock ? `\n**Lampiran Gambar dari Tiket:**\n${imagesBlock}\n` : ""}
+Gunakan deskripsi, komentar, dan lampiran gambar di atas sebagai instruksi task. Jika komentar terbaru memperjelas atau merevisi deskripsi/komentar sebelumnya, pertimbangkan klarifikasi tersebut. Catatan: jika deskripsi awal kosong, rincian pada komentar tiket dan screenshot adalah spesifikasi utama yang harus dikerjakan.
 
 ---
 **ATURAN KERJA & BATASAN KEAMANAN:**
@@ -227,11 +293,10 @@ Gunakan deskripsi dan komentar di atas sebagai instruksi task. Jika komentar ter
    - Anda BOLEH mengakses database HANYA untuk query SELECT saja (read-only).
    - DILARANG KERAS mengeksekusi INSERT, UPDATE, DELETE, ALTER, DROP, atau modifikasi data/skema apa pun langsung ke database. Jika perlu melakukan perubahan skema maupun manipulasi data (seperti INSERT data, UPDATE data, DELETE, ALTER tabel, migrasi, seeder, dll.), BUATLAH file .sql tersendiri (contoh: migrations/xxx.sql atau scripts/xxx.sql). JANGAN eksekusi langsung ke database!
    - JIKA DATABASE TIDAK BISA KONEK: Jika task ini memerlukan koneksi ke database dan koneksi database tidak dapat terhubung, jangan paksakan selesai! Buat status task menjadi PENDING dengan menulis teks persis: [STATUS: PENDING] di laporan akhir Anda dan jelaskan kebutuhan koneksi DB-nya.
-3. JIKA DESKRIPSI DAN KOMENTAR KURANG JELAS ATAU PERLU PERTANYAAN:
-   - Jika deskripsi dan komentar tiket kurang jelas, ambigu, informasi kebutuhan belum lengkap, atau butuh konfirmasi/pertanyaan sebelum dikerjakan:
-   - JANGAN berspekulasi atau berasumsi sendiri!
-   - Buat status task menjadi PENDING dengan menulis teks persis: [STATUS: PENDING] di laporan akhir Anda.
-   - Cantumkan daftar/list pertanyaan konfirmasi secara rinci dan terstruktur poin per poin.
+3. JIKA INSTRUKSI (DESKRIPSI, KOMENTAR, GAMBAR) KURANG JELAS ATAU PERLU PERTANYAAN:
+   - Evaluasi seluruh informasi (deskripsi, komentar, dan gambar screenshot). Jika deskripsi kosong namun komentar atau gambar sudah jelas menerangkan bug/kebutuhan, langsung kerjakan perbaikan pada kode!
+   - Hanya jadikan status task PENDING jika kebutuhan teknis/bisnis benar-benar tidak jelas, ambigu, atau butuh konfirmasi user sebelum dieksekusi.
+   - Jika berstatus PENDING, tulis teks persis: [STATUS: PENDING] di laporan akhir Anda dan cantumkan daftar/list pertanyaan konfirmasi secara rinci dan terstruktur poin per poin.
    - JANGAN membuat git commit jika berstatus PENDING.
 4. Selesaikan implementasi atau perbaikan bug dengan teliti, dan pastikan tidak ada syntax error / build error.
 5. LAKUKAN GIT COMMIT LOKAL SAJA (DILARANG GIT PUSH): Jika task berhasil selesai (bukan pending), buat git commit lokal (git add + git commit -m '...') menyertakan nomor tiket #${issue.id}. JANGAN PERNAH mengeksekusi git push ke remote!
@@ -258,23 +323,40 @@ Gunakan deskripsi dan komentar di atas sebagai instruksi task. Jika komentar ter
       systemPrompt,
     });
 
-    // 7. Add initial user message
-    await createChatMessage(session.id, {
+    // 7. Add initial user message with attachments
+    const userMessageId = randomUUID();
+    const userMessage = {
+      id: userMessageId,
       role: "user",
       content: userPrompt,
+      attachments: imageAttachments,
       status: "done",
-    });
+      createdAt: new Date().toISOString(),
+    };
+    await createChatMessage(session.id, userMessage);
 
     // 8. Start agent run immediately
     let runId = null;
     if (activeKey) {
+      const assistantId = randomUUID();
+      const streamingAssistant = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        status: "streaming",
+        createdAt: new Date().toISOString(),
+      };
+      const userContent = buildUserContent(userMessage);
+
       const run = await startServerChatRun({
         sessionId: session.id,
         mode: "agent",
         providerId: providerCandidate,
         titleSeed: sessionTitle,
         model: modelCandidate,
-        messages: [{ role: "user", content: userPrompt }],
+        messages: [{ role: "user", content: userContent }],
+        persistedMessages: [userMessage, streamingAssistant],
+        assistantId,
         systemPrompt,
         apiKey: activeKey,
         accessMode: "full",
