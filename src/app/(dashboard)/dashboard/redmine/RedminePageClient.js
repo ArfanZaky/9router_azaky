@@ -752,6 +752,7 @@ export default function RedminePageClient() {
     if (trackerFilter) params.append("tracker_id", trackerFilter);
     if (searchQuery.trim()) params.append("q", searchQuery.trim());
     params.append("limit", "100");
+    params.append("sort", "due_date:asc");
 
     const refreshRes = await fetch(`/api/redmine/issues?${params.toString()}`).catch(() => null);
     if (refreshRes && refreshRes.ok) {
@@ -773,6 +774,7 @@ export default function RedminePageClient() {
       if (trackerFilter) params.append("tracker_id", trackerFilter);
       if (searchQuery.trim()) params.append("q", searchQuery.trim());
       params.append("limit", "100");
+      params.append("sort", "due_date:asc");
 
       const res = await fetch(`/api/redmine/issues?${params.toString()}`);
       const data = await res.json();
@@ -1698,6 +1700,7 @@ export default function RedminePageClient() {
                       <th className="px-4 py-3.5">Priority</th>
                       <th className="px-4 py-3.5 whitespace-nowrap">Log Time</th>
                       <th className="px-4 py-3.5 w-28">% Done</th>
+                      <th className="px-4 py-3.5 whitespace-nowrap">Due Date</th>
                       <th className="px-4 py-3.5">Updated</th>
                       <th className="px-4 py-3.5 text-right">Action</th>
                     </tr>
@@ -1824,6 +1827,10 @@ export default function RedminePageClient() {
                                 {issue.done_ratio || 0}%
                               </span>
                             </div>
+                          </td>
+
+                          <td className="px-4 py-3.5 text-text-muted text-[11px] whitespace-nowrap">
+                            {issue.due_date ? new Date(`${issue.due_date}T00:00:00`).toLocaleDateString() : "-"}
                           </td>
 
                           <td className="px-4 py-3.5 text-text-muted text-[11px] whitespace-nowrap">

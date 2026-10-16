@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getSettings, updateSettings, listChatSessions } from "@/lib/localDb";
+import { sortIssuesByDueDate } from "./sortIssuesByDueDate";
 
 export const DEFAULT_REDMINE_CONFIG = {
   baseUrl: "https://redmine.profescipta.co.id",
@@ -236,20 +237,32 @@ export async function getRedmineIssues({
   params.append("offset", String(offset));
   params.append("sort", sort);
 
-  const url = `${config.baseUrl}/issues.json?${params.toString()}`;
-  const res = await fetch(url, {
-    headers: getHeaders(config.apiKey),
-    cache: "no-store",
-  });
+  // The dashboard has no pagination control. Read every page when sorting by due date
+  // so tickets with a due date cannot be hidden behind Redmine's undated tickets.
+  const sortByDueDate = sort === "due_date:asc";
+  let issues = [];
+  let totalCount = 0;
+  do {
+    const url = `${config.baseUrl}/issues.json?${params.toString()}`;
+    const res = await fetch(url, {
+      headers: getHeaders(config.apiKey),
+      cache: "no-store",
+    });
 
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Failed to fetch issues (${res.status}): ${errorText || res.statusText}`);
-  }
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Failed to fetch issues (${res.status}): ${errorText || res.statusText}`);
+    }
 
-  const data = await res.json();
-  let issues = data?.issues || [];
-  let totalCount = data?.total_count ?? issues.length;
+    const data = await res.json();
+    const page = data?.issues || [];
+    issues.push(...page);
+    totalCount = data?.total_count ?? issues.length;
+    if (!sortByDueDate || page.length === 0) break;
+    params.set("offset", String(offset + issues.length));
+  } while (offset + issues.length < totalCount);
+
+  if (sortByDueDate) issues = sortIssuesByDueDate(issues);
 
   if (search && search.trim()) {
     const term = search.toLowerCase().trim();
@@ -262,6 +275,9 @@ export async function getRedmineIssues({
     );
     totalCount = issues.length;
   }
+
+  // Keep the existing dashboard row limit after selecting the earliest due dates.
+  if (sortByDueDate) issues = issues.slice(0, limit);
 
   const projectPaths = config.projectPaths || {};
   let localTaskStatuses = {};
