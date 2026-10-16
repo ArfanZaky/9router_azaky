@@ -1,4 +1,6 @@
 - Terse concise communication preferred; avoid conversational filler.
-- Preserve dominant language of user.
-- Communicate in Indonesian.
 - Commit task changes locally upon completion; never push to remote.
+- Prefers responses in Bahasa Indonesia with concise root-cause analysis and explicit confirmation before running long or impactful commands.
+- User communicates in Indonesian (uses 'lanjut' to continue tasks) and expects concise summaries with root cause, fix list, and file/line references.
+- For end-to-end validation, prefers driving a real browser session (browser use) and logging into the 9Router account to obtain cookies rather than mocking or assuming API behavior.
+- Communicate in Indonesian always.

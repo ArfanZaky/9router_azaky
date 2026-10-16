@@ -14,8 +14,7 @@ function candidateSkillRoots() {
   add(path.join(process.cwd(), "skills"));
   add(path.resolve(__dirname, "../../../skills"));
   add(path.resolve(__dirname, "../../../../skills"));
-  // OpenCode global skills (~/.config/opencode/skills) — like opencode, so the
-  // chat agent has the same skill library.
+  // OpenCode global skills (~/.config/opencode/skills), so the chat agent has the same skill library.
   add(path.join(os.homedir(), ".config", "opencode", "skills"));
   if (process.env.OPENCODE_CONFIG_DIR) add(path.join(process.env.OPENCODE_CONFIG_DIR, "skills"));
   if (process.env.NINEROUTER_SKILLS_DIR) add(process.env.NINEROUTER_SKILLS_DIR);
@@ -91,7 +90,7 @@ export function buildSkillCatalogue(skills, maxChars = 8000) {
   for (const s of skills) {
     const line = s.description ? `- ${s.name}: ${s.description}` : `- ${s.name}`;
     if (text.length + line.length + 1 > maxChars) {
-      text += `\n… [remaining skills omitted — read_skill to load]`;
+      text += `\n... [remaining skills omitted: read_skill to load]`;
       break;
     }
     text += `\n${line}`;
@@ -125,14 +124,14 @@ export function buildAgentSystemPrompt({ workspace, userSystem = "", accessMode 
 
   const accessLine =
     mode === "full"
-      ? `Access mode: FULL — bash, write_file, read/list/grep, web, image generation.`
-      : `Access mode: SANDBOX — read_file, list_dir, grep, web_search/fetch, generate_image only. No bash/write.`;
+      ? `Access mode: FULL: bash, write_file, read/list/grep, web, image generation.`
+      : `Access mode: SANDBOX: read_file, list_dir, grep, web_search/fetch, generate_image only. No bash/write.`;
 
   const antiSlopStandard = [
     `## Mandatory Anti-Slop Standard (https://github.com/miqdadbadjuber/anti-slop)`,
     `For all code implementation, UI building, and integration tasks, you MUST strictly apply Anti-Slop rules (R-01 to R-38 and Craftsmanship C-1..C-5):`,
     `- Hard Gates (zero tolerance):`,
-    `  * R-02 (Copywriting): FORBIDDEN em dash (—) anywhere in generated copy or text. Use comma, period, colon, or parentheses instead.`,
+    `  * R-02 (Copywriting): FORBIDDEN em dash anywhere in generated copy or text. Use comma, period, colon, or parentheses instead.`,
     `  * R-03 (Mobile Responsiveness): Mobile layout is required. No horizontal overflow, no clipping, minimum 44px tap targets.`,
     `  * R-17/R-18/R-36/R-38 (Real Data): FORBIDDEN fabricated numbers, fake testimonials/avatars, or unverified claims. Use real data or explicit markers like [REAL DATA] / [LOGO].`,
     `  * R-24/R-26 (Functionality): Every interactive button, link, toggle, or modal must have real working behavior. Never ship dead controls.`,
@@ -148,7 +147,7 @@ export function buildAgentSystemPrompt({ workspace, userSystem = "", accessMode 
   const memorySection = formatDualTierMemoryForPrompt(workspace);
 
   const parts = [
-    `You are 9Router Agent — an OpenCode-style coding agent running inside the 9Router dashboard.`,
+    `You are 9Router Agent: an OpenCode-style coding agent running inside the 9Router dashboard.`,
     `You can use tools within the current access policy and 9Router capabilities.`,
     ``,
     accessLine,

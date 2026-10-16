@@ -64,6 +64,32 @@ export function loadDualTierMemory(workspace) {
   };
 }
 
+function extractSignificantWords(str) {
+  return new Set(
+    str
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+  );
+}
+
+function isNearDuplicate(lineA, lineB) {
+  const a = lineA.toLowerCase().replace(/^[-*]\s*/, "").trim();
+  const b = lineB.toLowerCase().replace(/^[-*]\s*/, "").trim();
+  if (a === b) return true;
+  if (a.includes(b) || b.includes(a)) return true;
+  const setA = extractSignificantWords(a);
+  const setB = extractSignificantWords(b);
+  if (setA.size === 0 || setB.size === 0) return false;
+  let matches = 0;
+  for (const w of setA) {
+    if (setB.has(w)) matches++;
+  }
+  const minSize = Math.min(setA.size, setB.size);
+  return minSize > 0 && matches / minSize >= 0.65;
+}
+
 function dedupeAndBoundLines(existingContent, newFact, maxChars) {
   const cleanFact = String(newFact || "").trim();
   if (!cleanFact) return existingContent || "";
@@ -73,20 +99,16 @@ function dedupeAndBoundLines(existingContent, newFact, maxChars) {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // Normalize bullet lines
+  // Normalize bullet lines and sanitize em dashes
   const factLines = cleanFact
     .split(/\r?\n/)
-    .map((l) => l.trim())
+    .map((l) => l.trim().replace(/—/g, ":"))
     .filter(Boolean)
     .map((l) => (l.startsWith("- ") || l.startsWith("* ") ? l : `- ${l}`));
 
   for (const f of factLines) {
-    const fLower = f.toLowerCase().replace(/^[-*]\s*/, "");
-    // Remove conflicting or exact duplicate line
-    lines = lines.filter((line) => {
-      const lLower = line.toLowerCase().replace(/^[-*]\s*/, "");
-      return lLower !== fLower;
-    });
+    // Remove exact or near-duplicate/topic-overlapping line
+    lines = lines.filter((line) => !isNearDuplicate(line, f));
     lines.push(f);
   }
 
@@ -113,7 +135,7 @@ export function saveDualTierMemory(workspace, { type, content, mode = "append" }
 
   let finalContent = "";
   if (mode === "replace") {
-    finalContent = String(content || "").trim().slice(0, maxChars);
+    finalContent = String(content || "").replace(/—/g, ":").trim().slice(0, maxChars);
   } else {
     let existing = "";
     try {

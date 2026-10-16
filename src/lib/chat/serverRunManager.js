@@ -19,7 +19,7 @@ import {
   updateSettings,
 } from "@/lib/localDb";
 import { resolveProjectWorkspace } from "./projectWorkspace.js";
-import { saveDualTierMemory } from "@/lib/agent/memory.js";
+import { saveDualTierMemory, loadDualTierMemory } from "@/lib/agent/memory.js";
 import { listTools as listMcpTools, callTool as callMcpTool } from "./mcpClient.js";
 
 const liveRuns = globalThis.__chatServerRuns || new Map();
@@ -110,7 +110,7 @@ async function openGate(run, kind, payload) {
     const timer = setTimeout(() => {
       run.gates.delete(id);
       emit(run, "notice", {
-        message: `${kind === "approval" ? "Approval" : "Question"} timed out (auto-${kind === "approval" ? "denied" : "skipped"})`,
+        message: `${kind === "approval" ? "Approval" : "Question"} timed out (auto-${kind === "approval" ? "denied" : "dismissed"})`,
       }).catch(() => {});
       resolve(kind === "approval" ? false : null);
     }, GATE_TIMEOUT_MS);
@@ -170,16 +170,27 @@ async function runBackgroundReflection(run, content) {
   const lastUserMsg = [...(run.request.messages || [])].reverse().find((m) => m?.role === "user");
   const userText = text(lastUserMsg?.content).trim();
   if (!userText || userText.length < 5) return;
-  if (/^(hi|hello|hey|halo|test|ok|oke|sip|thanks|terima kasih)[\s.!]*$/i.test(userText)) return;
+  if (/^(hi|hello|hey|halo|test|ok|oke|sip|thanks|terima kasih|lanjut|lanjutkan|next|continue)[\s.!]*$/i.test(userText)) return;
+
+  const currentMem = loadDualTierMemory(run.workspace);
 
   const prompt = `You are the Hermes Self-Improvement Background Reviewer for 9Router Agent.
 Analyze this completed interaction to extract durable learnings:
 1. Durable Project Fact (MEMORY.md): Stack nuance, build command, port, error cause, or architecture convention. (Max 1-2 bullet points starting with "- ").
 2. Durable User Preference (USER.md): Explicit user style, communication rule, language preference, or workflow constraint. (Max 1 bullet point starting with "- ").
+
+Existing Knowledge (DO NOT duplicate or restate facts already present here):
+Current MEMORY.md:
+${currentMem.projectMemory || "(empty)"}
+
+Current USER.md:
+${currentMem.userMemory || "(empty)"}
+
 Rules:
 - Do NOT save ephemeral session states or transient task progress.
+- Do NOT save facts or preferences already covered in Existing Knowledge.
 - Only return durable, reusable facts. If nothing new was learned, set shouldUpdate: false.
-- Anti-Slop: No generic filler, no em dash.
+- Anti-Slop: No generic filler, no em dash (- or : only).
 
 Completed Turn:
 User Request: ${userText.slice(0, 800)}
@@ -199,7 +210,6 @@ Reply JSON only:
       { role: "system", content: "You extract durable memory facts from assistant turns. Reply JSON only." },
       { role: "user", content: prompt },
     ],
-    response_format: { type: "json_object" },
     max_tokens: 400,
   };
 
@@ -214,13 +224,34 @@ Reply JSON only:
     const data = await response.json().catch(() => ({}));
     const raw = text(data.choices?.[0]?.message?.content);
     if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (parsed?.shouldUpdate) {
-      if (parsed.projectFact && typeof parsed.projectFact === "string") {
-        saveDualTierMemory(run.workspace, { type: "project", content: parsed.projectFact, mode: "append" });
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        try { parsed = JSON.parse(match[0]); } catch {}
       }
-      if (parsed.userPreference && typeof parsed.userPreference === "string") {
-        saveDualTierMemory(run.workspace, { type: "user", content: parsed.userPreference, mode: "append" });
+    }
+
+    if (parsed?.shouldUpdate) {
+      const saved = [];
+      if (parsed.projectFact && typeof parsed.projectFact === "string" && parsed.projectFact.trim().length > 3) {
+        const cleanProject = parsed.projectFact.replace(/—/g, ":");
+        saveDualTierMemory(run.workspace, { type: "project", content: cleanProject, mode: "append" });
+        saved.push("Project Knowledge (MEMORY.md)");
+      }
+      if (parsed.userPreference && typeof parsed.userPreference === "string" && parsed.userPreference.trim().length > 3) {
+        const cleanUser = parsed.userPreference.replace(/—/g, ":");
+        saveDualTierMemory(run.workspace, { type: "user", content: cleanUser, mode: "append" });
+        saved.push("User Preference (USER.md)");
+      }
+
+      if (saved.length > 0) {
+        await emit(run, "notice", {
+          message: `💾 Self-improvement: Learned and updated ${saved.join(" and ")}`,
+        }).catch(() => {});
       }
     }
   } catch {
@@ -312,7 +343,7 @@ function stoppedSummary(messages, assistantText, stopped) {
   }
   return stopped
     ? "(Stopped)"
-    : "(No response — model returned empty content. Try Agent OFF for fusion, or check panel credentials.)";
+    : "(No response: model returned empty content. Try Agent OFF for fusion, or check panel credentials.)";
 }
 
 function parseSseLineBuffer(buffer, onEvent, initialEventName = "message") {
@@ -583,7 +614,7 @@ async function runAgent(run) {
         return { ok: true, met: true, reason: judge.reason || "" };
       }
       const next = judge?.next_step || "";
-      await emit(run, "notice", { message: `Goal not yet met — ${next || "continue working"}` });
+      await emit(run, "notice", { message: `Goal not yet met: ${next || "continue working"}` });
       return { ok: true, met: false, nextStep: next };
     },
     onEvent: async (type, data) => {
@@ -1133,7 +1164,7 @@ async function execute(run) {
                     });
                   }
                   await emit(run, "notice", {
-                    message: `Task changes automatically committed locally: "${commitMsg}" (remote push skipped as requested).`,
+                    message: `Task changes committed locally: "${commitMsg}" (local commit only, remote push disabled).`,
                   }).catch(() => {});
                 }
               }

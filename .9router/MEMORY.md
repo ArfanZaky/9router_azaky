@@ -1,13 +1,10 @@
-- 9Router custom project runs Next.js App Router on Node v22.
-- Anti-slop standard strictly enforced for all UI and code generation.
-- Self-preservation: Never execute sync pm2 restart in tool calls; use scripts/safe-reload.mjs.
-- Memory in `src/lib/agent/memory.js`: `MEMORY.md` limit 2200 chars, `USER.md` limit 1375 chars. Tools: `manage_memory`, `manage_skill` in `src/lib/agent/tools.js`.
-- Redmine integration route at `/dashboard/redmine`; user Redmine ID 135 username `azaky`.
-- Redmine credentials stored in gitignored data/settings.json; client at src/lib/redmine/redmineClient.js targets https://redmine.profescipta.co.id/.
-- App store settings in local SQLite DB at `data/db/data.sqlite` (`settings` table); `data/` path in `.gitignore`.
-- Completed Redmine tasks auto-commit locally with `feat(#<id>): <subject>`; `git push` blocked by runtime guard in `tools.js`.
-- Database changes require .sql files; direct schema or data alterations prohibited.
-- Database access rule: AI worker restricted to SELECT-only; direct CLI write operations blocked, schema and data changes require .sql migration files.
-- 9router binary located at `F:\project\9router\9router.exe`.
-- Default 9Router login password is `123456`; configure via `INITIAL_PASSWORD` env var or reset via CLI `Settings` > `Reset Password to Default`.
-- Redmine auto-work execution requires both assigned local project path and active auto-work status.
+- VERIFIED (live API): CodeBuddy VIDEO is a separate async-job API, not chat-completions. Create = POST https://www.codebuddy.ai/v2/videos/generations with body {model,prompt,duration?,aspect_ratio?,image?} -> {code,msg,requestId,data:{id,status,created_at}}. Poll = GET https://www.codebuddy.ai/v2/videos/tasks/{data.id}. The envelope `requestId` 404s: only `data.id` works.
+- CodeBuddy video status vocabulary upstream: queued | in_progress | completed. Terminal payload carries the MP4 at data.data[].url (signed Tencent COS URL, ~12h expiry). Credits exhaustion returns HTTP 429 with error.data.code=14018.
+- open-sse/handlers/videoProviders/codebuddy.js is the adapter for the above, registered in videoProviders/index.js ADAPTERS. Without it the default xAI passthrough posts to /v2/videos/generations but polls /v2/videos/{id} -> 404.
+- Regression tests for the CodeBuddy video adapter live in tests/unit/codebuddy-video.test.js (fixtures captured verbatim from the live API). Run: cd tests && npx vitest run unit/codebuddy-video.test.js --config vitest.config.js
+- PROVIDER_MODELS in open-sse/providers/index.js is keyed by provider ALIAS ("cb"), while PROVIDER_MEDIA is keyed by provider ID ("codebuddy").
+- Do not import from open-sse/handlers/videoCore.js inside videoProviders/*.js: videoCore imports videoProviders/index, creating a cycle. videoCore already sanitizes upstream error text.
+- Video generation (seedance-2.5) in 9Router uses a separate async-job API, not chat-completions streaming: create at POST /v2/videos/generations, poll at GET /v2/videos/tasks/{data.data.id} (the id inside the envelope, not requestId), result MP4 at data.data[].url as a ~12h signed Tencent COS link.
+- Atria upstream API endpoint is `api.atria-asi.ai/v1/chat/completions`; model `atria/Atria-Dawn-Preview` emits `reasoning_content` chunks in SSE stream.
+- Model atria/Atria-Dawn-Preview has upstream limit around 8,000 chars (~2,000 tokens); larger requests trigger HTTP 429 insufficient_quota, incompatible with /dashboard/chat agent payload overhead (~10,000 tokens).
+- 9router PM2 service run on port 2026; safe-reload defer PM2 restart until active chat session idle. Next dev run on port 3000 outside PM2.
