@@ -288,6 +288,14 @@ export async function getRedmineIssues({
     // ignore
   }
 
+  let existingSessionIds = new Set();
+  try {
+    const allSessions = await listChatSessions({ limit: 500 });
+    existingSessionIds = new Set((allSessions || []).map((s) => s.id));
+  } catch {
+    // ignore
+  }
+
   issues = issues.map((i) => {
     const pid = String(i.project?.id || "");
     const pident = String(i.project?.identifier || "");
@@ -295,14 +303,24 @@ export async function getRedmineIssues({
     const localPath = assigned?.path || null;
     const projectAutoWork = assigned ? (assigned.autoWork !== undefined ? Boolean(assigned.autoWork) : true) : false;
     const localTask = localTaskStatuses[String(i.id)] || null;
+
+    let validSessionId = localTask?.sessionId || null;
+    let localStatus = localTask?.status || null;
+    if (validSessionId && !existingSessionIds.has(validSessionId)) {
+      validSessionId = null;
+      if (localStatus === "working") {
+        localStatus = null;
+      }
+    }
+
     return {
       ...i,
       localPath,
       projectAutoWork,
-      localStatus: localTask?.status || null,
+      localStatus,
       localStatusReason: localTask?.reason || null,
-      localSessionId: localTask?.sessionId || null,
-      localSessionTitle: localTask?.sessionTitle || null,
+      localSessionId: validSessionId,
+      localSessionTitle: validSessionId ? localTask?.sessionTitle || null : null,
     };
   });
 

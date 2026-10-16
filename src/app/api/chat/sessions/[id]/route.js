@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { getChatSession, updateChatSession, deleteChatSession } from "@/lib/localDb";
+import {
+  getChatSession,
+  updateChatSession,
+  deleteChatSession,
+  getSettings,
+  updateSettings,
+} from "@/lib/localDb";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +41,27 @@ export async function PATCH(request, { params }) {
 export async function DELETE(_request, { params }) {
   try {
     const { id } = await params;
+
+    // Clean up any Redmine task tracking referencing this session before deletion
+    try {
+      const session = await getChatSession(id, { includeMessages: false });
+      const redmineIssueId = session?.projectMeta?.redmineIssueId;
+      const settings = await getSettings();
+      const rts = { ...(settings?.redmineTaskStatuses || {}) };
+      let changed = false;
+      for (const [key, val] of Object.entries(rts)) {
+        if (val?.sessionId === id || (redmineIssueId && String(key) === String(redmineIssueId))) {
+          delete rts[key];
+          changed = true;
+        }
+      }
+      if (changed) {
+        await updateSettings({ redmineTaskStatuses: rts });
+      }
+    } catch {
+      // non-blocking cleanup
+    }
+
     const ok = await deleteChatSession(id);
     if (!ok) return NextResponse.json({ error: "Session not found" }, { status: 404 });
     return NextResponse.json({ success: true });

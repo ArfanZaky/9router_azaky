@@ -1,0 +1,425 @@
+import { randomUUID } from "node:crypto";
+import {
+  getRedmineConfig,
+  getRedmineIssueDetail,
+  inspectLocalPath,
+} from "@/lib/redmine/redmineClient";
+import {
+  createChatSession,
+  createChatMessage,
+  listChatSessions,
+  getChatSession,
+  getSettings,
+  getActiveChatRunForSession,
+  updateSettings,
+  getApiKeys,
+} from "@/lib/localDb";
+import {
+  startServerChatRun,
+  isRunLiveForSession,
+} from "@/lib/chat/serverRunManager";
+import {
+  getInstructionComments,
+  getNewInstructionComments,
+  formatInstructionComments,
+} from "@/lib/redmine/commentInstructions";
+import { fetchRedmineImageAttachments } from "@/lib/redmine/redmineAttachments";
+import { buildUserContent } from "@/lib/chat/userContent";
+
+function createError(message, statusCode = 400) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
+/**
+ * Check whether a valid, non-deleted chat session already exists for an issue.
+ */
+export async function findActiveRedmineSession(issueId, preferredSessionId = null) {
+  if (!issueId) return null;
+  const issueKey = String(issueId);
+
+  if (preferredSessionId) {
+    try {
+      const session = await getChatSession(preferredSessionId, { includeMessages: false });
+      if (session && String(session.projectMeta?.redmineIssueId) === issueKey) {
+        return session;
+      }
+    } catch {
+      // quiet fallback
+    }
+  }
+
+  try {
+    const all = await listChatSessions({ limit: 300 });
+    return (all || []).find((s) => String(s.projectMeta?.redmineIssueId) === issueKey) || null;
+  } catch {
+    return null;
+  }
+}
+
+// Serialize starts for the same issue within this server process (dashboard and auto-work may race).
+const issueStarts = globalThis.__redmineIssueStarts || new Map();
+globalThis.__redmineIssueStarts = issueStarts;
+
+export async function spawnRedmineTaskSession(body = {}) {
+  const key = String(body.issueId || body.id || "");
+  const previous = issueStarts.get(key);
+  const job = (async () => {
+    if (previous) {
+      const priorResponse = await previous.catch(() => null);
+      if (priorResponse?.spawned && !body.forceNew) {
+        return { ...priorResponse, spawned: false, message: "Session baru saja dijalankan" };
+      }
+    }
+    return executeSpawn(body);
+  })();
+  issueStarts.set(key, job);
+  try {
+    return await job;
+  } finally {
+    if (issueStarts.get(key) === job) issueStarts.delete(key);
+  }
+}
+
+async function executeSpawn(body) {
+  const issueId = body.issueId || body.id;
+  const forceNew = Boolean(body.forceNew);
+
+  if (!issueId) {
+    throw createError("issueId is required", 400);
+  }
+
+  const config = await getRedmineConfig();
+  if (!config.apiKey) {
+    throw createError("Redmine API key is not configured", 400);
+  }
+
+  // 1. Fetch live issue details from Redmine
+  const issue = await getRedmineIssueDetail(issueId, config);
+  if (!issue) {
+    throw createError(`Issue #${issueId} not found`, 404);
+  }
+
+  // 2. Check assigned local path
+  const projectId = String(issue.project?.id || "");
+  const projectIdent = String(issue.project?.identifier || "");
+  const projectPaths = config.projectPaths || {};
+  const assigned = projectPaths[projectId] || projectPaths[projectIdent];
+
+  if (!assigned?.path) {
+    throw createError(
+      `Project "${issue.project?.name}" belum di-assign local path. Silakan buka tab List Project dan assign local path terlebih dahulu.`,
+      400
+    );
+  }
+
+  const inspection = inspectLocalPath(assigned.path);
+  if (!inspection.exists || !inspection.isDir) {
+    throw createError(`Direktori local project tidak ditemukan: ${assigned.path}`, 400);
+  }
+
+  // 3. Reuse the tracked session. A pending ticket only resumes if a new
+  // nonblank journal note arrived after the last instructions were consumed.
+  const currentSettings = await getSettings();
+  const tracked = currentSettings?.redmineTaskStatuses?.[String(issue.id)];
+  const existing = await findActiveRedmineSession(issue.id, tracked?.sessionId);
+  const comments = getInstructionComments(issue);
+  const lastCommentKey = comments.at(-1)?.key || null;
+
+  if (existing && !forceNew) {
+    const isLive = isRunLiveForSession(existing.id) || Boolean(await getActiveChatRunForSession(existing.id));
+    const localStatus = tracked?.status || existing.projectMeta?.localStatus || (isLive ? "working" : "pending");
+    const cursor = tracked?.lastInstructionCommentKey ?? existing.projectMeta?.lastInstructionCommentKey;
+    const consumedAt = tracked?.finishedAt || tracked?.updatedAt || existing.createdAt;
+    const newComments = getNewInstructionComments(comments, cursor, consumedAt);
+
+    if (localStatus === "pending" && !isLive && newComments.length) {
+      const keys = await getApiKeys();
+      const activeKey = keys.find((k) => k.isActive !== false)?.key || "";
+      if (!activeKey) throw createError("AI API key is not configured", 400);
+
+      // Download any image attachments from the issue/comments
+      const imageAttachments = await fetchRedmineImageAttachments(issue, config);
+      const hasImages = imageAttachments.length > 0;
+      const imagesNote = hasImages
+        ? `\n\n**Lampiran Gambar dari Redmine:**\n` + imageAttachments.map((img) => `- ${img.name} (${img.type})`).join("\n") + "\nPeriksa lampiran gambar ini untuk melihat context UI / error yang dilaporkan."
+        : "";
+
+      const instruction = `Tiket Redmine #${issue.id} sebelumnya PENDING. Ada komentar baru sebagai instruksi tambahan. Lanjutkan pekerjaan pada tiket yang sama dengan mempertimbangkan deskripsi, riwayat chat, lampiran gambar, dan klarifikasi baru berikut. Jika masih kurang jelas, laporkan [STATUS: PENDING] beserta pertanyaannya.\n\n**Komentar baru:**\n${formatInstructionComments(newComments)}${imagesNote}`;
+      const session = await getChatSession(existing.id, { messageLimit: 10000 });
+      if (!session) throw createError("Chat session not found", 404);
+
+      const model = body.model || session.model || config.aiModel;
+      const providerId = model.includes("/") ? model.split("/")[0] : (session.providerId || "");
+      const priorMessages = (session.messages || []).filter(
+        (item) => item && (item.role === "user" || item.role === "assistant") && typeof item.content === "string" && item.content.trim()
+      );
+      const followUpUserMsgId = randomUUID();
+      const latestInstruction = {
+        id: followUpUserMsgId,
+        role: "user",
+        content: instruction,
+        attachments: imageAttachments,
+        status: "done",
+        createdAt: new Date().toISOString(),
+      };
+      const assistantId = randomUUID();
+      const streamingAssistant = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        status: "streaming",
+        createdAt: new Date().toISOString(),
+      };
+      const persisted = [...priorMessages, latestInstruction, streamingAssistant];
+      const userContent = buildUserContent(latestInstruction);
+      const historyForRun = [
+        ...priorMessages.map(({ role, content }) => ({ role, content })),
+        { role: "user", content: userContent },
+      ];
+      const sessionTitle = existing.title;
+      const nextStatuses = { ...(currentSettings?.redmineTaskStatuses || {}) };
+      nextStatuses[String(issue.id)] = {
+        ...tracked,
+        status: "working",
+        reason: null,
+        sessionId: existing.id,
+        sessionTitle,
+        lastInstructionCommentKey: lastCommentKey,
+        updatedAt: new Date().toISOString(),
+      };
+      await updateSettings({ redmineTaskStatuses: nextStatuses });
+      await createChatMessage(existing.id, latestInstruction);
+      let run;
+      try {
+        run = await startServerChatRun({
+          sessionId: existing.id,
+          mode: "agent",
+          providerId,
+          titleSeed: sessionTitle,
+          model,
+          messages: historyForRun,
+          persistedMessages: persisted,
+          assistantId,
+          systemPrompt: session.systemPrompt,
+          redmineFollowUp: true,
+          apiKey: activeKey,
+          accessMode: "full",
+          autoApprove: true,
+          codebase: session.workspacePath || assigned.path,
+          params: { temperature: 0.7, max_tokens: 4096 },
+        });
+      } catch (error) {
+        await updateSettings({ redmineTaskStatuses: currentSettings?.redmineTaskStatuses || {} });
+        throw error;
+      }
+
+      return {
+        ok: true,
+        spawned: true,
+        resumed: true,
+        sessionId: existing.id,
+        title: sessionTitle,
+        workspacePath: session.workspacePath || assigned.path,
+        localStatus: "working",
+        runId: run.id,
+      };
+    }
+
+    return {
+      ok: true,
+      spawned: false,
+      sessionId: existing.id,
+      title: existing.title,
+      workspacePath: existing.workspacePath || assigned.path,
+      isLive,
+      localStatus,
+      message: isLive ? "Session sedang berjalan di background" : "Belum ada komentar baru untuk dilanjutkan",
+    };
+  }
+
+  // 4. Model & Key selection
+  const requestedModel = body.model || config.aiModel;
+  const allSessions = await listChatSessions({ limit: 300 });
+  const modelCandidate =
+    requestedModel ||
+    allSessions.find((s) => s.model)?.model ||
+    "anthropic/claude-3-7-sonnet";
+
+  const providerCandidate =
+    modelCandidate.includes("/") ? modelCandidate.split("/")[0] : "";
+
+  const keys = await getApiKeys();
+  const activeKey = keys.find((k) => k.isActive !== false)?.key || "";
+
+  // 5. Fetch image attachments and construct clear task description and context
+  const imageAttachments = await fetchRedmineImageAttachments(issue, config);
+
+  const hasDescription = Boolean(issue.description && issue.description.trim());
+  const hasComments = comments.length > 0;
+  const hasImages = imageAttachments.length > 0;
+
+  let descBlock = "";
+  if (hasDescription) {
+    descBlock = issue.description.trim();
+  } else if (hasComments) {
+    descBlock = "(Tidak ada deskripsi rinci) - Rincian kebutuhan, bug report, dan instruksi pengerjaan dijelaskan lengkap pada Komentar/Catatan Tiket di bawah";
+  } else {
+    descBlock = "(Tidak ada deskripsi rinci)";
+  }
+
+  let commentsBlock = "";
+  if (hasComments) {
+    commentsBlock = formatInstructionComments(comments);
+  } else {
+    commentsBlock = "(Tidak ada komentar)";
+  }
+
+  const imagesBlock = hasImages
+    ? `Terlampir ${imageAttachments.length} gambar/tangkapan layar dari Redmine pada pesan ini:\n` +
+      imageAttachments.map((img) => `- ${img.name} (${img.type})`).join("\n") +
+      "\nPeriksa gambar-gambar terlampir ini untuk melihat context UI / error yang dilaporkan."
+    : "";
+
+  // System prompt with explicit SQL prohibition, Git commit rules, ambiguity question rules, and Anti-Slop
+  const systemPrompt = `Act as an expert senior software engineer working in a dedicated Native Agent Team.
+Workspace project path: ${assigned.path}
+
+### CRITICAL RULES:
+1. ATURAN AKSES DATABASE:
+   - Anda BOLEH mengakses database untuk query pembacaan data atau memeriksa skema, TETAPI HANYA QUERY SELECT SAJA (READ-ONLY).
+   - JANGAN PERNAH mengeksekusi INSERT, UPDATE, DELETE, ALTER, DROP, atau TRUNCATE langsung ke database mana pun. Jika ada perubahan skema atau manipulasi data apa pun yang diperlukan (seperti INSERT data baru, UPDATE baris, DELETE, ALTER tabel, migrasi, seeder, dsb.), BUATLAH file skrip SQL tersendiri berekstensi .sql (contoh: migrations/xxx.sql atau scripts/xxx.sql). Dilarang mengeksekusi langsung ke database!
+   - KONEKSI DATABASE GAGAL / TIDAK DAPAT DIAKSES: Jika task memerlukan koneksi ke database dan koneksi database tidak dapat terhubung / gagal connect / credentials tidak tersedia, JANGAN membuat asumsi spekulatif dan JANGAN memaksakan selesai. Jadikan status task PENDING dengan menyertakan teks persis: [STATUS: PENDING] di dalam jawaban akhir Anda, serta jelaskan kredensial atau akses database apa yang dibutuhkan.
+2. ATURAN DESKRIPSI, KOMENTAR TIKET & LAMPIRAN GAMBAR (SCREENSHOT):
+   - Gunakan deskripsi DAN komentar/catatan tiket serta lampiran gambar (screenshots) sebagai sumber instruksi utama. Perhatikan klarifikasi terbaru pada komentar jika ada.
+   - Pada alur kerja Redmine (khususnya tiket QA / Issue / Bug Report), rincian masalah, langkah reproduksi, dan kriteria penerimaan sering kali dicatat oleh tim QA atau reporter di bagian Komentar/Catatan Tiket atau melalui Tangkapan Layar (Screenshots).
+   - Jika kolom deskripsi awal kosong tetapi Komentar/Catatan Tiket atau lampiran gambar memuat rincian keluhan, langkah, atau ekspektasi yang dapat dipahami, MAKA ANGGAP KOMENTAR & LAMPIRAN TERSEBUT SEBAGAI DESKRIPSI & SPESIFIKASI TIKET. DILARANG menyatakan tiket 'Deskripsi Kosong' atau mengubah status menjadi PENDING hanya karena kolom deskripsi awal tidak diisi!
+   - Periksa lampiran gambar (chat image attachments) yang disertakan pada pesan untuk memahami context UI, pesan error, atau letak tombol/fitur yang dilaporkan.
+   - Status PENDING hanya digunakan jika instruksi secara keseluruhan (baik dari deskripsi, komentar, maupun gambar) benar-benar membingungkan, kontradiktif, membutuhkan kredensial database yang belum ada, atau membutuhkan konfirmasi user sebelum dieksekusi.
+   - Tuliskan daftar/list pertanyaan konfirmasi yang jelas dan spesifik poin per poin jika memang butuh klarifikasi.
+   - JANGAN melakukan git commit jika task berstatus PENDING.
+3. Tulis kode yang bersih, modular, dan teruji sesuai standar kualitas tinggi (Anti-Slop standard: no em dashes, no dead code, mobile responsive).
+4. Jangan mengubah status tiket Redmine di remote server; selesaikan pekerjaan di codebase lokal dan verifikasi dengan teliti.
+5. GIT COMMIT LOKAL (JANGAN PUSH): Setelah seluruh perubahan selesai dan diverifikasi (jika BUKAN pending), lakukan git commit secara lokal (git add + git commit) dengan pesan commit yang jelas mencantumkan nomor tiket #${issue.id} (contoh: git commit -m "feat(#${issue.id}): ${issue.subject}"). DILARANG KERAS melakukan git push! Remote repository TIDAK BOLEH di-push.`;
+
+  const userPrompt = `Kerjakan task Redmine berikut pada project ini:
+
+**Tiket #${issue.id}: ${issue.subject}**
+- **Project:** ${issue.project.name}
+- **Tracker:** ${issue.tracker?.name || "Issue"}
+- **Status Redmine:** ${issue.status?.name || "Open"}
+- **Prioritas:** ${issue.priority?.name || "Normal"}
+
+**Deskripsi Task:**
+${descBlock}
+
+**Komentar/Catatan Tiket (urut sesuai riwayat Redmine):**
+${commentsBlock}
+${imagesBlock ? `\n**Lampiran Gambar dari Tiket:**\n${imagesBlock}\n` : ""}
+Gunakan deskripsi, komentar, dan lampiran gambar di atas sebagai instruksi task. Jika komentar terbaru memperjelas atau merevisi deskripsi/komentar sebelumnya, pertimbangkan klarifikasi tersebut. Catatan: jika deskripsi awal kosong, rincian pada komentar tiket dan screenshot adalah spesifikasi utama yang harus dikerjakan.
+
+---
+**ATURAN KERJA & BATASAN KEAMANAN:**
+1. Analisis arsitektur dan file terkait di workspace (${assigned.path}) sebelum mengubah kode.
+2. ATURAN AKSES DATABASE:
+   - Anda BOLEH mengakses database HANYA untuk query SELECT saja (read-only).
+   - DILARANG KERAS mengeksekusi INSERT, UPDATE, DELETE, ALTER, DROP, atau modifikasi data/skema apa pun langsung ke database. Jika perlu melakukan perubahan skema maupun manipulasi data (seperti INSERT data, UPDATE data, DELETE, ALTER tabel, migrasi, seeder, dll.), BUATLAH file .sql tersendiri (contoh: migrations/xxx.sql atau scripts/xxx.sql). JANGAN eksekusi langsung ke database!
+   - JIKA DATABASE TIDAK BISA KONEK: Jika task ini memerlukan koneksi ke database dan koneksi database tidak dapat terhubung, jangan paksakan selesai! Buat status task menjadi PENDING dengan menulis teks persis: [STATUS: PENDING] di laporan akhir Anda dan jelaskan kebutuhan koneksi DB-nya.
+3. JIKA INSTRUKSI (DESKRIPSI, KOMENTAR, GAMBAR) KURANG JELAS ATAU PERLU PERTANYAAN:
+   - Evaluasi seluruh informasi (deskripsi, komentar, dan gambar screenshot). Jika deskripsi kosong namun komentar atau gambar sudah jelas menerangkan bug/kebutuhan, langsung kerjakan perbaikan pada kode!
+   - Hanya jadikan status task PENDING jika kebutuhan teknis/bisnis benar-benar tidak jelas, ambigu, atau butuh konfirmasi user sebelum dieksekusi.
+   - Jika berstatus PENDING, tulis teks persis: [STATUS: PENDING] di laporan akhir Anda dan cantumkan daftar/list pertanyaan konfirmasi secara rinci dan terstruktur poin per poin.
+   - JANGAN membuat git commit jika berstatus PENDING.
+4. Selesaikan implementasi atau perbaikan bug dengan teliti, dan pastikan tidak ada syntax error / build error.
+5. LAKUKAN GIT COMMIT LOKAL SAJA (DILARANG GIT PUSH): Jika task berhasil selesai (bukan pending), buat git commit lokal (git add + git commit -m '...') menyertakan nomor tiket #${issue.id}. JANGAN PERNAH mengeksekusi git push ke remote!
+6. Jangan ubah status tiket Redmine remote; status akan dicatat di sistem lokal 9Router.`;
+
+  // 6. Spawn session with title: (project - title task)
+  const sessionTitle = `${issue.project.name} - ${issue.subject}`;
+  const session = await createChatSession({
+    title: sessionTitle,
+    model: modelCandidate,
+    providerId: providerCandidate,
+    workspacePath: assigned.path,
+    codebase: assigned.path,
+    projectMeta: {
+      name: issue.project.name,
+      redmineIssueId: issue.id,
+      redmineProjectId: issue.project.id,
+      redmineProjectName: issue.project.name,
+      redmineIssueSubject: issue.subject,
+      localStatus: "working",
+      lastInstructionCommentKey: lastCommentKey,
+      agentRole: "orchestrator",
+    },
+    systemPrompt,
+  });
+
+  // 7. Add initial user message with attachments
+  const userMessageId = randomUUID();
+  const userMessage = {
+    id: userMessageId,
+    role: "user",
+    content: userPrompt,
+    attachments: imageAttachments,
+    status: "done",
+    createdAt: new Date().toISOString(),
+  };
+  await createChatMessage(session.id, userMessage);
+
+  // 8. Start agent run immediately
+  let runId = null;
+  if (activeKey) {
+    const assistantId = randomUUID();
+    const streamingAssistant = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      createdAt: new Date().toISOString(),
+    };
+    const userContent = buildUserContent(userMessage);
+
+    const run = await startServerChatRun({
+      sessionId: session.id,
+      mode: "agent",
+      providerId: providerCandidate,
+      titleSeed: sessionTitle,
+      model: modelCandidate,
+      messages: [{ role: "user", content: userContent }],
+      persistedMessages: [userMessage, streamingAssistant],
+      assistantId,
+      systemPrompt,
+      apiKey: activeKey,
+      accessMode: "full",
+      autoApprove: true,
+      codebase: assigned.path,
+      params: { temperature: 0.7, max_tokens: 4096 },
+    });
+    runId = run.id;
+  }
+
+  // 9. Update local status in settings
+  const rts = { ...(currentSettings?.redmineTaskStatuses || {}) };
+  rts[String(issue.id)] = {
+    status: "working",
+    sessionId: session.id,
+    sessionTitle,
+    runId,
+    lastInstructionCommentKey: lastCommentKey,
+    updatedAt: new Date().toISOString(),
+  };
+  await updateSettings({ redmineTaskStatuses: rts });
+
+  return {
+    ok: true,
+    spawned: true,
+    sessionId: session.id,
+    title: sessionTitle,
+    workspacePath: assigned.path,
+    localStatus: "working",
+    runId,
+    hasKey: Boolean(activeKey),
+  };
+}

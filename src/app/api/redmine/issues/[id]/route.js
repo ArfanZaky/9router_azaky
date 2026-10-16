@@ -4,7 +4,7 @@ import {
   updateRedmineIssue,
   getRedmineConfig,
 } from "@/lib/redmine/redmineClient";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getChatSession } from "@/lib/localDb";
 
 export const dynamic = "force-dynamic";
 
@@ -31,13 +31,29 @@ export async function GET(request, { params }) {
     }
     const localTask = localTaskStatuses[String(issue.id)] || null;
 
+    let validSessionId = localTask?.sessionId || null;
+    let localStatus = localTask?.status || null;
+    if (validSessionId) {
+      try {
+        const session = await getChatSession(validSessionId, { includeMessages: false });
+        if (!session) {
+          validSessionId = null;
+          if (localStatus === "working") {
+            localStatus = null;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     return NextResponse.json({
       ...issue,
       localPath,
-      localStatus: localTask?.status || null,
+      localStatus,
       localStatusReason: localTask?.reason || null,
-      localSessionId: localTask?.sessionId || null,
-      localSessionTitle: localTask?.sessionTitle || null,
+      localSessionId: validSessionId,
+      localSessionTitle: validSessionId ? localTask?.sessionTitle || null : null,
     });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });

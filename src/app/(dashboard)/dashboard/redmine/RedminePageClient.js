@@ -1211,7 +1211,12 @@ export default function RedminePageClient() {
       if (!res.ok) throw new Error(data.error || "Failed to update local status");
       fetchIssues(false);
       if (issueDetail && (issueDetail.id === issueId || String(issueDetail.id) === String(issueId))) {
-        setIssueDetail((prev) => (prev ? { ...prev, localStatus: status } : prev));
+        setIssueDetail((prev) => (prev ? {
+          ...prev,
+          localStatus: status === "reset" ? null : (data.status || status),
+          localSessionId: data.sessionId !== undefined ? data.sessionId : (status === "reset" ? null : prev.localSessionId),
+          localSessionTitle: data.sessionTitle !== undefined ? data.sessionTitle : (status === "reset" ? null : prev.localSessionTitle),
+        } : prev));
       }
     } catch (err) {
       alert(`Error updating local status: ${err.message}`);
@@ -1839,7 +1844,7 @@ export default function RedminePageClient() {
                           <td className="px-4 py-3.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex items-center justify-end gap-1.5">
                               {issue.localPath ? (
-                                issue.localStatus === "working" ? (
+                                issue.localStatus === "working" && issue.localSessionId ? (
                                   <button
                                     onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
                                     className="px-2.5 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-700 dark:text-sky-300 font-medium text-xs transition border border-sky-500/30 inline-flex items-center gap-1.5 shadow-2xs min-h-[36px]"
@@ -1848,7 +1853,7 @@ export default function RedminePageClient() {
                                     <span className="material-symbols-outlined text-[14px] animate-spin text-sky-500">progress_activity</span>
                                     Open Chat
                                   </button>
-                                ) : issue.localStatus === "done" ? (
+                                ) : issue.localStatus === "done" && issue.localSessionId ? (
                                   <button
                                     onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
                                     className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-medium text-xs transition border border-emerald-500/30 inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
@@ -1857,7 +1862,7 @@ export default function RedminePageClient() {
                                     <span className="material-symbols-outlined text-[14px] text-emerald-500">task_alt</span>
                                     Done · Chat
                                   </button>
-                                ) : issue.localStatus === "pending" ? (
+                                ) : issue.localStatus === "pending" && issue.localSessionId ? (
                                   <button
                                     onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
                                     className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-medium text-xs transition border border-amber-500/30 inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
@@ -2553,7 +2558,7 @@ export default function RedminePageClient() {
 
               <div className="flex items-center gap-2 shrink-0">
                 {issueDetail && issueDetail.localPath ? (
-                  issueDetail.localStatus === "working" ? (
+                  issueDetail.localStatus === "working" && issueDetail.localSessionId ? (
                     <button
                       onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 text-sky-700 dark:text-sky-300 text-xs font-semibold border border-sky-500/30 transition min-h-[44px]"
@@ -2561,7 +2566,7 @@ export default function RedminePageClient() {
                       <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
                       <span>Working in Chat</span>
                     </button>
-                  ) : issueDetail.localStatus === "done" ? (
+                  ) : issueDetail.localStatus === "done" && issueDetail.localSessionId ? (
                     <button
                       onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-semibold border border-emerald-500/30 transition min-h-[44px]"
@@ -2569,7 +2574,7 @@ export default function RedminePageClient() {
                       <span className="material-symbols-outlined text-[16px] text-emerald-500">task_alt</span>
                       <span>Done · View Chat</span>
                     </button>
-                  ) : issueDetail.localStatus === "pending" ? (
+                  ) : issueDetail.localStatus === "pending" && issueDetail.localSessionId ? (
                     <button
                       onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-xs font-semibold border border-amber-500/30 transition min-h-[44px]"
@@ -2748,7 +2753,7 @@ export default function RedminePageClient() {
                               </button>
                             )}
 
-                            {issueDetail.localStatus !== "working" && (
+                            {(!issueDetail.localStatus || issueDetail.localStatus !== "working" || !issueDetail.localSessionId) && (
                               <button
                                 type="button"
                                 onClick={(e) => handleSpawnTaskSession(issueDetail, e)}
@@ -2821,7 +2826,7 @@ export default function RedminePageClient() {
                             Mark Pending
                           </button>
                         )}
-                        {issueDetail.localStatus !== "working" && (
+                        {(issueDetail.localStatus !== "working" || !issueDetail.localSessionId) && (
                           <button
                             type="button"
                             onClick={(e) => handleSetLocalTaskStatus(issueDetail.id, "working", e)}

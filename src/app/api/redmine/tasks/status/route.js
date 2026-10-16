@@ -1,5 +1,13 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings, listChatSessions, updateChatSession } from "@/lib/localDb";
+import {
+  getSettings,
+  updateSettings,
+  updateChatSession,
+} from "@/lib/localDb";
+import {
+  findActiveRedmineSession,
+  spawnRedmineTaskSession,
+} from "@/lib/redmine/taskSpawner";
 
 export const dynamic = "force-dynamic";
 
@@ -19,37 +27,128 @@ export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
     const issueId = body.issueId || body.id;
-    const status = body.status; // 'done' | 'working' | 'pending' | null
+    const status = body.status; // 'done' | 'working' | 'pending' | 'reset' | null
 
     if (!issueId) {
       return NextResponse.json({ error: "issueId is required" }, { status: 400 });
     }
 
+    const issueKey = String(issueId);
     const settings = await getSettings();
     const rts = { ...(settings?.redmineTaskStatuses || {}) };
-    const issueKey = String(issueId);
+    const currentTracked = rts[issueKey];
 
     if (status === null || status === "reset") {
       delete rts[issueKey];
-    } else {
-      rts[issueKey] = {
-        ...(rts[issueKey] || {}),
-        status,
-        reason: body.reason !== undefined ? body.reason : (status === "done" ? null : (rts[issueKey]?.reason || null)),
-        updatedAt: new Date().toISOString(),
-      };
+      await updateSettings({ redmineTaskStatuses: rts });
+
+      // Update matching chat session if present
+      const existing = await findActiveRedmineSession(issueKey, currentTracked?.sessionId);
+      if (existing) {
+        await updateChatSession(existing.id, {
+          projectMeta: { ...existing.projectMeta, localStatus: null },
+        }).catch(() => {});
+      }
+
+      return NextResponse.json({
+        ok: true,
+        issueId,
+        status: null,
+        sessionId: null,
+        updatedRecord: null,
+      });
     }
+
+    // When status is "working", check whether a valid session already exists or must be spawned
+    if (status === "working") {
+      const existingSession = await findActiveRedmineSession(issueKey, currentTracked?.sessionId);
+
+      if (existingSession) {
+        // Session already exists and is valid: reuse it
+        rts[issueKey] = {
+          ...(currentTracked || {}),
+          status: "working",
+          sessionId: existingSession.id,
+          sessionTitle: existingSession.title,
+          reason: null,
+          updatedAt: new Date().toISOString(),
+        };
+        await updateSettings({ redmineTaskStatuses: rts });
+
+        await updateChatSession(existingSession.id, {
+          projectMeta: { ...existingSession.projectMeta, localStatus: "working" },
+        }).catch(() => {});
+
+        return NextResponse.json({
+          ok: true,
+          issueId,
+          status: "working",
+          sessionId: existingSession.id,
+          sessionTitle: existingSession.title,
+          spawned: false,
+          updatedRecord: rts[issueKey],
+        });
+      }
+
+      // No active session found (never created or was deleted): spawn new chat session
+      try {
+        const spawnResult = await spawnRedmineTaskSession({
+          issueId,
+          forceNew: true,
+          model: body.model,
+        });
+
+        const refreshedSettings = await getSettings();
+        const updatedRts = refreshedSettings?.redmineTaskStatuses || {};
+
+        return NextResponse.json({
+          ok: true,
+          issueId,
+          status: "working",
+          sessionId: spawnResult.sessionId,
+          sessionTitle: spawnResult.title,
+          spawned: true,
+          updatedRecord: updatedRts[issueKey] || null,
+        });
+      } catch (spawnErr) {
+        // If spawn fails because no local path is assigned, record status without session and report warning
+        if (spawnErr.message && spawnErr.message.includes("belum di-assign local path")) {
+          rts[issueKey] = {
+            ...(currentTracked || {}),
+            status: "working",
+            sessionId: null,
+            reason: body.reason || null,
+            updatedAt: new Date().toISOString(),
+          };
+          await updateSettings({ redmineTaskStatuses: rts });
+          return NextResponse.json({
+            ok: true,
+            issueId,
+            status: "working",
+            sessionId: null,
+            spawned: false,
+            warning: spawnErr.message,
+            updatedRecord: rts[issueKey],
+          });
+        }
+        throw spawnErr;
+      }
+    }
+
+    // For other statuses ('done', 'pending', etc.)
+    rts[issueKey] = {
+      ...(currentTracked || {}),
+      status,
+      reason: body.reason !== undefined ? body.reason : (status === "done" ? null : (currentTracked?.reason || null)),
+      updatedAt: new Date().toISOString(),
+    };
 
     await updateSettings({ redmineTaskStatuses: rts });
 
-    // Also update any matching chatSession projectMeta
-    const allSessions = await listChatSessions({ limit: 300 });
-    const matching = allSessions.find(
-      (s) => String(s.projectMeta?.redmineIssueId) === issueKey
-    );
-    if (matching) {
-      await updateChatSession(matching.id, {
-        projectMeta: { ...matching.projectMeta, localStatus: status || "pending" },
+    const existing = await findActiveRedmineSession(issueKey, currentTracked?.sessionId);
+    if (existing) {
+      await updateChatSession(existing.id, {
+        projectMeta: { ...existing.projectMeta, localStatus: status },
       }).catch(() => {});
     }
 
@@ -57,9 +156,11 @@ export async function POST(req) {
       ok: true,
       issueId,
       status,
+      sessionId: existing?.id || currentTracked?.sessionId || null,
       updatedRecord: rts[issueKey] || null,
     });
   } catch (err) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    const statusCode = err.statusCode || 500;
+    return NextResponse.json({ error: err.message }, { status: statusCode });
   }
 }
