@@ -27,6 +27,23 @@ globalThis.__chatServerRuns = liveRuns;
 
 const GATE_TIMEOUT_MS = 120_000;
 
+function combineSignals(sigA, sigB) {
+  if (!sigA) return sigB;
+  if (!sigB) return sigA;
+  if (typeof AbortSignal.any === "function") {
+    return AbortSignal.any([sigA, sigB]);
+  }
+  const ac = new AbortController();
+  const onAbort = () => ac.abort();
+  if (sigA.aborted || sigB.aborted) {
+    ac.abort();
+    return ac.signal;
+  }
+  sigA.addEventListener("abort", onAbort, { once: true });
+  sigB.addEventListener("abort", onAbort, { once: true });
+  return ac.signal;
+}
+
 function findTask(teamTasks, query) {
   if (!query || !teamTasks) return null;
   const qStr = String(query).trim();
@@ -710,7 +727,9 @@ async function runAgent(run) {
       await saveTeamState(run);
       return { ok: true, tasks: list };
     },
-    onTeamMessage: async ({ to, message, context: msgCtx }) => {
+    onTeamMessage: async (args) => {
+      const { to, message, context: msgCtx } = args || {};
+      const isAsync = args?.async === true || args?.background === true;
       const rosterMember = run.teamRoster.get(to);
       if (rosterMember) {
         rosterMember.status = "running";
@@ -719,7 +738,8 @@ async function runAgent(run) {
       }
       if (!to || !message) return { ok: false, error: "Recipient ('to') and message are required" };
       const subId = `team_peer_${to}_${Date.now()}`;
-      const sub = { id: subId, role: to, task: message, status: "running", events: [], seq: 0 };
+      const subAbortController = new AbortController();
+      const sub = { id: subId, role: to, task: message, status: "running", events: [], seq: 0, abortController: subAbortController };
       run.subAgents.set(subId, sub);
       await emit(run, "subagent_start", { id: subId, role: to, task: message, sessionId: run.sessionId });
       const msgObj = { id: subId, type: "message", from: "peer", to, message, context: msgCtx || "", timestamp: new Date().toISOString() };
@@ -727,61 +747,123 @@ async function runAgent(run) {
       await emit(run, "team_message", msgObj);
       await saveTeamState(run);
 
-      let finalText = "";
-      try {
-        const targetMember = run.teamRoster.get(to);
-        const roleDesc = targetMember?.description ? ` (${targetMember.description})` : "";
-        const result = await runAgentLoop({
-          model: run.request.model,
-          messages: [{ role: "user", content: `${message}${msgCtx ? `\n\nContext:\n${msgCtx}` : ""}` }],
-          systemPrompt: `You are the ${to} member${roleDesc} of an active Agent Team (DSH style). Collaborate with your team, execute your specialized role, use tools to verify facts, and provide clear output.`,
-          apiKey: run.request.apiKey,
-          workspace: run.workspace,
-          sessionId: run.sessionId,
-          accessMode: run.request.accessMode,
-          maxSteps: run.request.maxSteps > 0 ? Math.min(run.request.maxSteps, 8) : 8,
-          signal: run.abortController.signal,
-          depth: 1,
-          isRedmineTask,
-          onEvent: async (type, data) => {
-            const event = { seq: ++sub.seq, type, data, createdAt: new Date().toISOString() };
-            sub.events.push(event);
-            await emit(run, "subagent_event", { id: subId, event });
-            if (type === "text") finalText = data.content || finalText;
-          },
-          onApproval: async ({ name, arguments: callArgs }) => {
-            return await openGate(run, "approval", {
-              subAgentId: subId,
-              tool: name,
-              arguments: JSON.stringify(callArgs || {}),
-              message: `Allow team member ${to} to run ${name}?`,
-            });
-          },
-          onAskUser: async (questions) => {
-            return await openGate(run, "ask", { subAgentId: subId, questions });
-          },
-        });
-        finalText = result.finalText || finalText;
-        sub.status = "completed";
-        if (rosterMember) {
-          rosterMember.status = "completed";
-          const rosterList = Array.from(run.teamRoster.values());
-          await emit(run, "team_roster_update", { roster: rosterList });
+      const runWorker = async () => {
+        let finalText = "";
+        try {
+          const targetMember = run.teamRoster.get(to);
+          const roleDesc = targetMember?.description ? ` (${targetMember.description})` : "";
+          const effectiveSignal = combineSignals(run.abortController.signal, subAbortController.signal);
+          const result = await runAgentLoop({
+            model: run.request.model,
+            messages: [{ role: "user", content: `${message}${msgCtx ? `\n\nContext:\n${msgCtx}` : ""}` }],
+            systemPrompt: `You are the ${to} member${roleDesc} of an active Agent Team (DSH style). Collaborate with your team, execute your specialized role, use tools to verify facts, and provide clear output.`,
+            apiKey: run.request.apiKey,
+            workspace: run.workspace,
+            sessionId: run.sessionId,
+            accessMode: run.request.accessMode,
+            maxSteps: run.request.maxSteps > 0 ? Math.min(run.request.maxSteps, 8) : 8,
+            signal: effectiveSignal,
+            depth: 1,
+            isRedmineTask,
+            onEvent: async (type, data) => {
+              const event = { seq: ++sub.seq, type, data, createdAt: new Date().toISOString() };
+              sub.events.push(event);
+              await emit(run, "subagent_event", { id: subId, event });
+              if (type === "text") finalText = data.content || finalText;
+            },
+            onApproval: async ({ name, arguments: callArgs }) => {
+              return await openGate(run, "approval", {
+                subAgentId: subId,
+                tool: name,
+                arguments: JSON.stringify(callArgs || {}),
+                message: `Allow team member ${to} to run ${name}?`,
+              });
+            },
+            onAskUser: async (questions) => {
+              return await openGate(run, "ask", { subAgentId: subId, questions });
+            },
+          });
+          finalText = result.finalText || finalText;
+          sub.status = subAbortController.signal.aborted ? "interrupted" : "completed";
+          if (rosterMember) {
+            rosterMember.status = subAbortController.signal.aborted ? "idle" : "completed";
+            const rosterList = Array.from(run.teamRoster.values());
+            await emit(run, "team_roster_update", { roster: rosterList });
+          }
+          await emit(run, "subagent_done", {
+            id: subId,
+            role: to,
+            task: message,
+            finalText,
+            interrupted: subAbortController.signal.aborted,
+            sessionId: run.sessionId,
+          });
+
+          if (isAsync) {
+            const replyMsg = {
+              id: `msg_reply_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`,
+              type: "message",
+              from: to,
+              to: "orchestrator",
+              message: finalText || "(completed without output)",
+              timestamp: new Date().toISOString(),
+            };
+            run.teamMessages.push(replyMsg);
+            await emit(run, "team_message", replyMsg);
+            run.steering.push(`[Inbox Message from ${to}]: ${finalText.slice(0, 2000)}`);
+            await emit(run, "notice", { message: `Inbox update received from ${to}` });
+          }
+
+          await saveTeamState(run);
+          return { ok: !subAbortController.signal.aborted, recipient: to, response: finalText };
+        } catch (err) {
+          const wasInterrupted = subAbortController.signal.aborted || run.abortController.signal.aborted;
+          sub.status = wasInterrupted ? "interrupted" : "failed";
+          if (rosterMember) {
+            rosterMember.status = wasInterrupted ? "idle" : "failed";
+            const rosterList = Array.from(run.teamRoster.values());
+            await emit(run, "team_roster_update", { roster: rosterList });
+          }
+          const errMsg = err?.message || String(err);
+          await emit(run, "subagent_done", {
+            id: subId,
+            role: to,
+            task: message,
+            error: errMsg,
+            interrupted: wasInterrupted,
+            sessionId: run.sessionId,
+          });
+          if (isAsync) {
+            const replyErr = {
+              id: `msg_err_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`,
+              type: "message",
+              from: to,
+              to: "orchestrator",
+              message: `Task failed: ${errMsg}`,
+              timestamp: new Date().toISOString(),
+            };
+            run.teamMessages.push(replyErr);
+            await emit(run, "team_message", replyErr);
+            run.steering.push(`[Inbox Error from ${to}]: ${errMsg}`);
+          }
+          await saveTeamState(run);
+          return { ok: false, recipient: to, error: errMsg, interrupted: wasInterrupted };
         }
-        await emit(run, "subagent_done", { id: subId, role: to, task: message, finalText, sessionId: run.sessionId });
-        await saveTeamState(run);
-        return { ok: true, recipient: to, response: finalText };
-      } catch (err) {
-        sub.status = "failed";
-        if (rosterMember) {
-          rosterMember.status = "failed";
-          const rosterList = Array.from(run.teamRoster.values());
-          await emit(run, "team_roster_update", { roster: rosterList });
-        }
-        await emit(run, "subagent_done", { id: subId, role: to, task: message, error: err?.message || String(err), sessionId: run.sessionId });
-        await saveTeamState(run);
-        return { ok: false, recipient: to, error: err?.message || String(err) };
+      };
+
+      if (isAsync) {
+        void runWorker();
+        return {
+          ok: true,
+          async: true,
+          dispatched: true,
+          subId,
+          recipient: to,
+          message: `Dispatched task asynchronously to ${to}. Results will arrive in your team inbox.`,
+        };
       }
+
+      return await runWorker();
     },
     onTeamBroadcast: async ({ topic, message }) => {
       const bcObj = { id: `bc_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`, type: "broadcast", topic, message, timestamp: new Date().toISOString() };
@@ -812,11 +894,13 @@ async function runAgent(run) {
 async function runSubAgent(parent, { role, task }) {
   if (!task) return { ok: false, error: "Sub-agent task is required" };
   const id = randomUUID();
-  const sub = { id, role, task, status: "running", events: [], seq: 0 };
+  const subAbortController = new AbortController();
+  const sub = { id, role, task, status: "running", events: [], seq: 0, abortController: subAbortController };
   parent.subAgents.set(id, sub);
   await emit(parent, "subagent_start", { id, role, task, sessionId: parent.sessionId });
   let finalText = "";
   try {
+    const effectiveSignal = combineSignals(parent.abortController.signal, subAbortController.signal);
     const result = await runAgentLoop({
       model: parent.request.model,
       messages: [{ role: "user", content: task }],
@@ -826,7 +910,7 @@ async function runSubAgent(parent, { role, task }) {
       sessionId: parent.sessionId,
       accessMode: "sandbox",
       maxSteps: parent.request.maxSteps > 0 ? Math.min(parent.request.maxSteps, 6) : 6,
-      signal: parent.abortController.signal,
+      signal: effectiveSignal,
       depth: 1,
       isRedmineTask: Boolean(parent.projectMeta?.redmineIssueId),
       onEvent: async (type, data) => {
@@ -854,13 +938,28 @@ async function runSubAgent(parent, { role, task }) {
       },
     });
     finalText = result.finalText || finalText;
-    sub.status = "completed";
-    await emit(parent, "subagent_done", { id, role, task, finalText, sessionId: parent.sessionId });
-    return { ok: true, id, role, result: finalText };
+    sub.status = subAbortController.signal.aborted ? "interrupted" : "completed";
+    await emit(parent, "subagent_done", {
+      id,
+      role,
+      task,
+      finalText,
+      interrupted: subAbortController.signal.aborted,
+      sessionId: parent.sessionId,
+    });
+    return { ok: !subAbortController.signal.aborted, id, role, result: finalText };
   } catch (error) {
-    sub.status = "failed";
-    await emit(parent, "subagent_done", { id, role, task, error: error?.message || String(error), sessionId: parent.sessionId });
-    return { ok: false, id, role, error: error?.message || String(error) };
+    const wasInterrupted = subAbortController.signal.aborted || parent.abortController.signal.aborted;
+    sub.status = wasInterrupted ? "interrupted" : "failed";
+    await emit(parent, "subagent_done", {
+      id,
+      role,
+      task,
+      error: error?.message || String(error),
+      interrupted: wasInterrupted,
+      sessionId: parent.sessionId,
+    });
+    return { ok: false, id, role, error: error?.message || String(error), interrupted: wasInterrupted };
   }
 }
 
@@ -1242,6 +1341,37 @@ export function getSubAgentInfo(subId) {
     }
   }
   return null;
+}
+
+/** Interrupt a running sub-agent or peer agent without aborting parent run */
+export function interruptSubAgent(subId, reason = "User interrupted") {
+  for (const run of liveRuns.values()) {
+    const sub = run.subAgents?.get(subId);
+    if (sub && (sub.status === "running" || !sub.status)) {
+      sub.status = "interrupted";
+      try {
+        sub.abortController?.abort(new Error(reason));
+      } catch {
+        sub.abortController?.abort();
+      }
+      const rosterMember = run.teamRoster?.get(sub.role);
+      if (rosterMember && rosterMember.status === "running") {
+        rosterMember.status = "idle";
+        emit(run, "team_roster_update", { roster: Array.from(run.teamRoster.values()) }).catch(() => {});
+      }
+      emit(run, "subagent_done", {
+        id: sub.id,
+        role: sub.role,
+        task: sub.task,
+        interrupted: true,
+        error: reason,
+        sessionId: run.sessionId,
+      }).catch(() => {});
+      saveTeamState(run).catch(() => {});
+      return { ok: true, id: subId, status: "interrupted" };
+    }
+  }
+  return { ok: false, error: "Running sub-agent not found" };
 }
 
 export async function stopServerChatRun(id) {

@@ -7,6 +7,7 @@ const STATUS_COLORS = {
   running: "text-primary bg-primary/10",
   completed: "text-emerald-500 bg-emerald-500/10",
   failed: "text-red-500 bg-red-500/10",
+  interrupted: "text-amber-500 bg-amber-500/10",
 };
 
 const STATUS_ICONS = {
@@ -14,6 +15,7 @@ const STATUS_ICONS = {
   running: "play_circle",
   completed: "check_circle",
   failed: "error",
+  interrupted: "stop_circle",
 };
 
 const TASK_STATUS_STYLE = {
@@ -374,14 +376,32 @@ function TeamPanelComponent({
                         )}
                       </span>
                       {agent && (
-                        <button
-                          type="button"
-                          onClick={() => onViewAgent?.(agent)}
-                          className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-primary hover:bg-primary/10 transition"
-                        >
-                          <span>Transcript</span>
-                          <span className="material-symbols-outlined text-[12px]">open_in_new</span>
-                        </button>
+                        <div className="flex items-center gap-1">
+                          {status === "running" && (
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  await fetch(`/api/chat/subagents/${agent.id}`, { method: "DELETE" });
+                                } catch {}
+                              }}
+                              className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-red-500 hover:bg-red-500/10 transition"
+                              title="Interrupt this specialist agent"
+                            >
+                              <span className="material-symbols-outlined text-[12px]">stop_circle</span>
+                              <span>Stop</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onViewAgent?.(agent)}
+                            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-primary hover:bg-primary/10 transition"
+                          >
+                            <span>Transcript</span>
+                            <span className="material-symbols-outlined text-[12px]">open_in_new</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>

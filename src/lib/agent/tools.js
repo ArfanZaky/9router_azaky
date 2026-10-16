@@ -362,6 +362,7 @@ export const TOOL_DEFS = [
           to: { type: "string", description: "Recipient agent name/role from roster, e.g. dev, qa, reviewer" },
           message: { type: "string", description: "Message content, query, or review request" },
           context: { type: "string", description: "Optional context or file references" },
+          async: { type: "boolean", description: "If true, dispatches task asynchronously in background without blocking caller; returns immediately with subId. Default false." },
         },
         required: ["to", "message"],
       },

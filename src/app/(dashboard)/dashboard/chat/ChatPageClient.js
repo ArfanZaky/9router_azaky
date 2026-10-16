@@ -487,6 +487,7 @@ const SessionRailItem = memo(function SessionRailItem({
 
 function SubAgentOverlay({ agent, onClose }) {
   const [info, setInfo] = useState(null);
+  const [stopping, setStopping] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -501,10 +502,22 @@ function SubAgentOverlay({ agent, onClose }) {
     return () => { alive = false; clearInterval(id); };
   }, [agent.id]);
 
-  const textEvents = (info?.events || []).filter((e) => e.type === "text" || e.type === "message");
-  const lastText = textEvents.at(-1)?.data?.content || "";
-  const reasoning = (info?.events || []).filter((e) => e.type === "reasoning").at(-1)?.data?.content || "";
-  const toolCount = (info?.events || []).filter((e) => e.type === "tool_start").length;
+  const handleInterrupt = async () => {
+    setStopping(true);
+    try {
+      await fetch(`/api/chat/subagents/${agent.id}`, { method: 'DELETE' });
+      setInfo((prev) => (prev ? { ...prev, status: 'interrupted' } : prev));
+    } catch {
+      // ignore
+    } finally {
+      setStopping(false);
+    }
+  };
+
+  const textEvents = (info?.events || []).filter((e) => e.type === 'text' || e.type === 'message');
+  const lastText = textEvents.at(-1)?.data?.content || '';
+  const reasoning = (info?.events || []).filter((e) => e.type === 'reasoning').at(-1)?.data?.content || '';
+  const toolCount = (info?.events || []).filter((e) => e.type === 'tool_start').length;
 
   return (
     <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label="Sub-agent transcript">
@@ -515,9 +528,21 @@ function SubAgentOverlay({ agent, onClose }) {
             <p className="truncate text-sm font-semibold">{agent.role || "Sub-agent"}</p>
             <p className="truncate text-[11px] text-text-muted">{agent.task}</p>
           </div>
-          <span className={`text-[11px] ${info?.status === "running" ? "text-primary" : info?.status === "failed" ? "text-red-500" : "text-emerald-500"}`}>
+          <span className={`text-[11px] ${info?.status === 'running' ? 'text-primary' : info?.status === 'failed' ? 'text-red-500' : info?.status === 'interrupted' ? 'text-amber-500' : 'text-emerald-500'}`}>
             {info?.status || "running"}
           </span>
+          {info?.status === 'running' && (
+            <button
+              type="button"
+              onClick={handleInterrupt}
+              disabled={stopping}
+              className="flex items-center gap-1 rounded-md bg-red-500/10 border border-red-500/30 px-2 py-0.5 text-[11px] font-medium text-red-600 dark:text-red-400 hover:bg-red-500/20 transition disabled:opacity-50"
+              title="Interrupt this agent"
+            >
+              <span className="material-symbols-outlined text-[13px]">stop_circle</span>
+              <span>{stopping ? 'Stopping...' : 'Interrupt'}</span>
+            </button>
+          )}
           <button onClick={onClose} className="text-text-muted hover:text-text-main"><span className="material-symbols-outlined text-[18px]">close</span></button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
