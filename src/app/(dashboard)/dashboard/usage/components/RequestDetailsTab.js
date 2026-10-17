@@ -356,10 +356,24 @@ export default function RequestDetailsTab() {
                     <td className="max-w-[220px] truncate p-4 font-mono text-sm text-text-main">
                       {detail.model}
                     </td>
-                    <td className="max-w-[160px] truncate p-4 text-sm text-text-main">
+                    <td className="max-w-[180px] truncate p-4 text-sm text-text-main">
                        <span className="font-medium">
                          {getProviderName(detail.provider, providerNameCache)}
                        </span>
+                       {(detail.accountName || detail.accountEmail) ? (
+                         <div
+                           className="text-xs text-text-muted truncate flex items-center gap-1 mt-0.5"
+                           title={detail.accountEmail && detail.accountName !== detail.accountEmail ? `${detail.accountName} (${detail.accountEmail})` : (detail.accountName || detail.accountEmail)}
+                         >
+                           <span className="material-symbols-outlined text-[13px] opacity-70">account_circle</span>
+                           <span className="truncate">{detail.accountName || detail.accountEmail}</span>
+                         </div>
+                       ) : detail.connectionId === "noauth" ? (
+                         <div className="text-xs text-text-muted truncate flex items-center gap-1 mt-0.5">
+                           <span className="material-symbols-outlined text-[13px] opacity-70">public</span>
+                           <span className="truncate">Public</span>
+                         </div>
+                       ) : null}
                      </td>
                     <td className="p-4 text-sm text-text-main">
                       {detail.proxy?.enabled ? (
@@ -449,6 +463,29 @@ export default function RequestDetailsTab() {
                  <span className="text-text-muted">Provider:</span>{" "}
                  <span className="text-text-main font-medium">{getProviderName(selectedDetail.provider, providerNameCache)}</span>
                </div>
+              <div>
+                <span className="text-text-muted">Account:</span>{" "}
+                {selectedDetail.accountName || selectedDetail.accountEmail ? (
+                  <span className="text-text-main font-medium inline-flex items-center gap-1.5 flex-wrap">
+                    <span className="material-symbols-outlined text-[16px] text-text-muted">account_circle</span>
+                    <span>{selectedDetail.accountName || selectedDetail.accountEmail}</span>
+                    {selectedDetail.accountEmail && selectedDetail.accountName && selectedDetail.accountName !== selectedDetail.accountEmail && (
+                      <span className="text-text-muted text-xs font-normal">({selectedDetail.accountEmail})</span>
+                    )}
+                  </span>
+                ) : selectedDetail.connectionId === "noauth" ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-text-muted">
+                    <span className="material-symbols-outlined text-[14px]">public</span>
+                    Public (No Auth)
+                  </span>
+                ) : selectedDetail.connectionId ? (
+                  <span className="font-mono text-xs text-text-muted">
+                    ID: {selectedDetail.connectionId.slice(0, 8)}...
+                  </span>
+                ) : (
+                  <span className="text-text-muted italic text-xs">Direct / Default</span>
+                )}
+              </div>
               <div>
                 <span className="text-text-muted">Model:</span>{" "}
                 <span className="text-text-main font-mono">{selectedDetail.model}</span>

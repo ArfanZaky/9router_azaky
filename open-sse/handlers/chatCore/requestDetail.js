@@ -80,10 +80,25 @@ export function extractUsageFromResponse(responseBody) {
 }
 
 export function buildRequestDetail(base, overrides = {}) {
+  const accountName = base.accountName
+    || base.account
+    || base.connectionName
+    || base.credentials?.connectionName
+    || base.credentials?._connection?.displayName
+    || base.credentials?._connection?.name
+    || base.credentials?._connection?.email
+    || undefined;
+
+  const accountEmail = base.accountEmail
+    || base.credentials?._connection?.email
+    || undefined;
+
   return {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
     connectionId: base.connectionId || undefined,
+    accountName,
+    accountEmail,
     proxy: base.proxy || undefined,
     timestamp: new Date().toISOString(),
     latency: base.latency || { ttft: 0, total: 0 },

@@ -292,7 +292,7 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
 /**
  * Handle non-streaming response from provider.
  */
-export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, proxy, reqTag, log }) {
+export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, accountName, accountEmail, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, proxy, reqTag, log, credentials }) {
   trackDone();
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
@@ -391,8 +391,13 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   reqLogger.logConvertedResponse(translatedResponse);
 
+  const resolvedAccountName = accountName || credentials?.connectionName || credentials?._connection?.displayName || credentials?._connection?.name || credentials?._connection?.email || null;
+  const resolvedAccountEmail = accountEmail || credentials?._connection?.email || null;
+
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
+    accountName: resolvedAccountName,
+    accountEmail: resolvedAccountEmail,
     proxy,
     latency: { ttft: totalLatency, total: totalLatency },
     tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },

@@ -86,6 +86,46 @@ function truncateField(obj, maxSize) {
   return obj;
 }
 
+function enrichDetailsWithConnectionInfo(db, details) {
+  if (!Array.isArray(details) || details.length === 0) return details;
+  const connIds = [...new Set(details.map((d) => d?.connectionId).filter(Boolean))];
+  if (connIds.length === 0) return details;
+
+  try {
+    const placeholders = connIds.map(() => "?").join(",");
+    const rows = db.all(
+      `SELECT id, provider, authType, name, email, data FROM providerConnections WHERE id IN (${placeholders})`,
+      connIds
+    );
+    const connMap = new Map();
+    for (const r of rows) {
+      const extra = parseJson(r.data, {});
+      connMap.set(r.id, {
+        name: r.name || extra.displayName || null,
+        email: r.email || null,
+        authType: r.authType || null,
+      });
+    }
+
+    for (const d of details) {
+      if (!d || typeof d !== "object") continue;
+      if (d.connectionId === "noauth") {
+        if (!d.accountName) d.accountName = "Public (No Auth)";
+        continue;
+      }
+      const conn = d.connectionId ? connMap.get(d.connectionId) : null;
+      if (conn) {
+        if (!d.accountName) d.accountName = conn.name || conn.email || null;
+        if (!d.accountEmail && conn.email) d.accountEmail = conn.email;
+      }
+    }
+  } catch (err) {
+    console.error("[requestDetailsRepo] Failed to enrich details with connection info:", err);
+  }
+
+  return details;
+}
+
 async function flushToDatabase() {
   if (isFlushing) return;
   if (writeBuffer.length === 0) return;
@@ -108,6 +148,8 @@ async function flushToDatabase() {
             provider: item.provider || null,
             model: item.model || null,
             connectionId: item.connectionId || null,
+            accountName: item.accountName || item.account || item.connectionName || null,
+            accountEmail: item.accountEmail || null,
             timestamp: item.timestamp,
             status: item.status || null,
             latency: item.latency || {},
@@ -140,6 +182,14 @@ async function flushToDatabase() {
   } finally {
     isFlushing = false;
   }
+}
+
+export async function flushRequestDetails() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  await flushToDatabase();
 }
 
 export async function saveRequestDetail(detail) {
@@ -190,6 +240,7 @@ export async function getRequestDetails(filter = {}) {
     [...params, pageSize, offset]
   );
   const details = rows.map((r) => parseJson(r.data, {}));
+  enrichDetailsWithConnectionInfo(db, details);
 
   return {
     details,
@@ -217,7 +268,12 @@ export async function getProviderRequestCounts() {
 export async function getRequestDetailById(id) {
   const db = await getAdapter();
   const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? parseJson(row.data, null) : null;
+  if (!row) return null;
+  const detail = parseJson(row.data, null);
+  if (detail) {
+    enrichDetailsWithConnectionInfo(db, [detail]);
+  }
+  return detail;
 }
 
 const _shutdownHandler = async () => {

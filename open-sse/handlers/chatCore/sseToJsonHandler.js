@@ -296,15 +296,20 @@ export function responsesJsonFromOpenAIChatCompletion(chatCompletion, fallbackMo
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, toolNameMap, trackDone, appendLog, pxpipe, proxy, reqTag, log }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, accountName, accountEmail, apiKey, clientRawRequest, onRequestSuccess, customToolNames, toolNameMap, trackDone, appendLog, pxpipe, proxy, reqTag, log, credentials }) {
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
 
   trackDone();
 
+  const resolvedAccountName = accountName || credentials?.connectionName || credentials?._connection?.displayName || credentials?._connection?.name || credentials?._connection?.email || null;
+  const resolvedAccountEmail = accountEmail || credentials?._connection?.email || null;
+
   const ctx = {
     provider, model, connectionId, proxy,
+    accountName: resolvedAccountName,
+    accountEmail: resolvedAccountEmail,
     request: extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null
   };
