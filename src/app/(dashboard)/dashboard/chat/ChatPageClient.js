@@ -1700,6 +1700,9 @@ export default function ChatPageClient() {
             } else if (event.type === "notice") {
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
                 setAgentStatus(eventData.message || "Working…");
+                if (/^(MCP .+ unavailable:|Self-improvement (updated|skipped|failed):)/.test(eventData.message || "")) {
+                  setNotice(eventData.message, eventData.message.startsWith("MCP ") || eventData.message.startsWith("Self-improvement failed:") ? "warning" : "info");
+                }
               }
             } else if (event.type === "team_roster_update") {
               patchChatRun(sessionId, { teamRoster: eventData.roster || [] });
@@ -2282,6 +2285,9 @@ export default function ChatPageClient() {
       setLiveInfo((s) => ({ ...s, waiting: true, tool: data.tool || null }));
     } else if (event.type === "notice") {
       setLiveInfo((s) => ({ ...s, notice: data.message || "" }));
+      if (/^(MCP .+ unavailable:|Self-improvement (updated|skipped|failed):)/.test(data.message || "")) {
+        setNotice(data.message, data.message.startsWith("MCP ") || data.message.startsWith("Self-improvement failed:") ? "warning" : "info");
+      }
     } else if (event.type === "done" || event.type === "error") {
       setLiveInfo({ turn: 0, tool: null, waiting: false, notice: "", elapsed: 0 });
     }
@@ -2976,6 +2982,9 @@ export default function ChatPageClient() {
               : m));
           } else if (event.type === "notice") {
             setAgentStatus(data.message || "Working…");
+            if (/^(MCP .+ unavailable:|Self-improvement (updated|skipped|failed):)/.test(data.message || "")) {
+              setNotice(data.message, data.message.startsWith("MCP ") || data.message.startsWith("Self-improvement failed:") ? "warning" : "info");
+            }
           } else if (event.type === "done") {
             finalizeServerEvent(data);
           } else if (event.type === "error") {
@@ -3495,9 +3504,18 @@ export default function ChatPageClient() {
             {activeSessionCodebase ? (
               <>
                 <Button
-                  variant={projectOpen && projectTab === "scripts" ? "secondary" : "ghost"}
+                  variant={projectOpen && projectTab === "terminal" ? "secondary" : "ghost"}
                   size="sm"
                   icon="terminal"
+                  onClick={() => toggleProject("terminal")}
+                  title="Terminal (auto cd to project path)"
+                >
+                  Terminal
+                </Button>
+                <Button
+                  variant={projectOpen && projectTab === "scripts" ? "secondary" : "ghost"}
+                  size="sm"
+                  icon="play_circle"
                   onClick={() => toggleProject("scripts")}
                   title="Running Scripts & Processes"
                 >
@@ -3522,7 +3540,7 @@ export default function ChatPageClient() {
                   Graph
                 </Button>
                 <Button
-                  variant={projectOpen && projectTab !== "git" && projectTab !== "scripts" && projectTab !== "graph" ? "secondary" : "ghost"}
+                  variant={projectOpen && !["git", "scripts", "graph", "terminal"].includes(projectTab) ? "secondary" : "ghost"}
                   size="sm"
                   icon="folder_open"
                   onClick={() => toggleProject("info")}

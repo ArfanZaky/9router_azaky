@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import GitSourceControl from "./GitSourceControl";
 import GitGraphView from "./GitGraphView";
+import ProjectTerminalView from "./ProjectTerminalView";
 
 function GitBranchIcon({ className = "h-3.5 w-3.5" }) {
   return (
@@ -17,12 +18,13 @@ function GitBranchIcon({ className = "h-3.5 w-3.5" }) {
 
 const TABS = [
   { id: "info", label: "Info", icon: "info" },
+  { id: "terminal", label: "Terminal", icon: "terminal" },
   { id: "plan", label: "Plan", icon: "list_alt" },
   { id: "git", label: "Git", icon: "git" },
   { id: "graph", label: "Graph", icon: "schema" },
   { id: "changes", label: "Changes", icon: "edit" },
   { id: "files", label: "Files", icon: "folder" },
-  { id: "scripts", label: "Scripts", icon: "terminal" },
+  { id: "scripts", label: "Scripts", icon: "play_circle" },
   { id: "tools", label: "Tools", icon: "handyman" },
 ];
 
@@ -70,6 +72,7 @@ function ProjectSidebarComponent({
   const [customCmd, setCustomCmd] = useState("");
   const [startingCmd, setStartingCmd] = useState(false);
   const [killingId, setKillingId] = useState(null);
+  const [openingTerminal, setOpeningTerminal] = useState(false);
 
   useEffect(() => {
     if (initialTab) {
@@ -107,6 +110,23 @@ function ProjectSidebarComponent({
       // ignore
     }
   }, [workspacePath]);
+
+  // Quick open native terminal
+  const handleOpenSystemTerminal = useCallback(async () => {
+    if (!workspacePath || openingTerminal) return;
+    setOpeningTerminal(true);
+    try {
+      await fetch("/api/chat/projects/terminal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "open", path: workspacePath }),
+      });
+    } catch {
+      // ignore
+    } finally {
+      setOpeningTerminal(false);
+    }
+  }, [workspacePath, openingTerminal]);
 
   // Periodic poll for processes when tab is active or processes are running
   useEffect(() => {
@@ -290,6 +310,16 @@ function ProjectSidebarComponent({
           <p className="truncate text-sm font-semibold">{data?.name || "Project"}</p>
           <p className="truncate font-mono text-[10px] text-text-muted">{workspacePath}</p>
         </div>
+        <button
+          type="button"
+          onClick={handleOpenSystemTerminal}
+          className="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-background/80 transition"
+          title="Open in System Terminal"
+        >
+          <span className="material-symbols-outlined text-[18px]">
+            {openingTerminal ? "sync" : "terminal"}
+          </span>
+        </button>
         <button onClick={onClose} className="text-text-muted hover:text-text-main">
           <span className="material-symbols-outlined text-[18px]">close</span>
         </button>
@@ -386,10 +416,15 @@ function ProjectSidebarComponent({
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {tab === "info" ? (
             <div className="space-y-2 text-xs">
-              <p className="font-medium">Name</p><p className="text-text-muted">{data?.name || "—"}</p>
-              <p className="font-medium">Package</p><p className="font-mono text-text-muted">{data?.packageName || "—"}</p>
+              <p className="font-medium">Name</p><p className="text-text-muted">{data?.name || "(unnamed)"}</p>
+              <p className="font-medium">Package</p><p className="font-mono text-text-muted">{data?.packageName || "(none)"}</p>
               <p className="font-medium">Files</p><p className="text-text-muted">{(data?.files || []).length} indexed</p>
             </div>
+          ) : tab === "terminal" ? (
+            <ProjectTerminalView
+              workspacePath={workspacePath}
+              onRunInChat={onRun}
+            />
           ) : tab === "plan" ? (
             plan.exists ? (
               <pre className="whitespace-pre-wrap break-words rounded-lg bg-background/60 p-2 font-mono text-[11px]">{plan.raw}</pre>
@@ -411,7 +446,7 @@ function ProjectSidebarComponent({
             )
           ) : tab === "files" ? (
             <div className="space-y-0.5">
-              {!tree[""] ? <p className="text-[11px] text-text-muted">Loading…</p> : null}
+              {!tree[""] ? <p className="text-[11px] text-text-muted">Loading...</p> : null}
               {renderTree(tree[""] || [], "", 0)}
             </div>
           ) : tab === "scripts" ? (
@@ -553,7 +588,7 @@ function ProjectSidebarComponent({
                                   <span className="material-symbols-outlined text-[13px]">
                                     {killingId === proc.id ? "sync" : "stop_circle"}
                                   </span>
-                                  <span>{killingId === proc.id ? "Killing…" : "Kill"}</span>
+                                  <span>{killingId === proc.id ? "Killing..." : "Kill"}</span>
                                 </button>
                               )}
                             </div>
@@ -567,7 +602,7 @@ function ProjectSidebarComponent({
                                 <span className="font-mono">{isRunning ? "Live Streaming" : "Finished"}</span>
                               </div>
                               <pre className="max-h-48 overflow-y-auto custom-scrollbar whitespace-pre-wrap break-all font-mono text-[10px] leading-4 text-emerald-400/90 select-text p-1">
-                                {logs.length > 0 ? logs.join("\n") : "Waiting for output…"}
+                                {logs.length > 0 ? logs.join("\n") : "Waiting for output..."}
                               </pre>
                             </div>
                           )}
