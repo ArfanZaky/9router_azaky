@@ -1697,16 +1697,15 @@ export default function RedminePageClient() {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-surface-2 border-b border-border text-text-muted uppercase tracking-wider text-[11px] font-semibold">
                     <tr>
-                      <th className="px-4 py-3.5 w-20"># ID</th>
                       <th className="px-4 py-3.5">Tracker & Project</th>
                       <th className="px-4 py-3.5">Subject</th>
                       <th className="px-4 py-3.5">Status</th>
-                      <th className="px-4 py-3.5">Priority</th>
                       <th className="px-4 py-3.5 whitespace-nowrap">Log Time</th>
                       <th className="px-4 py-3.5 w-28">% Done</th>
                       <th className="px-4 py-3.5 whitespace-nowrap">Due Date</th>
-                      <th className="px-4 py-3.5">Updated</th>
-                      <th className="px-4 py-3.5 text-right">Action</th>
+                      <th className="px-4 py-3.5 text-right whitespace-nowrap sticky right-0 z-20 bg-surface-2 border-l border-border/40 shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.06)] dark:shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.3)]">
+                        Action
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border-subtle">
@@ -1717,17 +1716,15 @@ export default function RedminePageClient() {
                       return (
                         <tr
                           key={issue.id}
-                          className="hover:bg-surface-2/40 transition-colors"
+                          className="hover:bg-surface-2/40 transition-colors group"
                         >
-                          <td className="px-4 py-3.5 font-mono text-xs text-primary font-semibold">
-                            #{issue.id}
-                          </td>
-
-                          <td className="px-4 py-3.5 max-w-[200px]">
+                          <td className="px-4 py-3.5 min-w-[180px] max-w-[260px]">
                             <div className="font-medium text-text-main truncate" title={issue.project?.name}>
                               {issue.project?.name || "General"}
                             </div>
                             <div className="flex items-center gap-1.5 text-[11px] text-text-muted font-mono mt-0.5 flex-wrap">
+                              <span className="font-semibold text-primary">#{issue.id}</span>
+                              <span className="text-text-subtle">•</span>
                               <span>{issue.tracker?.name || "Task"}</span>
                               {issue.localPath ? (
                                 <div className="flex items-center gap-1 flex-wrap">
@@ -1751,7 +1748,7 @@ export default function RedminePageClient() {
                             </div>
                           </td>
 
-                          <td className="px-4 py-3.5 max-w-sm">
+                          <td className="px-4 py-3.5 min-w-[220px] max-w-md">
                             <div className="font-medium text-text-main truncate" title={issue.subject}>
                               {issue.subject}
                             </div>
@@ -1786,16 +1783,6 @@ export default function RedminePageClient() {
                                 </span>
                               )}
                             </div>
-                          </td>
-
-                          <td className="px-4 py-3.5 whitespace-nowrap">
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border ${getPriorityBadgeClass(
-                                issue.priority?.name
-                              )}`}
-                            >
-                              {issue.priority?.name || "Normal"}
-                            </span>
                           </td>
 
                           <td className="px-4 py-3.5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
@@ -1837,11 +1824,10 @@ export default function RedminePageClient() {
                             {issue.due_date ? new Date(`${issue.due_date}T00:00:00`).toLocaleDateString() : "-"}
                           </td>
 
-                          <td className="px-4 py-3.5 text-text-muted text-[11px] whitespace-nowrap">
-                            {issue.updated_on ? new Date(issue.updated_on).toLocaleDateString() : "-"}
-                          </td>
-
-                          <td className="px-4 py-3.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                          <td
+                            className="px-4 py-3.5 text-right whitespace-nowrap sticky right-0 z-10 bg-surface group-hover:bg-surface-2 transition-colors border-l border-border/40 shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.06)] dark:shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.3)]"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <div className="flex items-center justify-end gap-1.5">
                               {issue.localPath ? (
                                 issue.localStatus === "working" && issue.localSessionId ? (
@@ -2149,7 +2135,9 @@ export default function RedminePageClient() {
                       <th className="px-4 py-3.5">Status</th>
                       <th className="px-4 py-3.5 whitespace-nowrap">Auto Work AI</th>
                       <th className="px-4 py-3.5 min-w-[240px]">Assigned Local Path</th>
-                      <th className="px-4 py-3.5 text-right min-w-[220px]">Actions</th>
+                      <th className="px-4 py-3.5 text-right min-w-[220px] whitespace-nowrap sticky right-0 z-20 bg-surface-2 border-l border-border/40 shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.06)] dark:shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.3)]">
+                        Actions
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border-subtle">
@@ -2293,7 +2281,7 @@ export default function RedminePageClient() {
                           </td>
 
                           {/* Action Buttons */}
-                          <td className="px-4 py-3.5 text-right whitespace-nowrap">
+                          <td className="px-4 py-3.5 text-right whitespace-nowrap sticky right-0 z-10 bg-surface group-hover:bg-surface-2 transition-colors border-l border-border/40 shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.06)] dark:shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.3)]">
                             <div className="flex items-center justify-end gap-1.5 flex-wrap">
                               {hasPath && (
                                 <button
