@@ -30,8 +30,6 @@ const config = {
   projectPaths: { 101: { path: "F:\\project\\portal" } },
 };
 
-const originalFetch = globalThis.fetch;
-
 beforeEach(() => {
   vi.resetAllMocks();
   globalThis.fetch = vi.fn();
@@ -108,7 +106,7 @@ describe("Redmine Task Chat Navigation & Session Resolution", () => {
       },
     });
 
-    // But an active session tagged with redmineIssueId: 19025 exists in SQLite
+    // An active session tagged with redmineIssueId: 19025 exists in SQLite
     const taggedSession = {
       id: "sess-tagged-19025",
       title: "Portal - Fix dashboard metrics",
@@ -123,6 +121,95 @@ describe("Redmine Task Chat Navigation & Session Resolution", () => {
     expect(issue.localStatus).toBe("pending");
     expect(issue.localSessionId).toBe("sess-tagged-19025");
     expect(issue.localSessionTitle).toBe("Portal - Fix dashboard metrics");
+  });
+
+  it("picks the newest session when multiple sessions are tagged with the same issue ID", async () => {
+    globalThis.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        total_count: 1,
+        issues: [
+          {
+            id: 20023,
+            subject: "Flag Unscheduled DPF",
+            project: { id: 101, name: "Portal" },
+            status: { id: 1, name: "New" },
+          },
+        ],
+      }),
+    });
+
+    // No valid status in settings or invalid session in settings
+    getSettings.mockResolvedValue({
+      redmineTaskStatuses: {},
+    });
+
+    // listChatSessions returns newest first: sess-new then sess-old
+    const newerSession = {
+      id: "sess-new-20023",
+      title: "Portal - Flag Unscheduled DPF (New)",
+      projectMeta: { redmineIssueId: 20023, localStatus: "pending" },
+      updatedAt: "2026-10-20T04:00:00.000Z",
+    };
+    const olderSession = {
+      id: "sess-old-20023",
+      title: "Portal - Flag Unscheduled DPF (Old)",
+      projectMeta: { redmineIssueId: 20023, localStatus: "working" },
+      updatedAt: "2026-10-15T01:00:00.000Z",
+    };
+    listChatSessions.mockResolvedValue([newerSession, olderSession]);
+
+    const result = await getRedmineIssues({ customConfig: config });
+    expect(result.issues.length).toBe(1);
+    const issue = result.issues[0];
+
+    // Must pick newerSession, NOT olderSession
+    expect(issue.localSessionId).toBe("sess-new-20023");
+    expect(issue.localSessionTitle).toBe("Portal - Flag Unscheduled DPF (New)");
+    expect(issue.localStatus).toBe("pending");
+  });
+
+  it("self-heals when sessionId in localTaskStatuses was deleted from DB", async () => {
+    globalThis.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        total_count: 1,
+        issues: [
+          {
+            id: 20024,
+            subject: "Flag Buffer Stock DPF",
+            project: { id: 101, name: "Portal" },
+            status: { id: 1, name: "New" },
+          },
+        ],
+      }),
+    });
+
+    // settings points to deleted session sess-deleted-id
+    getSettings.mockResolvedValue({
+      redmineTaskStatuses: {
+        "20024": {
+          status: "pending",
+          sessionId: "sess-deleted-id",
+          sessionTitle: "Deleted Session",
+        },
+      },
+    });
+
+    // Only sess-replacement-20024 exists in DB
+    const replacementSession = {
+      id: "sess-replacement-20024",
+      title: "Portal - Flag Buffer Stock DPF (Active)",
+      projectMeta: { redmineIssueId: 20024, localStatus: "pending" },
+    };
+    listChatSessions.mockResolvedValue([replacementSession]);
+
+    const result = await getRedmineIssues({ customConfig: config });
+    expect(result.issues.length).toBe(1);
+    const issue = result.issues[0];
+
+    expect(issue.localSessionId).toBe("sess-replacement-20024");
+    expect(issue.localSessionTitle).toBe("Portal - Flag Buffer Stock DPF (Active)");
   });
 
   it("preserves and returns sessionId when task is marked as pending via status API", async () => {

@@ -294,8 +294,9 @@ export async function getRedmineIssues({
     const allSessions = await listChatSessions({ limit: 500 });
     existingSessionIds = new Set((allSessions || []).map((s) => s.id));
     for (const s of allSessions || []) {
-      if (s.projectMeta?.redmineIssueId) {
-        sessionsByIssueId.set(String(s.projectMeta.redmineIssueId), s);
+      const issueKey = String(s.projectMeta?.redmineIssueId || "");
+      if (issueKey && !sessionsByIssueId.has(issueKey)) {
+        sessionsByIssueId.set(issueKey, s);
       }
     }
   } catch {

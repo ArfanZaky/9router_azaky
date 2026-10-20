@@ -695,7 +695,12 @@ export default function ChatPageClient() {
   const urlWorkspace = searchParams.get("workspace") || "";
 
   const [sessions, setSessions] = useState([]);
+  const sessionsRef = useRef(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
   const [activeSessionId, setActiveSessionId] = useState(() => {
+    if (urlSessionId) return urlSessionId;
     try {
       if (typeof window !== "undefined") {
         const params = new URLSearchParams(window.location.search);
@@ -1076,7 +1081,7 @@ export default function ChatPageClient() {
     if (!res.ok) throw new Error(data.error || "Failed to load sessions");
     let list = data.sessions || [];
 
-    const urlId = (() => {
+    const urlId = urlSessionId || (() => {
       try {
         if (typeof window !== "undefined") {
           const params = new URLSearchParams(window.location.search);
@@ -1086,7 +1091,7 @@ export default function ChatPageClient() {
       return "";
     })();
 
-    const targetCandidate = preferId || urlId || "";
+    const targetCandidate = preferId || urlSessionId || urlId || "";
     if (targetCandidate && !list.some((s) => s.id === targetCandidate)) {
       try {
         const singleRes = await fetch(`/api/chat/sessions/${targetCandidate}`);
@@ -1122,13 +1127,14 @@ export default function ChatPageClient() {
                    activeSessionId ||
                    list[0]?.id || "";
     if (nextId && (!activeSessionId || !list.some((s) => s.id === activeSessionId) || targetCandidate)) {
+      activeSessionIdRef.current = nextId;
       setActiveSessionId(nextId);
       try {
         globalThis.localStorage?.setItem("chat.activeSessionId", nextId);
       } catch {}
     }
     return list;
-  }, [activeSessionId]);
+  }, [activeSessionId, urlSessionId]);
 
   const loadSessionDetail = useCallback(async (id) => {
     if (!id) {
@@ -1416,11 +1422,12 @@ export default function ChatPageClient() {
             return "";
           }
         })();
-        const validUrl = urlId && list.some((s) => s.id === urlId) ? urlId : null;
+        const validUrl = (urlSessionId && list.some((s) => s.id === urlSessionId) ? urlSessionId : null) || (urlId && list.some((s) => s.id === urlId) ? urlId : null);
         const validStored = storedId && list.some((s) => s.id === storedId) ? storedId : null;
-        const bootId = validUrl || validStored || (activeSessionId && list.some((s) => s.id === activeSessionId) ? activeSessionId : null) || list[0]?.id;
+        const bootId = validUrl || validStored || (activeSessionIdRef.current && list.some((s) => s.id === activeSessionIdRef.current) ? activeSessionIdRef.current : null) || list[0]?.id;
         fetch("/api/chat/mcp").then((r) => r.json()).then((d) => { if (!cancelled && d.servers) setMcpServers(d.servers); }).catch(() => {});
         if (!cancelled && bootId) {
+          activeSessionIdRef.current = bootId;
           setActiveSessionId(bootId);
           try {
             globalThis.localStorage?.setItem("chat.activeSessionId", bootId);
@@ -1825,10 +1832,11 @@ export default function ChatPageClient() {
 
   useEffect(() => {
     if (!activeSessionId) return;
+    activeSessionIdRef.current = activeSessionId;
     try {
       globalThis.localStorage?.setItem("chat.activeSessionId", activeSessionId);
     } catch {}
-    const current = sessions.find((s) => s.id === activeSessionId);
+    const current = sessionsRef.current.find((s) => s.id === activeSessionId);
     const currentPath = current?.workspacePath || current?.codebase || "";
     setCodebase(currentPath);
     setCodebaseValue(currentPath);
@@ -1848,7 +1856,7 @@ export default function ChatPageClient() {
     loadSessionDetail(activeSessionId)
       .then(() => syncActiveSessionRunState(activeSessionId))
       .catch((e) => setError(textValue(e.message)));
-  }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState, sessions]);
+  }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState]);
 
   useEffect(() => {
     const targetPath = activeSessionCodebase && /^[A-Za-z]:[\\/]|^[\\/]|^..?[\\/]/i.test(activeSessionCodebase) ? activeSessionCodebase : null;
@@ -2019,9 +2027,10 @@ export default function ChatPageClient() {
   };
 
   const handleSelectSession = useCallback((id) => {
-    if (!id || id === activeSessionIdRef.current) return;
+    if (!id) return;
     isAtBottomRef.current = true;
     setShowScrollBottomBtn(false);
+    activeSessionIdRef.current = id;
     setActiveSessionId(id);
     try {
       globalThis.localStorage?.setItem("chat.activeSessionId", id);
@@ -2032,7 +2041,7 @@ export default function ChatPageClient() {
         window.history.replaceState(null, "", url.toString());
       }
     } catch {}
-    const targetSession = sessions.find((s) => s.id === id);
+    const targetSession = sessionsRef.current.find((s) => s.id === id);
     const targetPath = targetSession?.workspacePath || targetSession?.codebase || "";
     setCodebase(targetPath);
     setCodebaseValue(targetPath);
@@ -2045,16 +2054,30 @@ export default function ChatPageClient() {
     setTeamMessages([]);
     setError("");
     const run = getChatRun(id);
-    setIsSending(!!(run?.isSending));
-    setAgentStatus(run?.agentStatus || "");
-  }, [sessions]);
+    if (run?.isSending && run.sessionId === id) {
+      setMessages(run.messages || []);
+      setIsSending(true);
+      setAgentStatus(run.agentStatus || "");
+      if (Array.isArray(run.teamRoster) && run.teamRoster.length > 0) setTeamRoster(run.teamRoster);
+      if (Array.isArray(run.teamTasks) && run.teamTasks.length > 0) setTeamTasks(run.teamTasks);
+      if (Array.isArray(run.teamMessages) && run.teamMessages.length > 0) setTeamMessages(run.teamMessages);
+      setSubAgents((prev) => prev.filter((a) => a.sessionId === id));
+    } else {
+      setIsSending(false);
+      setAgentStatus("");
+      loadSessionDetail(id)
+        .then(() => syncActiveSessionRunState(id))
+        .catch(() => {});
+    }
+  }, [loadSessionDetail, syncActiveSessionRunState]);
   // Sync active session when URL query parameter changes (e.g. from Redmine links)
   useEffect(() => {
-    if (!urlSessionId || urlSessionId === activeSessionIdRef.current) return;
+    if (!urlSessionId) return;
+    if (urlSessionId === activeSessionIdRef.current && messagesRef.current.length > 0) return;
 
     let cancelled = false;
     const selectTarget = async () => {
-      let target = sessions.find((s) => s.id === urlSessionId);
+      let target = sessionsRef.current.find((s) => s.id === urlSessionId);
       if (!target) {
         try {
           const res = await fetch(`/api/chat/sessions/${urlSessionId}`);
@@ -2078,7 +2101,7 @@ export default function ChatPageClient() {
     return () => {
       cancelled = true;
     };
-  }, [urlSessionId, sessions, handleSelectSession]);
+  }, [urlSessionId, handleSelectSession]);
 
   // Sync session workspace when urlWorkspace parameter is passed
   useEffect(() => {
