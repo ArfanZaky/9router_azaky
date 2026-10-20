@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button, ModelSelectModal } from "@/shared/components";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatToolCard from "./ChatToolCard";
@@ -688,9 +689,19 @@ function AskWizard({ ask, onAnswer }) {
 }
 
 export default function ChatPageClient() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlSessionId = searchParams.get("sessionId") || searchParams.get("session") || "";
+  const urlWorkspace = searchParams.get("workspace") || "";
+
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(() => {
     try {
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search);
+        const fromUrl = params.get("sessionId") || params.get("session");
+        if (fromUrl) return fromUrl;
+      }
       return globalThis.localStorage?.getItem("chat.activeSessionId") || "";
     } catch {
       return "";
@@ -1063,7 +1074,31 @@ export default function ChatPageClient() {
     const res = await fetch("/api/chat/sessions?limit=200");
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Failed to load sessions");
-    const list = data.sessions || [];
+    let list = data.sessions || [];
+
+    const urlId = (() => {
+      try {
+        if (typeof window !== "undefined") {
+          const params = new URLSearchParams(window.location.search);
+          return params.get("sessionId") || params.get("session") || "";
+        }
+      } catch {}
+      return "";
+    })();
+
+    const targetCandidate = preferId || urlId || "";
+    if (targetCandidate && !list.some((s) => s.id === targetCandidate)) {
+      try {
+        const singleRes = await fetch(`/api/chat/sessions/${targetCandidate}`);
+        if (singleRes.ok) {
+          const singleData = await singleRes.json().catch(() => null);
+          if (singleData?.id) {
+            list = [singleData, ...list];
+          }
+        }
+      } catch {}
+    }
+
     setSessions(list);
     const initialQueues = {};
     for (const s of list) {
@@ -1082,8 +1117,11 @@ export default function ChatPageClient() {
         return "";
       }
     })();
-    const nextId = preferId || (storedId && list.some((s) => s.id === storedId) ? storedId : "") || activeSessionId || list[0]?.id || "";
-    if (nextId && (!activeSessionId || !list.some((s) => s.id === activeSessionId))) {
+    const nextId = (targetCandidate && list.some((s) => s.id === targetCandidate) ? targetCandidate : "") ||
+                   (storedId && list.some((s) => s.id === storedId) ? storedId : "") ||
+                   activeSessionId ||
+                   list[0]?.id || "";
+    if (nextId && (!activeSessionId || !list.some((s) => s.id === activeSessionId) || targetCandidate)) {
       setActiveSessionId(nextId);
       try {
         globalThis.localStorage?.setItem("chat.activeSessionId", nextId);
@@ -1350,6 +1388,27 @@ export default function ChatPageClient() {
             setActiveSessionId(created.id);
           }
         }
+        const urlId = (() => {
+          try {
+            if (typeof window !== "undefined") {
+              const params = new URLSearchParams(window.location.search);
+              return params.get("sessionId") || params.get("session") || "";
+            }
+          } catch {}
+          return "";
+        })();
+        if (urlId && !list.some((s) => s.id === urlId)) {
+          try {
+            const singleRes = await fetch(`/api/chat/sessions/${urlId}`);
+            if (singleRes.ok) {
+              const singleData = await singleRes.json().catch(() => null);
+              if (singleData?.id) {
+                list = [singleData, ...list];
+                setSessions(list);
+              }
+            }
+          } catch {}
+        }
         const storedId = (() => {
           try {
             return globalThis.localStorage?.getItem("chat.activeSessionId") || "";
@@ -1357,8 +1416,9 @@ export default function ChatPageClient() {
             return "";
           }
         })();
+        const validUrl = urlId && list.some((s) => s.id === urlId) ? urlId : null;
         const validStored = storedId && list.some((s) => s.id === storedId) ? storedId : null;
-        const bootId = validStored || (activeSessionId && list.some((s) => s.id === activeSessionId) ? activeSessionId : null) || list[0]?.id;
+        const bootId = validUrl || validStored || (activeSessionId && list.some((s) => s.id === activeSessionId) ? activeSessionId : null) || list[0]?.id;
         fetch("/api/chat/mcp").then((r) => r.json()).then((d) => { if (!cancelled && d.servers) setMcpServers(d.servers); }).catch(() => {});
         if (!cancelled && bootId) {
           setActiveSessionId(bootId);
@@ -1965,6 +2025,12 @@ export default function ChatPageClient() {
     setActiveSessionId(id);
     try {
       globalThis.localStorage?.setItem("chat.activeSessionId", id);
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        url.searchParams.set("sessionId", id);
+        url.searchParams.delete("session");
+        window.history.replaceState(null, "", url.toString());
+      }
     } catch {}
     const targetSession = sessions.find((s) => s.id === id);
     const targetPath = targetSession?.workspacePath || targetSession?.codebase || "";
@@ -1982,6 +2048,49 @@ export default function ChatPageClient() {
     setIsSending(!!(run?.isSending));
     setAgentStatus(run?.agentStatus || "");
   }, [sessions]);
+  // Sync active session when URL query parameter changes (e.g. from Redmine links)
+  useEffect(() => {
+    if (!urlSessionId || urlSessionId === activeSessionIdRef.current) return;
+
+    let cancelled = false;
+    const selectTarget = async () => {
+      let target = sessions.find((s) => s.id === urlSessionId);
+      if (!target) {
+        try {
+          const res = await fetch(`/api/chat/sessions/${urlSessionId}`);
+          if (res.ok) {
+            const data = await res.json().catch(() => null);
+            if (data?.id && !cancelled) {
+              target = data;
+              setSessions((prev) => (prev.some((s) => s.id === data.id) ? prev : [data, ...prev]));
+            }
+          }
+        } catch {
+          // quiet fallback
+        }
+      }
+      if (target?.id && !cancelled) {
+        handleSelectSession(target.id);
+      }
+    };
+
+    selectTarget();
+    return () => {
+      cancelled = true;
+    };
+  }, [urlSessionId, sessions, handleSelectSession]);
+
+  // Sync session workspace when urlWorkspace parameter is passed
+  useEffect(() => {
+    if (!urlWorkspace || urlSessionId) return;
+    const match = sessions.find(
+      (s) => s.workspacePath === urlWorkspace || s.codebase === urlWorkspace
+    );
+    if (match && match.id !== activeSessionIdRef.current) {
+      handleSelectSession(match.id);
+    }
+  }, [urlWorkspace, urlSessionId, sessions, handleSelectSession]);
+
 
   const handleDeleteSession = useCallback(async (id) => {
     try {

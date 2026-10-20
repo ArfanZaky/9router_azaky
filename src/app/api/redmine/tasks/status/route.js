@@ -136,16 +136,21 @@ export async function POST(req) {
     }
 
     // For other statuses ('done', 'pending', etc.)
+    const existing = await findActiveRedmineSession(issueKey, currentTracked?.sessionId);
+    const resolvedSessionId = existing?.id || currentTracked?.sessionId || null;
+    const resolvedSessionTitle = existing?.title || currentTracked?.sessionTitle || null;
+
     rts[issueKey] = {
       ...(currentTracked || {}),
       status,
+      sessionId: resolvedSessionId,
+      sessionTitle: resolvedSessionTitle,
       reason: body.reason !== undefined ? body.reason : (status === "done" ? null : (currentTracked?.reason || null)),
       updatedAt: new Date().toISOString(),
     };
 
     await updateSettings({ redmineTaskStatuses: rts });
 
-    const existing = await findActiveRedmineSession(issueKey, currentTracked?.sessionId);
     if (existing) {
       await updateChatSession(existing.id, {
         projectMeta: { ...existing.projectMeta, localStatus: status },
@@ -156,7 +161,8 @@ export async function POST(req) {
       ok: true,
       issueId,
       status,
-      sessionId: existing?.id || currentTracked?.sessionId || null,
+      sessionId: resolvedSessionId,
+      sessionTitle: resolvedSessionTitle,
       updatedRecord: rts[issueKey] || null,
     });
   } catch (err) {

@@ -5,6 +5,7 @@ import {
   getRedmineConfig,
 } from "@/lib/redmine/redmineClient";
 import { getSettings, getChatSession } from "@/lib/localDb";
+import { findActiveRedmineSession } from "@/lib/redmine/taskSpawner";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,8 @@ export async function GET(request, { params }) {
 
     let validSessionId = localTask?.sessionId || null;
     let localStatus = localTask?.status || null;
+    let localSessionTitle = localTask?.sessionTitle || null;
+
     if (validSessionId) {
       try {
         const session = await getChatSession(validSessionId, { includeMessages: false });
@@ -40,6 +43,24 @@ export async function GET(request, { params }) {
           validSessionId = null;
           if (localStatus === "working") {
             localStatus = null;
+          }
+        } else {
+          localSessionTitle = session.title || localSessionTitle;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Fallback: if sessionId is null or was lost from localTask, query active session by issue ID
+    if (!validSessionId) {
+      try {
+        const matched = await findActiveRedmineSession(issue.id);
+        if (matched) {
+          validSessionId = matched.id;
+          localSessionTitle = matched.title || localSessionTitle;
+          if (!localStatus && matched.projectMeta?.localStatus) {
+            localStatus = matched.projectMeta.localStatus;
           }
         }
       } catch {
@@ -53,7 +74,7 @@ export async function GET(request, { params }) {
       localStatus,
       localStatusReason: localTask?.reason || null,
       localSessionId: validSessionId,
-      localSessionTitle: validSessionId ? localTask?.sessionTitle || null : null,
+      localSessionTitle: validSessionId ? localSessionTitle : null,
     });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });

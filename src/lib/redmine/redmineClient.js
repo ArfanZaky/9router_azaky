@@ -289,9 +289,15 @@ export async function getRedmineIssues({
   }
 
   let existingSessionIds = new Set();
+  const sessionsByIssueId = new Map();
   try {
     const allSessions = await listChatSessions({ limit: 500 });
     existingSessionIds = new Set((allSessions || []).map((s) => s.id));
+    for (const s of allSessions || []) {
+      if (s.projectMeta?.redmineIssueId) {
+        sessionsByIssueId.set(String(s.projectMeta.redmineIssueId), s);
+      }
+    }
   } catch {
     // ignore
   }
@@ -306,10 +312,22 @@ export async function getRedmineIssues({
 
     let validSessionId = localTask?.sessionId || null;
     let localStatus = localTask?.status || null;
+    let localSessionTitle = localTask?.sessionTitle || null;
+
     if (validSessionId && !existingSessionIds.has(validSessionId)) {
       validSessionId = null;
       if (localStatus === "working") {
         localStatus = null;
+      }
+    }
+
+    // Fallback: if sessionId is not in localTaskStatuses, check if an existing session is tagged with this issue ID
+    if (!validSessionId && sessionsByIssueId.has(String(i.id))) {
+      const matched = sessionsByIssueId.get(String(i.id));
+      validSessionId = matched.id;
+      localSessionTitle = matched.title || localSessionTitle;
+      if (!localStatus && matched.projectMeta?.localStatus) {
+        localStatus = matched.projectMeta.localStatus;
       }
     }
 
@@ -320,7 +338,7 @@ export async function getRedmineIssues({
       localStatus,
       localStatusReason: localTask?.reason || null,
       localSessionId: validSessionId,
-      localSessionTitle: validSessionId ? localTask?.sessionTitle || null : null,
+      localSessionTitle: validSessionId ? localSessionTitle : null,
     };
   });
 

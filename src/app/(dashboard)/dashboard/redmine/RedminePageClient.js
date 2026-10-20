@@ -1240,7 +1240,7 @@ export default function RedminePageClient() {
 
       const session = await res.json();
       if (session?.id) {
-        router.push(`/dashboard/chat?session=${session.id}`);
+        router.push(`/dashboard/chat?sessionId=${session.id}`);
       } else {
         router.push(`/dashboard/chat?workspace=${encodeURIComponent(project.localPath)}`);
       }
