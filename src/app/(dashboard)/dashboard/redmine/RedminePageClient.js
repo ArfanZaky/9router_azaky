@@ -1708,9 +1708,9 @@ export default function RedminePageClient() {
                       <th className="px-4 py-3.5">Tracker & Project</th>
                       <th className="px-4 py-3.5">Subject</th>
                       <th className="px-4 py-3.5">Status</th>
+                      <th className="px-4 py-3.5 whitespace-nowrap">Due Date</th>
                       <th className="px-4 py-3.5 whitespace-nowrap">Log Time</th>
                       <th className="px-4 py-3.5 w-28">% Done</th>
-                      <th className="px-4 py-3.5 whitespace-nowrap">Due Date</th>
                       <th className="px-4 py-3.5 text-right whitespace-nowrap sticky right-0 z-20 bg-surface-2 border-l border-border/40 shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.06)] dark:shadow-[-6px_0_12px_-4px_rgba(0,0,0,0.3)]">
                         Action
                       </th>
@@ -1793,6 +1793,10 @@ export default function RedminePageClient() {
                             </div>
                           </td>
 
+                          <td className="px-4 py-3.5 text-text-muted text-[11px] whitespace-nowrap">
+                            {issue.due_date ? new Date(`${issue.due_date}T00:00:00`).toLocaleDateString() : "-"}
+                          </td>
+
                           <td className="px-4 py-3.5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex items-center gap-1.5">
                               <button
@@ -1826,10 +1830,6 @@ export default function RedminePageClient() {
                                 {issue.done_ratio || 0}%
                               </span>
                             </div>
-                          </td>
-
-                          <td className="px-4 py-3.5 text-text-muted text-[11px] whitespace-nowrap">
-                            {issue.due_date ? new Date(`${issue.due_date}T00:00:00`).toLocaleDateString() : "-"}
                           </td>
 
                           <td

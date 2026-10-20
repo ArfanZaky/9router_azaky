@@ -21,10 +21,38 @@ describe("Redmine Tasks Table Layout", () => {
     expect(thead).toContain("Tracker & Project");
     expect(thead).toContain("Subject");
     expect(thead).toContain("Status");
+    expect(thead).toContain("Due Date");
     expect(thead).toContain("Log Time");
     expect(thead).toContain("% Done");
-    expect(thead).toContain("Due Date");
     expect(thead).toContain("Action");
+  });
+
+  it("places Due Date column immediately to the right of Status in the tasks table header", () => {
+    const taskTheadMatch = content.match(/<table className="w-full text-left text-xs">\s*<thead[\s\S]*?<\/thead>/);
+    expect(taskTheadMatch).toBeTruthy();
+    const thead = taskTheadMatch[0];
+
+    const statusIdx = thead.indexOf('<th className="px-4 py-3.5">Status</th>');
+    const dueDateIdx = thead.indexOf('<th className="px-4 py-3.5 whitespace-nowrap">Due Date</th>');
+    const logTimeIdx = thead.indexOf('<th className="px-4 py-3.5 whitespace-nowrap">Log Time</th>');
+    const doneIdx = thead.indexOf('<th className="px-4 py-3.5 w-28">% Done</th>');
+    const actionIdx = thead.indexOf('Action');
+
+    expect(statusIdx).toBeGreaterThan(0);
+    expect(dueDateIdx).toBeGreaterThan(statusIdx);
+    expect(logTimeIdx).toBeGreaterThan(dueDateIdx);
+    expect(doneIdx).toBeGreaterThan(logTimeIdx);
+    expect(actionIdx).toBeGreaterThan(doneIdx);
+  });
+
+  it("places Due Date cell immediately after Status in the tasks table body", () => {
+    const statusIdx = content.indexOf('issue.status?.name || "Open"');
+    const dueDateIdx = content.indexOf('{issue.due_date ? new Date');
+    const logTimeIdx = content.indexOf('openLogTimeModal(issue, e)');
+
+    expect(statusIdx).toBeGreaterThan(0);
+    expect(dueDateIdx).toBeGreaterThan(statusIdx);
+    expect(logTimeIdx).toBeGreaterThan(dueDateIdx);
   });
 
   it("pins the Action column to the right using sticky right positioning with proper background", () => {
