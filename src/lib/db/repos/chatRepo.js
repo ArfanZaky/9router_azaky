@@ -91,13 +91,40 @@ export async function getChatSession(id, { includeMessages = true, messageLimit 
   if (!row) return null;
   const session = rowToSession(row);
   if (includeMessages) {
-    // Use unlimited loading for large contexts (250k+ tokens), default to 1000 msgs as a reasonable cap.
     const lim = typeof messageLimit !== "number" || messageLimit <= 0 ? 1000 : Math.min(Math.max(messageLimit, 1), 10000);
+    // Order strictly by rowid ASC so conversation turn order is preserved perfectly
     const msgs = db.all(
-      `SELECT * FROM chatMessages WHERE sessionId = ? ORDER BY createdAt DESC LIMIT ?`,
+      `SELECT * FROM chatMessages WHERE sessionId = ? ORDER BY rowid ASC LIMIT ?`,
       [id, lim]
     );
-    session.messages = msgs.reverse().map(rowToMessage);
+    session.messages = msgs.map(rowToMessage);
+
+    // Self-healing: if transcript has no messages or has an incomplete assistant message,
+    // check if chatRuns has a completed run record for this session with full messages
+    const hasAssistantContent = session.messages.some(
+      (m) => m.role === "assistant" && m.content && String(m.content).trim().length > 0
+    );
+    if (!hasAssistantContent) {
+      try {
+        const completedRun = db.get(
+          `SELECT result FROM chatRuns WHERE sessionId = ? AND status = 'completed' AND result IS NOT NULL ORDER BY createdAt DESC LIMIT 1`,
+          [id]
+        );
+        if (completedRun?.result) {
+          const runRes = parseJson(completedRun.result, null);
+          if (Array.isArray(runRes?.messages) && runRes.messages.length > 0) {
+            await replaceChatMessages(id, runRes.messages);
+            const healedMsgs = db.all(
+              `SELECT * FROM chatMessages WHERE sessionId = ? ORDER BY rowid ASC LIMIT ?`,
+              [id, lim]
+            );
+            session.messages = healedMsgs.map(rowToMessage);
+          }
+        }
+      } catch {
+        // quiet fallback
+      }
+    }
   }
   return session;
 }
@@ -202,7 +229,7 @@ export async function listChatMessages(sessionId, { limit = 500, offset = 0 } = 
   const lim = Math.min(Math.max(Number(limit) || 500, 1), 2000);
   const off = Math.max(Number(offset) || 0, 0);
   const rows = db.all(
-    `SELECT * FROM chatMessages WHERE sessionId = ? ORDER BY createdAt ASC LIMIT ? OFFSET ?`,
+    `SELECT * FROM chatMessages WHERE sessionId = ? ORDER BY rowid ASC LIMIT ? OFFSET ?`,
     [sessionId, lim, off]
   );
   return rows.map(rowToMessage);
@@ -231,7 +258,7 @@ export async function createChatMessage(sessionId, data = {}) {
   };
   db.transaction(() => {
     db.run(
-      `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, reasoning, segments, createdAt)
+      `INSERT OR REPLACE INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, reasoning, segments, createdAt)
        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       messageInsertParams(message)
     );
@@ -312,7 +339,7 @@ export async function compactSessionMessages(sessionId, keepLastN = 20) {
   
   // Delete all but the last N messages (most recent N via DESC + LIMIT)
   const deletedCount = db.run(
-    `DELETE FROM chatMessages WHERE sessionId = ? AND createdAt IN (SELECT createdAt FROM chatMessages WHERE sessionId = ? ORDER BY createdAt DESC OFFSET ?)`,
+    `DELETE FROM chatMessages WHERE sessionId = ? AND rowid IN (SELECT rowid FROM chatMessages WHERE sessionId = ? ORDER BY rowid DESC OFFSET ?)`,
     [sessionId, sessionId, Math.max(0, totalCount - keepLastN)]
   ).changes;
   
@@ -342,10 +369,13 @@ export async function replaceChatMessages(sessionId, messages = []) {
   const session = db.get(`SELECT id FROM chatSessions WHERE id = ?`, [sessionId]);
   if (!session) return null;
   const now = new Date().toISOString();
+  let baseTime = Date.now() - (messages.length * 1000);
   const saved = [];
   db.transaction(() => {
     db.run(`DELETE FROM chatMessages WHERE sessionId = ?`, [sessionId]);
-    for (const data of messages) {
+    for (let i = 0; i < messages.length; i++) {
+      const data = messages[i];
+      baseTime += 1000;
       const message = {
         id: data.id || uuidv4(),
         sessionId,
@@ -360,10 +390,10 @@ export async function replaceChatMessages(sessionId, messages = []) {
         tool_calls: data.tool_calls || data.toolCalls || null,
         reasoning: data.reasoning || "",
         segments: data.segments || [],
-        createdAt: data.createdAt || now,
+        createdAt: data.createdAt || new Date(baseTime).toISOString(),
       };
       db.run(
-        `INSERT INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, reasoning, segments, createdAt)
+        `INSERT OR REPLACE INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, reasoning, segments, createdAt)
          VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         messageInsertParams(message)
       );

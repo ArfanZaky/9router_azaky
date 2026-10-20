@@ -569,6 +569,14 @@ function JournalChangeItem({ change, issue, onPreviewImage }) {
 export default function RedminePageClient() {
   const router = useRouter();
 
+  const navigateToChatSession = useCallback((sessionId) => {
+    if (!sessionId) return;
+    try {
+      globalThis.localStorage?.setItem("chat.activeSessionId", sessionId);
+    } catch {}
+    router.push(`/dashboard/chat?sessionId=${sessionId}`);
+  }, [router]);
+
   // Top level active tab: "tasks" | "projects"
   const [activeTab, setActiveTab] = useState("tasks");
 
@@ -1190,7 +1198,7 @@ export default function RedminePageClient() {
 
       fetchIssues(false);
       if (data.sessionId) {
-        router.push(`/dashboard/chat?sessionId=${data.sessionId}`);
+        navigateToChatSession(data.sessionId);
       }
     } catch (err) {
       alert(`Error starting AI session: ${err.message}`);
@@ -1240,7 +1248,7 @@ export default function RedminePageClient() {
 
       const session = await res.json();
       if (session?.id) {
-        router.push(`/dashboard/chat?sessionId=${session.id}`);
+        navigateToChatSession(session.id);
       } else {
         router.push(`/dashboard/chat?workspace=${encodeURIComponent(project.localPath)}`);
       }
@@ -1832,7 +1840,7 @@ export default function RedminePageClient() {
                               {issue.localPath ? (
                                 issue.localStatus === "working" && issue.localSessionId ? (
                                   <button
-                                    onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
+                                    onClick={() => navigateToChatSession(issue.localSessionId)}
                                     className="px-2.5 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 text-sky-700 dark:text-sky-300 font-medium text-xs transition border border-sky-500/30 inline-flex items-center gap-1.5 shadow-2xs min-h-[36px]"
                                     title="Open working session in Chat"
                                   >
@@ -1841,7 +1849,7 @@ export default function RedminePageClient() {
                                   </button>
                                 ) : issue.localStatus === "done" && issue.localSessionId ? (
                                   <button
-                                    onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
+                                    onClick={() => navigateToChatSession(issue.localSessionId)}
                                     className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-medium text-xs transition border border-emerald-500/30 inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
                                     title="View completed session in Chat"
                                   >
@@ -1850,7 +1858,7 @@ export default function RedminePageClient() {
                                   </button>
                                 ) : issue.localStatus === "pending" && issue.localSessionId ? (
                                   <button
-                                    onClick={() => router.push(`/dashboard/chat?sessionId=${issue.localSessionId}`)}
+                                    onClick={() => navigateToChatSession(issue.localSessionId)}
                                     className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-medium text-xs transition border border-amber-500/30 inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
                                     title="Lihat sesi pending di Chat (koneksi database dibutuhkan)"
                                   >
@@ -2548,7 +2556,7 @@ export default function RedminePageClient() {
                 {issueDetail && issueDetail.localPath ? (
                   issueDetail.localStatus === "working" && issueDetail.localSessionId ? (
                     <button
-                      onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
+                      onClick={() => navigateToChatSession(issueDetail.localSessionId)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 text-sky-700 dark:text-sky-300 text-xs font-semibold border border-sky-500/30 transition min-h-[44px]"
                     >
                       <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
@@ -2556,7 +2564,7 @@ export default function RedminePageClient() {
                     </button>
                   ) : issueDetail.localStatus === "done" && issueDetail.localSessionId ? (
                     <button
-                      onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
+                      onClick={() => navigateToChatSession(issueDetail.localSessionId)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-semibold border border-emerald-500/30 transition min-h-[44px]"
                     >
                       <span className="material-symbols-outlined text-[16px] text-emerald-500">task_alt</span>
@@ -2564,7 +2572,7 @@ export default function RedminePageClient() {
                     </button>
                   ) : issueDetail.localStatus === "pending" && issueDetail.localSessionId ? (
                     <button
-                      onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
+                      onClick={() => navigateToChatSession(issueDetail.localSessionId)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-xs font-semibold border border-amber-500/30 transition min-h-[44px]"
                       title="Lihat sesi pending di Chat (koneksi database dibutuhkan)"
                     >
@@ -2733,7 +2741,7 @@ export default function RedminePageClient() {
                             {issueDetail.localSessionId && (
                               <button
                                 type="button"
-                                onClick={() => router.push(`/dashboard/chat?sessionId=${issueDetail.localSessionId}`)}
+                                onClick={() => navigateToChatSession(issueDetail.localSessionId)}
                                 className="px-2.5 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium text-xs transition border border-border inline-flex items-center gap-1 shadow-2xs min-h-[36px]"
                               >
                                 <span className="material-symbols-outlined text-[15px] text-primary">chat</span>

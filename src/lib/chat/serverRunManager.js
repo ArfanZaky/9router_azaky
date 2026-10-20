@@ -21,6 +21,9 @@ import {
 import { resolveProjectWorkspace } from "./projectWorkspace.js";
 import { saveDualTierMemory, loadDualTierMemory } from "@/lib/agent/memory.js";
 import { listTools as listMcpTools, callTool as callMcpTool } from "./mcpClient.js";
+import { buildMcpToolRegistry, resolveMcpRegistryCall } from "./mcpToolRegistry.js";
+import { createMcpStdioSession } from "./mcpStdioSession.js";
+import { reflectionSkipReason } from "./reflectionEligibility.js";
 
 const liveRuns = globalThis.__chatServerRuns || new Map();
 globalThis.__chatServerRuns = liveRuns;
@@ -166,11 +169,10 @@ function makeTitle(value = "") {
 }
 
 async function runBackgroundReflection(run, content) {
-  if (run.mode !== "agent" || !run.workspace || !run.request?.apiKey) return;
   const lastUserMsg = [...(run.request.messages || [])].reverse().find((m) => m?.role === "user");
   const userText = text(lastUserMsg?.content).trim();
-  if (!userText || userText.length < 5) return;
-  if (/^(hi|hello|hey|halo|test|ok|oke|sip|thanks|terima kasih|lanjut|lanjutkan|next|continue)[\s.!]*$/i.test(userText)) return;
+  const skip = reflectionSkipReason({ mode: run.mode, workspace: run.workspace, apiKey: run.request?.apiKey, userText, content });
+  if (skip) return { status: "skipped", reason: skip };
 
   const currentMem = loadDualTierMemory(run.workspace);
 
@@ -223,7 +225,8 @@ Reply JSON only:
     const response = await handleChat(request);
     const data = await response.json().catch(() => ({}));
     const raw = text(data.choices?.[0]?.message?.content);
-    if (!raw) return;
+    if (!response.ok) return { status: "failed", reason: `model returned HTTP ${response.status}` };
+    if (!raw) return { status: "failed", reason: "model returned an empty response" };
 
     let parsed = null;
     try {
@@ -235,27 +238,28 @@ Reply JSON only:
       }
     }
 
-    if (parsed?.shouldUpdate) {
-      const saved = [];
-      if (parsed.projectFact && typeof parsed.projectFact === "string" && parsed.projectFact.trim().length > 3) {
-        const cleanProject = parsed.projectFact.replace(/—/g, ":");
-        saveDualTierMemory(run.workspace, { type: "project", content: cleanProject, mode: "append" });
-        saved.push("Project Knowledge (MEMORY.md)");
-      }
-      if (parsed.userPreference && typeof parsed.userPreference === "string" && parsed.userPreference.trim().length > 3) {
-        const cleanUser = parsed.userPreference.replace(/—/g, ":");
-        saveDualTierMemory(run.workspace, { type: "user", content: cleanUser, mode: "append" });
-        saved.push("User Preference (USER.md)");
-      }
-
-      if (saved.length > 0) {
-        await emit(run, "notice", {
-          message: `💾 Self-improvement: Learned and updated ${saved.join(" and ")}`,
-        }).catch(() => {});
-      }
+    if (!parsed || typeof parsed.shouldUpdate !== "boolean") {
+      return { status: "failed", reason: "model returned invalid reflection JSON" };
     }
-  } catch {
-    // Silent background execution
+    if (!parsed.shouldUpdate) return { status: "skipped", reason: "no new durable knowledge" };
+
+    const saved = [];
+    for (const [type, fact, label] of [
+      ["project", parsed.projectFact, "Project Knowledge (MEMORY.md)"],
+      ["user", parsed.userPreference, "User Preference (USER.md)"],
+    ]) {
+      if (typeof fact !== "string" || fact.trim().length <= 3) continue;
+      const result = saveDualTierMemory(run.workspace, {
+        type, content: fact.replace(/\u2014/g, ":"), mode: "append",
+      });
+      if (!result.ok) return { status: "failed", reason: result.error || `cannot save ${label}` };
+      saved.push(label);
+    }
+    return saved.length
+      ? { status: "updated", reason: `updated ${saved.join(" and ")}` }
+      : { status: "skipped", reason: "no usable durable facts" };
+  } catch (error) {
+    return { status: "failed", reason: error?.message || String(error) };
   }
 }
 
@@ -287,50 +291,36 @@ async function callChatCompletionsForJudge(run, summary) {
   }
 }
 
-// Build OpenAI function-tool schemas from enabled MCP servers, namespaced
-// mcp__<server>__<tool>. tools/list is cached per process (10 min) so every
-// message does not re-spawn stdio servers / hit the network.
+// Cache successful MCP tool inventories only; failed servers must be retried on the next run.
 const mcpToolsCache = globalThis.__chatMcpToolsCache || new Map();
 globalThis.__chatMcpToolsCache = mcpToolsCache;
+const MCP_CACHE_MS = 600_000;
 
 async function loadMcpTools() {
-  const servers = (await listChatMcpServers().catch(() => []))
-    .filter((s) => s.enabled);
-  const tools = [];
-  const registry = []; // [{ name, server }]
+  const servers = (await listChatMcpServers()).filter((s) => s.enabled);
+  const inventories = [];
+  const failures = [];
   for (const server of servers) {
     const cacheKey = `${server.id}:${server.updatedAt}`;
-    let listed = mcpToolsCache.get(cacheKey);
-    if (!listed) {
+    const cached = mcpToolsCache.get(cacheKey);
+    let toolList = cached && Date.now() - cached.at < MCP_CACHE_MS ? cached.list : null;
+    if (!toolList) {
       try {
-        const fetched = await listMcpTools(server);
-        listed = fetched;
-        mcpToolsCache.set(cacheKey, { _at: Date.now(), list: fetched });
-        if (mcpToolsCache.size > 200) {
-          const now = Date.now();
-          for (const [k, v] of mcpToolsCache) {
-            if (v?._at && now - v._at > 600_000) mcpToolsCache.delete(k);
-          }
-        }
-      } catch {
+        toolList = await listMcpTools(server);
+        if (toolList.length === 0) throw new Error("server returned no tools");
+        mcpToolsCache.set(cacheKey, { at: Date.now(), list: toolList });
+      } catch (error) {
+        mcpToolsCache.delete(cacheKey);
+        failures.push({ server: server.name, error: error?.message || String(error) });
         continue;
       }
     }
-    const toolList = listed?.list || listed;
-    for (const t of toolList) {
-      const name = `mcp__${server.name}__${t.name}`;
-      tools.push({
-        type: "function",
-        function: {
-          name,
-          description: t.description || `MCP tool ${t.name} from ${server.name}`,
-          parameters: t.inputSchema || { type: "object", properties: {}, additionalProperties: true },
-        },
-      });
-      registry.push({ name, server });
-    }
+    inventories.push({ server, toolList });
   }
-  return { tools, registry };
+  for (const [key, value] of mcpToolsCache) {
+    if (!value?.at || Date.now() - value.at >= MCP_CACHE_MS) mcpToolsCache.delete(key);
+  }
+  return { ...buildMcpToolRegistry(inventories), failures };
 }
 
 function stoppedSummary(messages, assistantText, stopped) {
@@ -385,7 +375,11 @@ async function checkpoint(run, force = false) {
   const now = Date.now();
   if (!force && now - run.lastCheckpointAt < 1000) return;
   run.lastCheckpointAt = now;
-  await replaceChatMessages(run.sessionId, run.messages).catch(() => {});
+  try {
+    await replaceChatMessages(run.sessionId, run.messages);
+  } catch (err) {
+    console.error(`[checkpoint] Failed to persist messages for session ${run.sessionId}:`, err);
+  }
 }
 
 async function emit(run, type, data) {
@@ -549,6 +543,12 @@ async function runPlainChat(run) {
 
 async function runAgent(run) {
   const mcp = await loadMcpTools();
+  const sessions = new Map();
+  for (const failure of mcp.failures) {
+    await emit(run, "notice", {
+      message: `MCP ${failure.server} unavailable: ${failure.error.slice(0, 300)}. Its tools will be retried on the next run.`,
+    });
+  }
   const isRedmineTask = Boolean(run.projectMeta?.redmineIssueId);
 
   // Dynamic context injection: provide current Task Board & Roster so model sees existing tasks on subsequent turns
@@ -579,7 +579,8 @@ async function runAgent(run) {
 
   const effectiveSystemPrompt = [run.request.systemPrompt, teamContextPrompt].filter(Boolean).join("\n");
 
-  await runAgentLoop({
+  try {
+    await runAgentLoop({
     model: run.request.model,
     messages: run.request.messages,
     systemPrompt: effectiveSystemPrompt,
@@ -600,7 +601,34 @@ async function runAgent(run) {
     onMcpCall: async (name, args) => {
       const entry = mcp.registry.find((r) => r.name === name);
       if (!entry) return { ok: false, error: `Unknown MCP tool ${name}` };
-      return callMcpTool(entry.server, name.slice(`mcp__${entry.server.name}__`.length), args);
+      const resolved = resolveMcpRegistryCall(entry, args);
+      if (resolved.result) return resolved.result;
+      if (entry.server.transport === "stdio") {
+        let connecting = sessions.get(entry.server.id);
+        if (!connecting) {
+          connecting = (async () => {
+            const session = createMcpStdioSession(entry.server);
+            try { await session.initialize(); return session; }
+            catch (error) { session.close(); throw error; }
+          })();
+          sessions.set(entry.server.id, connecting);
+        }
+        try {
+          const session = await connecting;
+          const result = await session.callTool(resolved.name, resolved.arguments);
+          if (resolved.name === "close_binary" && result.ok && (entry.server.name?.toLowerCase() === "rea" || (entry.server.args || []).some((arg) => /^rea-agents(?:@|$)/i.test(arg)))) {
+            sessions.delete(entry.server.id);
+            session.close();
+          }
+          return result;
+        } catch (error) {
+          sessions.delete(entry.server.id);
+          const failedSession = await connecting.catch(() => null);
+          failedSession?.close();
+          throw error;
+        }
+      }
+      return callMcpTool(entry.server, resolved.name, resolved.arguments);
     },
     onGoalJudge: async (summary) => {
       if (!run.goal) return { ok: false, error: "No active goal" };
@@ -652,7 +680,7 @@ async function runAgent(run) {
       run.tasks = items;
       await updateChatSession(run.sessionId, { tasks: items }).catch(() => {});
       await emit(run, "task_update", { items });
-      
+
       // Always keep teamTasks DAG synchronized with todo items
       (items || []).forEach((item, idx) => {
         const tid = `task_${idx + 1}`;
@@ -919,7 +947,12 @@ async function runAgent(run) {
       const answer = await openGate(run, "ask", { questions });
       return answer ?? "";
     },
-  });
+    });
+  } finally {
+    for (const connecting of sessions.values()) {
+      connecting.then((session) => session.close()).catch(() => {});
+    }
+  }
 }
 
 async function runSubAgent(parent, { role, task }) {
@@ -1047,13 +1080,25 @@ async function execute(run) {
         await emit(run, "notice", { message: "Verification passed" });
       }
     }
+    // Finish reflection before the terminal event; the UI disconnects as soon as it sees "done".
+    // Treat learning as best-effort: failed reflection never fails an otherwise successful chat.
+    if (!stopped) {
+      let reflection;
+      try {
+        reflection = await runBackgroundReflection(run, content);
+      } catch (error) {
+        reflection = { status: "failed", reason: error?.message || String(error) };
+      }
+      await emit(run, "notice", { message: `Self-improvement ${reflection?.status || "failed"}: ${String(reflection?.reason || "unknown outcome").slice(0, 200)}` });
+    }
     finishRunningTools(run, stopped);
     patchAssistant(run, { content, status: "done", tokenUsage: run.tokenUsage || undefined });
+    appendAssistantSegment(run, { type: "text", content });
     await checkpoint(run, true);
     const session = await getChatSession(run.sessionId, { includeMessages: false });
     const title = !session?.title || session.title === "New chat" ? makeTitle(run.titleSeed) : session.title;
     await updateChatSession(run.sessionId, { title, model: run.request.model, providerId: run.providerId }).catch(() => {});
-    
+
     // Auto-complete any remaining in_progress tasks so board doesn't leave them dangling
     if (!stopped && run.teamTasks) {
       let updatedAny = false;
@@ -1178,10 +1223,6 @@ async function execute(run) {
       }
     }
 
-    // Self-Improving AI: background post-turn reflection
-    if (!stopped && status === "completed") {
-      void runBackgroundReflection(run, content).catch(() => {});
-    }
   } catch (error) {
     const message = run.abortController.signal.aborted ? "(Stopped)" : (error?.message || String(error));
     const content = run.abortController.signal.aborted
@@ -1191,6 +1232,7 @@ async function execute(run) {
         : `Run interrupted: ${message}`;
     finishRunningTools(run, run.abortController.signal.aborted);
     patchAssistant(run, { content, status: run.abortController.signal.aborted ? "done" : "error", error: run.abortController.signal.aborted ? undefined : message });
+    appendAssistantSegment(run, { type: "text", content });
     await checkpoint(run, true);
 
     if (run.teamRoster) {

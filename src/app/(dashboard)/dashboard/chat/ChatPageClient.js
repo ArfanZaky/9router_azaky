@@ -360,6 +360,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
                   </div>
                 );
               })}
+              {!message.segments.some((s) => s.type === "text") && content ? (
+                <div className="relative">
+                  <ChatMarkdown content={content} onImageClick={onImageClick} />
+                  {(message.status === "streaming" || message.status === "tool_calls") ? (
+                    <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           ) : isUser ? (
             <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div>
@@ -1151,9 +1159,13 @@ export default function ChatPageClient() {
     if (!res.ok) throw new Error(data.error || "Failed to load session");
 
     // Always update list record so codebase / workspacePath / title are fresh
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, ...data, messages: undefined } : s))
-    );
+    setSessions((prev) => {
+      const exists = prev.some((s) => s.id === id);
+      if (exists) {
+        return prev.map((s) => (s.id === id ? { ...s, ...data, messages: undefined } : s));
+      }
+      return [{ ...data, messages: undefined }, ...prev];
+    });
 
     // Only update view state if user is still on this session
     if (activeSessionIdRef.current !== id) return data;
@@ -1176,6 +1188,7 @@ export default function ChatPageClient() {
     }
     const effectiveCode = data.workspacePath || data.codebase || "";
     setCodebase(effectiveCode);
+    setCodebaseValue(effectiveCode);
     const savedQueue = Array.isArray(data.projectMeta?.queuedMessages) ? data.projectMeta.queuedMessages : [];
     if (savedQueue.length > 0) {
       setSessionQueues((prev) => ({
@@ -2073,7 +2086,7 @@ export default function ChatPageClient() {
   // Sync active session when URL query parameter changes (e.g. from Redmine links)
   useEffect(() => {
     if (!urlSessionId) return;
-    if (urlSessionId === activeSessionIdRef.current && messagesRef.current.length > 0) return;
+    if (urlSessionId === activeSessionIdRef.current) return;
 
     let cancelled = false;
     const selectTarget = async () => {
@@ -2092,8 +2105,8 @@ export default function ChatPageClient() {
           // quiet fallback
         }
       }
-      if (target?.id && !cancelled) {
-        handleSelectSession(target.id);
+      if (!cancelled) {
+        handleSelectSession(target?.id || urlSessionId);
       }
     };
 
