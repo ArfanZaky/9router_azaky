@@ -3,7 +3,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, ModelSelectModal } from "@/shared/components";
+import { Button, ModelSelectModal, ConfirmModal } from "@/shared/components";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatToolCard from "./ChatToolCard";
 import TeamPanel from "./TeamPanel";
@@ -481,9 +481,11 @@ const SessionRailItem = memo(function SessionRailItem({
           <button
             type="button"
             className="material-symbols-outlined text-[15px] text-text-muted hover:text-red-500"
+            title="Delete session"
+            aria-label="Delete session"
             onClick={(e) => {
               e.stopPropagation();
-              onDelete(session.id);
+              onDelete(session);
             }}
           >
             delete
@@ -790,6 +792,8 @@ export default function ChatPageClient() {
   const error = appNotice?.type === "error" ? appNotice.text : "";
   const [renameId, setRenameId] = useState("");
   const [renameValue, setRenameValue] = useState("");
+  const [deleteConfirmSession, setDeleteConfirmSession] = useState(null);
+  const [isDeletingSession, setIsDeletingSession] = useState(false);
   const [agentRole, setAgentRole] = useState(() => {
     try {
       return globalThis.localStorage?.getItem("chat.agentRole") || "orchestrator";
@@ -2128,8 +2132,36 @@ export default function ChatPageClient() {
   }, [urlWorkspace, urlSessionId, sessions, handleSelectSession]);
 
 
-  const handleDeleteSession = useCallback(async (id) => {
+  const handleDeleteSession = useCallback((target) => {
+    const sessionObj = typeof target === "object" && target !== null
+      ? target
+      : sessionsRef.current.find((s) => s.id === target) || (target ? { id: target, title: "Chat session" } : null);
+    if (!sessionObj) return;
+    setDeleteConfirmSession(sessionObj);
+  }, []);
+
+  const executeDeleteSession = useCallback(async () => {
+    if (!deleteConfirmSession?.id) return;
+    const id = deleteConfirmSession.id;
+    setIsDeletingSession(true);
     try {
+      const existingRun = getChatRun(id);
+      const existingRunId = existingRun?.runId;
+      if (existingRunId) {
+        stopRunTransport(existingRunId);
+        fetch(`/api/chat/runs/${existingRunId}`, { method: "DELETE" }).catch(() => {});
+      }
+      if (isRunActiveFor(id)) {
+        abortChatRun(id);
+        clearChatRun(id);
+      }
+      if (activeSessionIdRef.current === id) {
+        abortRef.current?.abort();
+        isSendingRef.current = false;
+        setIsSending(false);
+        setAgentStatus("");
+      }
+
       const res = await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -2145,14 +2177,41 @@ export default function ChatPageClient() {
         if (activeSessionIdRef.current === id) {
           const fallback = next[0]?.id || "";
           setActiveSessionId(fallback);
-          if (!fallback) setMessages([]);
+          if (fallback) {
+            try {
+              if (typeof window !== "undefined") {
+                const url = new URL(window.location.href);
+                url.searchParams.set("sessionId", fallback);
+                url.searchParams.delete("session");
+                window.history.replaceState(null, "", url.toString());
+              }
+            } catch {}
+          } else {
+            setMessages([]);
+            setTasks([]);
+            setSubAgents([]);
+            setTeamRoster([]);
+            setTeamTasks([]);
+            setTeamMessages([]);
+            try {
+              if (typeof window !== "undefined") {
+                const url = new URL(window.location.href);
+                url.searchParams.delete("sessionId");
+                url.searchParams.delete("session");
+                window.history.replaceState(null, "", url.toString());
+              }
+            } catch {}
+          }
         }
         return next;
       });
+      setDeleteConfirmSession(null);
     } catch (e) {
       setError(textValue(e.message));
+    } finally {
+      setIsDeletingSession(false);
     }
-  }, []);
+  }, [deleteConfirmSession]);
 
   const handleRename = useCallback(async (id) => {
     const title = renameValue.trim();
@@ -4565,6 +4624,24 @@ export default function ChatPageClient() {
       {viewingAgent ? (
         <SubAgentOverlay agent={viewingAgent} onClose={() => setViewingAgent(null)} />
       ) : null}
+
+      <ConfirmModal
+        isOpen={Boolean(deleteConfirmSession)}
+        onClose={() => {
+          if (!isDeletingSession) setDeleteConfirmSession(null);
+        }}
+        onConfirm={executeDeleteSession}
+        title="Delete Session"
+        message={
+          deleteConfirmSession?.title
+            ? `Delete session "${deleteConfirmSession.title}"? All messages in this session will be permanently removed.`
+            : "Delete this session? All messages will be permanently removed."
+        }
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="danger"
+        loading={isDeletingSession}
+      />
 
       {imagePreview?.src ? (
         <div
