@@ -477,7 +477,7 @@ const SessionRailItem = memo(function SessionRailItem({
             {session.model || "No model"} · {formatRelativeTime(session.updatedAt)}
           </p>
         </div>
-        <div className="flex flex-col gap-0.5 opacity-0 group-hover:opacity-100">
+        <div className={`flex flex-col gap-0.5 transition-opacity ${active ? "opacity-80 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"}`}>
           <button
             type="button"
             className="material-symbols-outlined text-[15px] text-text-muted hover:text-primary"
@@ -491,8 +491,8 @@ const SessionRailItem = memo(function SessionRailItem({
           <button
             type="button"
             className="material-symbols-outlined text-[15px] text-text-muted hover:text-primary"
-            title="Copy session (new session with same name and path)"
-            aria-label="Copy session"
+            title="Duplicate session (new session with same name and path)"
+            aria-label="Duplicate session"
             onClick={(e) => {
               e.stopPropagation();
               onCopy(session);
@@ -2338,7 +2338,7 @@ export default function ChatPageClient() {
       if (cleanProjectMeta.agentRole) {
         setAgentRole(cleanProjectMeta.agentRole);
       }
-      setNotice(`Copied session: ${sessionName}`, "success");
+      setNotice(`Duplicated session: ${sessionName}`, "success");
     } catch (e) {
       setError(textValue(e.message));
     }
@@ -3624,7 +3624,7 @@ export default function ChatPageClient() {
         const list = CHAT_COMMANDS.map((command) => `/${command.name}${command.args ? ` ${command.args}` : ""} — ${command.summary}`).join("\n");
         setMessages((prev) => [...prev, { id: `sys_${Date.now()}`, role: "system", content: list, status: "done", createdAt: new Date().toISOString() }]);
       } else if (name === "new") await handleNewChat();
-      else if (name === "copy") {
+      else if (name === "copy" || name === "duplicate") {
         const current = sessions.find((s) => s.id === activeSessionId) || activeSession;
         if (!current) throw new Error("No active session to copy");
         await handleCopySession(current);
@@ -3901,6 +3901,16 @@ export default function ChatPageClient() {
                 </Button>
               </>
             ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="content_copy"
+              onClick={() => activeSession && handleCopySession(activeSession)}
+              title="Duplicate session (new session with same name and path)"
+              disabled={!activeSession}
+            >
+              Duplicate
+            </Button>
             <Button variant="ghost" size="sm" icon="download" onClick={() => handleExport("md")}>
               MD
             </Button>
@@ -4688,6 +4698,21 @@ export default function ChatPageClient() {
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setSessionModalOpen(false)}>Cancel</Button>
+              {sessionModalMode === "edit" ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  icon="content_copy"
+                  onClick={() => {
+                    setSessionModalOpen(false);
+                    const target = sessions.find((s) => s.id === sessionFormEditId) || activeSession;
+                    if (target) handleCopySession(target);
+                  }}
+                  title="Duplicate session (new session with same name and path)"
+                >
+                  Duplicate
+                </Button>
+              ) : null}
               <Button size="sm" onClick={saveSessionModal}>
                 {sessionModalMode === "edit" ? "Save" : "Create"}
               </Button>
