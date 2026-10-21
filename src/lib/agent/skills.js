@@ -87,13 +87,21 @@ export function loadAllSkillIndex() {
 // and bodies are fetched on demand via read_skill.
 export function buildSkillCatalogue(skills, maxChars = 8000) {
   let text = "";
+  let omitted = 0;
   for (const s of skills) {
     const line = s.description ? `- ${s.name}: ${s.description}` : `- ${s.name}`;
     if (text.length + line.length + 1 > maxChars) {
-      text += `\n... [remaining skills omitted: read_skill to load]`;
-      break;
+      omitted++;
+      continue;
     }
     text += `\n${line}`;
+  }
+  if (omitted) text += `\n... [${omitted} skills omitted: read_skill to load]`;
+  // REA is explicitly requested for binary/app analysis and must remain discoverable
+  // even when the alphabetical skill catalogue exceeds its prompt budget.
+  const rea = skills.find((skill) => skill.id === "rea-reverse-engineer");
+  if (rea && !text.includes(`- ${rea.name}:`) && !text.includes(`- ${rea.name}\n`)) {
+    text += `\n- ${rea.name}: ${rea.description || "Reverse engineer shipped binaries and applications with REA MCP tools."}`;
   }
   return text.trim();
 }
