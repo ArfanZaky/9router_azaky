@@ -1,4 +1,5 @@
 import { handleVideoCreate, handleVideoGet } from "@/sse/handlers/videoGeneration.js";
+import { downloadAndSaveVideo } from "@/lib/media/videoStore.js";
 import { NextResponse } from "next/server";
 
 /**
@@ -45,10 +46,26 @@ export async function POST(request) {
       return NextResponse.json({ error: data.error?.message || data.error || `Video create error (${res.status})` }, { status: res.status });
     }
 
+    const rawVideoUrl = data.video?.url || data.url || "";
+    let finalVideoUrl = rawVideoUrl;
+
+    if (data.status === "completed" && rawVideoUrl) {
+      try {
+        const id = data.request_id || data.id || data.requestId;
+        const saved = await downloadAndSaveVideo({ url: rawVideoUrl, id });
+        if (saved?.localUrl) {
+          finalVideoUrl = saved.localUrl;
+        }
+      } catch (saveErr) {
+        console.warn("Failed to save video locally on create:", saveErr.message);
+      }
+    }
+
     return NextResponse.json({
       requestId: data.request_id || data.id || data.requestId || null,
       status: data.status || "processing",
-      videoUrl: data.video?.url || data.url || "",
+      videoUrl: finalVideoUrl,
+      sourceUrl: rawVideoUrl,
       model,
       connectionId: res.headers.get("x-9router-connection-id") || null,
     });
@@ -85,9 +102,25 @@ export async function GET(request) {
       return NextResponse.json({ error: data.error?.message || data.error || `Video poll error (${res.status})` }, { status: res.status });
     }
 
+    const rawVideoUrl = data.video?.url || data.url || "";
+    let finalVideoUrl = rawVideoUrl;
+
+    if (data.status === "completed" && rawVideoUrl) {
+      try {
+        const id = data.request_id || requestId;
+        const saved = await downloadAndSaveVideo({ url: rawVideoUrl, id });
+        if (saved?.localUrl) {
+          finalVideoUrl = saved.localUrl;
+        }
+      } catch (saveErr) {
+        console.warn("Failed to save video locally on poll:", saveErr.message);
+      }
+    }
+
     return NextResponse.json({
       status: data.status || "processing",
-      videoUrl: data.video?.url || data.url || "",
+      videoUrl: finalVideoUrl,
+      sourceUrl: rawVideoUrl,
       requestId: data.request_id || requestId,
       error: data.error || "",
     });

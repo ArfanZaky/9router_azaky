@@ -41,6 +41,19 @@ function fileToDataUrl(file) {
   });
 }
 
+function getPlayableVideoUrl(videoUrl) {
+  if (!videoUrl) return "";
+  if (videoUrl.startsWith("/api/video-prompt/media/")) return videoUrl;
+  if (/^https?:\/\//i.test(videoUrl)) {
+    const match = videoUrl.match(/([a-zA-Z0-9_-]+)(?:_\d+)?\.(?:mp4|webm|mov)/i);
+    const id = match ? match[1] : "";
+    if (id) {
+      return `/api/video-prompt/media/${id}?url=${encodeURIComponent(videoUrl)}`;
+    }
+  }
+  return videoUrl;
+}
+
 export default function VideoPromptPageClient() {
   // Core config & auth
   const [apiKey, setApiKey] = useState("");
@@ -104,6 +117,7 @@ export default function VideoPromptPageClient() {
   const [batchGenRunning, setBatchGenRunning] = useState(false);
   const [videoGenStates, setVideoGenStates] = useState({});
   const [batchVideoRunning, setBatchVideoRunning] = useState(false);
+  const [videoErrors, setVideoErrors] = useState({});
 
   // Active scene selection for studio preview
   const [selectedSceneIndex, setSelectedSceneIndex] = useState(0);
@@ -131,7 +145,28 @@ export default function VideoPromptPageClient() {
         setApiKey((keysData.keys || []).find((k) => k.isActive !== false)?.key || "");
         setActiveProviders(providersData.connections || []);
         setModelAliases(aliasesData.aliases || {});
-        setProjects(projectsData.projects || []);
+        const projs = projectsData.projects || [];
+        setProjects(projs);
+
+        // Auto-select latest project on initial load if available
+        if (projs.length > 0) {
+          const p = projs[0];
+          setCurrentProjectId(p.id);
+          setProjectTitle(p.title || "");
+          setPrompt(p.prompt || "");
+          setLlmModel(p.llmModel || "");
+          setImageModel(p.imageModel || "");
+          setVideoModel(p.videoModel || "xai/grok-imagine-video");
+          setStyle(p.style || STYLES[0].label);
+          setTargetEngine(p.targetEngine || TARGET_ENGINES[0]);
+          setCharacterDesc(p.characterDesc || "");
+          setRefImage(p.refImage || "");
+          const sc = p.scenes || [];
+          setScenes(sc);
+          if (sc.length > 0) {
+            setActiveTab("studio");
+          }
+        }
       } catch (err) {
         console.error("Init failed", err);
       }
@@ -175,17 +210,6 @@ export default function VideoPromptPageClient() {
     setRefDragging(false);
     const file = event.dataTransfer?.files?.[0];
     if (file) await setRefFromFile(file);
-  };
-
-  const applyRefUrl = () => {
-    const url = refUrlDraft.trim();
-    if (!url) return;
-    if (!/^https?:\/\//i.test(url) && !url.startsWith("data:image/")) {
-      setError("Reference URL must start with http(s):// or data:image/");
-      return;
-    }
-    setRefImage(url);
-    setError("");
   };
 
   const clearRefImage = () => {
@@ -272,6 +296,29 @@ export default function VideoPromptPageClient() {
     setCharacters(characters.filter((c) => c.id !== id));
   };
 
+  // Reset all state for a new storyboard project
+  const handleNewStoryboard = () => {
+    setCurrentProjectId(null);
+    setProjectTitle("");
+    setPrompt("");
+    setCharacterDesc("");
+    setCharacterConsistencyPrompt("");
+    setScenes([]);
+    setCharacters([]);
+    setRefImage("");
+    setRefUrlDraft("");
+    setError("");
+    setSelectedSceneIndex(0);
+    setImageGenStates({});
+    setVideoGenStates({});
+    setVideoErrors({});
+    setStyle(STYLES[0].label);
+    setTargetEngine(TARGET_ENGINES[0]);
+    setAspectRatio("16:9");
+    setSceneCount(4);
+    setActiveTab("story");
+  };
+
   // Generate Storyboard API
   const handleGenerateStoryboard = async () => {
     if (!prompt.trim()) {
@@ -286,7 +333,6 @@ export default function VideoPromptPageClient() {
     setGenerating(true);
     setError("");
     try {
-      // Build composite character prompt
       let combinedCharacterDesc = characterDesc.trim();
       if (characters.length > 0) {
         const charListStr = characters
@@ -330,8 +376,6 @@ export default function VideoPromptPageClient() {
       }));
       setScenes(generatedScenes);
       setSelectedSceneIndex(0);
-
-      // Auto switch to storyboard tab
       setActiveTab("storyboard");
 
       const saveRes = await fetch("/api/video-prompt/projects", {
@@ -419,6 +463,7 @@ export default function VideoPromptPageClient() {
       return;
     }
 
+    setVideoErrors((prev) => ({ ...prev, [sceneIndex]: false }));
     setVideoGenStates((prev) => ({ ...prev, [sceneIndex]: { status: "submitting", error: "" } }));
     setError("");
 
@@ -453,6 +498,7 @@ export default function VideoPromptPageClient() {
           videoStatus: "completed",
         };
         persistScenes(nextScenes);
+        setVideoErrors((prev) => ({ ...prev, [sceneIndex]: false }));
         setVideoGenStates((prev) => ({ ...prev, [sceneIndex]: { status: "completed", error: "" } }));
         return;
       }
@@ -481,6 +527,7 @@ export default function VideoPromptPageClient() {
               videoStatus: "completed",
             };
             persistScenes(nextScenes);
+            setVideoErrors((prev) => ({ ...prev, [sceneIndex]: false }));
             setVideoGenStates((prev) => ({ ...prev, [sceneIndex]: { status: "completed", error: "" } }));
           } else if (pollData.status === "failed") {
             clearInterval(pollInterval);
@@ -544,6 +591,7 @@ export default function VideoPromptPageClient() {
     setCharacterDesc(p.characterDesc || "");
     setRefImage(p.refImage || "");
     setScenes(p.scenes || []);
+    setVideoErrors({});
     setHistoryOpen(false);
   };
 
@@ -683,6 +731,16 @@ export default function VideoPromptPageClient() {
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2">
+          <Button
+            variant="primary"
+            size="sm"
+            icon="add"
+            onClick={handleNewStoryboard}
+            className="text-xs"
+            title="Start a new storyboard project"
+          >
+            New Storyboard
+          </Button>
           {(scenes.length > 0 || prompt.trim()) && (
             <Button
               variant="outline"
@@ -1142,9 +1200,14 @@ export default function VideoPromptPageClient() {
                                 Image Ready
                               </span>
                             )}
-                            {scene.videoUrl && (
+                            {scene.videoUrl && !videoErrors[idx] && (
                               <span className="px-1.5 py-0.5 rounded text-[9px] bg-blue-500/15 text-blue-500 border border-blue-500/20 font-medium">
                                 Video Ready
+                              </span>
+                            )}
+                            {videoErrors[idx] && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-500 border border-amber-500/20 font-medium">
+                                Video Expired
                               </span>
                             )}
                           </div>
@@ -1152,8 +1215,16 @@ export default function VideoPromptPageClient() {
 
                         {/* Image / Video preview thumbnail */}
                         <div className="aspect-video w-full rounded-lg bg-muted/40 border border-border overflow-hidden relative group">
-                          {scene.videoUrl ? (
-                            <video src={scene.videoUrl} className="w-full h-full object-cover" muted autoPlay loop />
+                          {scene.videoUrl && !videoErrors[idx] ? (
+                            <video
+                              key={scene.videoUrl}
+                              src={getPlayableVideoUrl(scene.videoUrl)}
+                              className="w-full h-full object-cover"
+                              muted
+                              autoPlay
+                              loop
+                              onError={() => setVideoErrors((prev) => ({ ...prev, [idx]: true }))}
+                            />
                           ) : scene.imageUrl ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img src={scene.imageUrl} alt={`Scene ${idx + 1}`} className="w-full h-full object-cover" />
@@ -1307,12 +1378,50 @@ export default function VideoPromptPageClient() {
                           <span className="material-symbols-outlined text-primary text-[16px]">movie</span>
                           AI Video Generation
                         </span>
-                        <span className="text-[11px] text-text-muted font-mono">{videoModel || "No model set"}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] text-text-muted font-mono">{videoModel || "No model set"}</span>
+                          {activeScene.videoUrl && !videoErrors[selectedSceneIndex] && (
+                            <a
+                              href={`${getPlayableVideoUrl(activeScene.videoUrl)}${getPlayableVideoUrl(activeScene.videoUrl).includes('?') ? '&' : '?'}download=1`}
+                              download={`shot-${activeScene.sceneNumber || selectedSceneIndex + 1}.mp4`}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium rounded border border-border bg-muted/40 hover:bg-muted text-text-main transition-colors"
+                              title="Download MP4"
+                            >
+                              <span className="material-symbols-outlined text-[13px] text-primary">download</span>
+                              Download
+                            </a>
+                          )}
+                        </div>
                       </div>
 
                       <div className="aspect-video rounded-lg bg-black/60 border border-border overflow-hidden relative flex items-center justify-center">
-                        {activeScene.videoUrl ? (
-                          <video src={activeScene.videoUrl} controls className="w-full h-full object-cover" />
+                        {activeScene.videoUrl && !videoErrors[selectedSceneIndex] ? (
+                          <video
+                            key={activeScene.videoUrl}
+                            src={getPlayableVideoUrl(activeScene.videoUrl)}
+                            controls
+                            className="w-full h-full object-cover"
+                            onError={() => setVideoErrors((prev) => ({ ...prev, [selectedSceneIndex]: true }))}
+                          />
+                        ) : videoErrors[selectedSceneIndex] ? (
+                          <div className="text-center text-text-muted p-4 space-y-2">
+                            <span className="material-symbols-outlined text-amber-500 text-[28px]">warning</span>
+                            <p className="text-xs font-semibold text-text-main">Video stream unavailable or expired</p>
+                            <p className="text-[11px] text-text-muted max-w-xs mx-auto">
+                              The upstream temporary video link has expired. Click below to re-render this shot.
+                            </p>
+                            <Button
+                              variant="primary"
+                              size="xs"
+                              icon="refresh"
+                              onClick={() => {
+                                setVideoErrors((prev) => ({ ...prev, [selectedSceneIndex]: false }));
+                                handleGenerateVideo(selectedSceneIndex);
+                              }}
+                            >
+                              Re-generate Video
+                            </Button>
+                          </div>
                         ) : (
                           <div className="text-center text-text-muted/60 p-4">
                             <span className="material-symbols-outlined text-[32px]">videocam_off</span>

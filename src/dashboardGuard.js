@@ -32,6 +32,7 @@ const PUBLIC_API_PATHS = [
   "/api/version",
   "/api/settings/require-login",
   "/api/image-gen/assets",
+  "/api/video-prompt/media",
   "/api/chat/uploads",
   "/api/chat/files",
 ];
