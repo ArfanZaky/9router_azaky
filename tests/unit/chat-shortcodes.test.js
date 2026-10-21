@@ -112,6 +112,8 @@ describe("ChatPageClient and ShortcodesModal wiring", () => {
   it("verifies ChatPageClient mounts Shortcodes button, modal, and slash command expansion", () => {
     const clientPath = path.resolve(__dirname, "../../src/app/(dashboard)/dashboard/chat/ChatPageClient.js");
     const content = fs.readFileSync(clientPath, "utf8");
+    const headerPath = path.resolve(__dirname, "../../src/app/(dashboard)/dashboard/chat/ChatHeader.jsx");
+    const headerContent = fs.readFileSync(headerPath, "utf8");
 
     expect(content).toContain('import ShortcodesModal from "./ShortcodesModal"');
     expect(content).toContain("shortcodesModalOpen");
@@ -119,7 +121,8 @@ describe("ChatPageClient and ShortcodesModal wiring", () => {
     expect(content).toContain('fetch("/api/chat/shortcodes")');
     expect(content).toContain('name === "shortcode" || name === "shortcodes"');
     expect(content).toContain("userText: expandedText");
-    expect(content).toMatch(/icon="bookmark".*Shortcodes/s);
+    expect(headerContent).toMatch(/icon="bookmark".*Shortcodes/s);
+    expect(content).toContain("<ChatHeader");
     expect(content).toContain("<ShortcodesModal");
   });
 

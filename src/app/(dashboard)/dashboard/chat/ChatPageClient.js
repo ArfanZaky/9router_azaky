@@ -4,14 +4,26 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button, ModelSelectModal, ConfirmModal } from "@/shared/components";
-import ChatMarkdown from "./ChatMarkdown";
-import ChatToolCard from "./ChatToolCard";
 import TeamPanel from "./TeamPanel";
 import SlashCommandPalette, { CHAT_COMMANDS, commandMatches } from "./SlashCommandPalette";
 import ProjectSidebar from "./ProjectSidebar";
 import FolderPickerModal from "./FolderPickerModal";
 import SkillsModal from "./SkillsModal";
 import ShortcodesModal from "./ShortcodesModal";
+import ChatHeader from "./ChatHeader";
+import ChatSessionRail from "./ChatSessionRail";
+import MessageList from "./MessageList";
+import AskApprovalOverlay from "./AskApprovalOverlay";
+import SubAgentOverlay from "./SubAgentOverlay";
+import DockedTerminalPanel from "./DockedTerminalPanel";
+import {
+  getCachedTranscript,
+  setCachedTranscript,
+  deleteCachedTranscript,
+  getCachedDraft,
+  setCachedDraft,
+  clearCachedDraft,
+} from "@/lib/chat/chatCacheIndexedDb";
 import {
   abortChatRun,
   buildStopSummary,
@@ -103,24 +115,6 @@ function makeSessionTitle(text = "") {
   return makeRunTitle(textValue(text));
 }
 
-function formatRelativeTime(value) {
-  if (!value) return "";
-  const time = new Date(value).getTime();
-  if (Number.isNaN(time)) return "";
-  const diffMinutes = Math.max(1, Math.round((Date.now() - time) / 60000));
-  if (diffMinutes < 60) return `${diffMinutes}m`;
-  const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h`;
-  return `${Math.round(diffHours / 24)}d`;
-}
-
-function formatMessageTime(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -186,541 +180,6 @@ function updateOrAppendSegment(segments, type, content, extra = {}) {
   return next;
 }
 
-// ── Memoized Message Row Component (Zero Re-render on Typing) ─────────────────
-const ChatMessageRow = memo(function ChatMessageRow({
-  message,
-  globalIndex,
-  activeSessionModel,
-  isSending,
-  viewMode,
-  showReasoning,
-  onCopy,
-  onEdit,
-  onRegenerate,
-  onImageClick,
-}) {
-  const isUser = message.role === "user";
-  const isTool = message.role === "tool";
-  const isSystem = message.role === "system";
-  const content = textValue(message.content);
-  const msgTime = formatMessageTime(message.createdAt);
-
-  if (isSystem) {
-    return (
-      <div data-chat-message-index={globalIndex} className="flex justify-start">
-        <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-border bg-background/40 px-3 py-2">
-          <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-text-muted">
-            <span className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-[13px]">terminal</span>
-              Command
-            </span>
-            {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
-          </div>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-muted">{content}</pre>
-        </div>
-      </div>
-    );
-  }
-
-  if (isTool) {
-    const preview = content.length > 1200 ? `${content.slice(0, 1200)}\n…` : content;
-    return (
-      <div data-chat-message-index={globalIndex} className="flex justify-start">
-        <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-amber-500/25 bg-amber-500/5 px-3 py-2">
-          <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
-            <span className="material-symbols-outlined text-[14px]">
-              {message.status === "running" ? "progress_activity" : "build"}
-            </span>
-            <span>tool · {message.name || "unknown"}</span>
-            <span className="opacity-60 font-normal">
-              {message.status === "running" ? "running…" : "done"}
-            </span>
-            {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
-            <button
-              type="button"
-              className="ml-auto material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
-              onClick={() => onCopy(content)}
-            >
-              content_copy
-            </button>
-          </div>
-          <pre className="mt-1.5 max-h-48 overflow-auto custom-scrollbar whitespace-pre-wrap break-words text-[11px] leading-5 text-text-muted font-mono">
-            {preview}
-          </pre>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div data-chat-message-index={globalIndex} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[min(92%,42rem)] rounded-2xl px-4 py-3 ${
-          isUser
-            ? "bg-primary text-white"
-            : message.status === "error"
-              ? "bg-red-500/10 border border-red-500/20"
-              : "bg-sidebar border border-border"
-        }`}
-      >
-        <div className="mb-1 flex items-center justify-between gap-3">
-          <span className="text-[11px] font-semibold opacity-80 flex items-center gap-2">
-            <span>{isUser ? "You" : activeSessionModel || "Assistant"}</span>
-            {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
-          </span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
-              onClick={() => onCopy(content)}
-              title="Copy"
-            >
-              content_copy
-            </button>
-            {isUser ? (
-              <button
-                type="button"
-                className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
-                onClick={() => onEdit(message)}
-                title="Edit and resend"
-                disabled={isSending}
-              >
-                edit
-              </button>
-            ) : null}
-            {!isUser ? (
-              <button
-                type="button"
-                className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100"
-                onClick={onRegenerate}
-                title="Regenerate"
-                disabled={isSending}
-              >
-                refresh
-              </button>
-            ) : null}
-          </div>
-        </div>
-        {message.attachments?.length ? (
-          <div className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {message.attachments.map((a) => (
-              <button
-                key={a.id || a.name}
-                type="button"
-                onClick={() => a.dataUrl && onImageClick(a.dataUrl, a.name || "Image")}
-                className="overflow-hidden rounded-lg border border-white/10 text-left hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                title="View image"
-              >
-                <img src={a.dataUrl} alt={a.name} className="h-24 w-full object-cover" />
-              </button>
-            ))}
-          </div>
-        ) : null}
-        {viewMode === "raw" && message.tool_calls?.length ? (
-          <div className="mb-2 flex flex-wrap gap-1">
-            {message.tool_calls.map((tc) => (
-              <span
-                key={tc.id}
-                className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-text-muted"
-              >
-                {tc.function?.name || "tool"}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        <div>
-          {!isUser && message.segments?.length ? (
-            <div className="space-y-3">
-              {message.segments.map((segment, index) => {
-                const isLast = index === message.segments.length - 1;
-                const isStreamingHere = message.status === "streaming" && isLast;
-                if (segment.type === "reasoning") {
-                  return showReasoning ? (
-                    <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}>
-                      <summary className="cursor-pointer text-[11px] font-medium text-text-muted flex items-center justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <span className={`material-symbols-outlined text-[13px] ${isStreamingHere ? "animate-spin text-primary" : ""}`}>psychology</span>
-                          <span>{isStreamingHere ? "Thinking…" : "Reasoning"}</span>
-                        </span>
-                        {segment.timestamp ? <span className="font-mono text-[10px] opacity-70">{formatMessageTime(segment.timestamp)}</span> : null}
-                      </summary>
-                      <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">
-                        {segment.content}
-                        {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
-                      </div>
-                    </details>
-                  ) : null;
-                }
-                if (segment.type === "tool") {
-                  return viewMode === "raw" ? <ChatToolCard key={segment.callId || index} segment={segment} messageCreatedAt={message.createdAt} /> : null;
-                }
-                return (
-                  <div key={`${segment.type}-${index}`} className="relative">
-                    <ChatMarkdown content={segment.content} onImageClick={onImageClick} />
-                    {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
-                  </div>
-                );
-              })}
-              {!message.segments.some((s) => s.type === "text") && content ? (
-                <div className="relative">
-                  <ChatMarkdown content={content} onImageClick={onImageClick} />
-                  {(message.status === "streaming" || message.status === "tool_calls") ? (
-                    <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : isUser ? (
-            <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div>
-          ) : (
-            <div>
-              <ChatMarkdown content={content} onImageClick={onImageClick} />
-              {(message.status === "streaming" || message.status === "tool_calls") ? (
-                <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span>
-              ) : null}
-            </div>
-          )}
-        </div>
-        {message.tokenUsage ? (
-          <p className="mt-2 text-[10px] opacity-60">
-            tokens: {message.tokenUsage.total_tokens ||
-              (message.tokenUsage.prompt_tokens || 0) +
-                (message.tokenUsage.completion_tokens || 0)}
-          </p>
-        ) : null}
-      </div>
-    </div>
-  );
-});
-
-// ── Memoized Left Sidebar Session Item Component ─────────────────────────────
-const SessionRailItem = memo(function SessionRailItem({
-  session,
-  active,
-  isRunning,
-  hasPendingAsk,
-  renameId,
-  renameValue,
-  onSelect,
-  onTogglePin,
-  onEdit,
-  onCopy,
-  onDelete,
-  onRenameChange,
-  onRenameSubmit,
-  onRenameCancel,
-}) {
-  return (
-    <div
-      className={`group rounded-xl border px-2.5 py-2 cursor-pointer transition ${
-        active
-          ? "border-primary/40 bg-primary/10 shadow-sm"
-          : isRunning
-            ? "border-primary/35 bg-primary/5 hover:bg-primary/10"
-            : "border-transparent hover:bg-sidebar hover:border-border"
-      }`}
-      onClick={() => onSelect(session.id)}
-    >
-      <div className="flex items-start gap-2">
-        <button
-          type="button"
-          className={`mt-0.5 material-symbols-outlined text-[16px] ${
-            session.pinned ? "text-primary" : "text-text-muted opacity-0 group-hover:opacity-100"
-          }`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onTogglePin(session);
-          }}
-          title="Pin"
-        >
-          keep
-        </button>
-        <div className="min-w-0 flex-1">
-          {renameId === session.id ? (
-            <input
-              autoFocus
-              value={renameValue}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => onRenameChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") onRenameSubmit(session.id);
-                if (e.key === "Escape") onRenameCancel();
-              }}
-              onBlur={() => onRenameSubmit(session.id)}
-              className="w-full rounded border border-border bg-background px-2 py-1 text-sm"
-            />
-          ) : (
-            <div className="flex items-center justify-between gap-1.5">
-              <p className="truncate text-sm font-medium">{session.title || "New chat"}</p>
-              {hasPendingAsk ? (
-                <span
-                  className="shrink-0 inline-flex items-center gap-1 rounded-md bg-amber-500/20 border border-amber-500/35 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400 animate-pulse"
-                  title="Agent is waiting for your answer in this session"
-                >
-                  <span className="material-symbols-outlined text-[12px]">help</span>
-                  Waiting
-                </span>
-              ) : isRunning ? (
-                <span
-                  className="shrink-0 inline-flex items-center gap-1 rounded-md bg-primary/20 border border-primary/30 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
-                  title="Session is actively running"
-                >
-                  <span className="relative flex size-1.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
-                    <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
-                  </span>
-                  Running
-                </span>
-              ) : null}
-            </div>
-          )}
-          <p className="truncate text-[11px] text-text-muted mt-0.5">
-            {session.model || "No model"} · {formatRelativeTime(session.updatedAt)}
-          </p>
-        </div>
-        <div className={`flex flex-col gap-0.5 transition-opacity ${active ? "opacity-80 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"}`}>
-          <button
-            type="button"
-            className="material-symbols-outlined text-[15px] text-text-muted hover:text-primary"
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit(session);
-            }}
-          >
-            edit
-          </button>
-          <button
-            type="button"
-            className="material-symbols-outlined text-[15px] text-text-muted hover:text-primary"
-            title="Duplicate session (new session with same name and path)"
-            aria-label="Duplicate session"
-            onClick={(e) => {
-              e.stopPropagation();
-              onCopy(session);
-            }}
-          >
-            content_copy
-          </button>
-          <button
-            type="button"
-            className="material-symbols-outlined text-[15px] text-text-muted hover:text-red-500"
-            title="Delete session"
-            aria-label="Delete session"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(session);
-            }}
-          >
-            delete
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-function SubAgentOverlay({ agent, onClose }) {
-  const [info, setInfo] = useState(null);
-  const [stopping, setStopping] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    const load = () => {
-      fetch(`/api/chat/subagents/${agent.id}`)
-        .then((r) => r.json())
-        .then((d) => { if (alive && !d.error) setInfo(d); })
-        .catch(() => {});
-    };
-    load();
-    const id = setInterval(load, 1500);
-    return () => { alive = false; clearInterval(id); };
-  }, [agent.id]);
-
-  const handleInterrupt = async () => {
-    setStopping(true);
-    try {
-      await fetch(`/api/chat/subagents/${agent.id}`, { method: 'DELETE' });
-      setInfo((prev) => (prev ? { ...prev, status: 'interrupted' } : prev));
-    } catch {
-      // ignore
-    } finally {
-      setStopping(false);
-    }
-  };
-
-  const textEvents = (info?.events || []).filter((e) => e.type === 'text' || e.type === 'message');
-  const lastText = textEvents.at(-1)?.data?.content || '';
-  const reasoning = (info?.events || []).filter((e) => e.type === 'reasoning').at(-1)?.data?.content || '';
-  const toolCount = (info?.events || []).filter((e) => e.type === 'tool_start').length;
-
-  return (
-    <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 p-4" onClick={onClose} role="dialog" aria-modal="true" aria-label="Sub-agent transcript">
-      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-2xl border border-border bg-surface shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <span className="material-symbols-outlined text-[20px] text-primary">account_tree</span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold">{agent.role || "Sub-agent"}</p>
-            <p className="truncate text-[11px] text-text-muted">{agent.task}</p>
-          </div>
-          <span className={`text-[11px] ${info?.status === 'running' ? 'text-primary' : info?.status === 'failed' ? 'text-red-500' : info?.status === 'interrupted' ? 'text-amber-500' : 'text-emerald-500'}`}>
-            {info?.status || "running"}
-          </span>
-          {info?.status === 'running' && (
-            <button
-              type="button"
-              onClick={handleInterrupt}
-              disabled={stopping}
-              className="flex items-center gap-1 rounded-md bg-red-500/10 border border-red-500/30 px-2 py-0.5 text-[11px] font-medium text-red-600 dark:text-red-400 hover:bg-red-500/20 transition disabled:opacity-50"
-              title="Interrupt this agent"
-            >
-              <span className="material-symbols-outlined text-[13px]">stop_circle</span>
-              <span>{stopping ? 'Stopping...' : 'Interrupt'}</span>
-            </button>
-          )}
-          <button onClick={onClose} className="text-text-muted hover:text-text-main"><span className="material-symbols-outlined text-[18px]">close</span></button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <div className="mx-auto max-w-3xl space-y-4">
-            {reasoning ? (
-              <details open className="rounded-xl border border-border bg-background/40 px-3 py-2">
-                <summary className="cursor-pointer text-[11px] font-medium text-text-muted">Reasoning</summary>
-                <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">{reasoning}</div>
-              </details>
-            ) : null}
-            <div className="whitespace-pre-wrap break-words text-sm leading-6">{lastText || "Working…"}</div>
-            {toolCount > 0 ? <p className="text-[11px] text-text-muted">{toolCount} tool call{toolCount > 1 ? "s" : ""}</p> : null}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AskWizard({ ask, onAnswer }) {
-  const questions = Array.isArray(ask.questions) ? ask.questions.filter((q) => q && q.question) : [];
-  const [idx, setIdx] = useState(0);
-  const [answers, setAnswers] = useState({});
-  const [custom, setCustom] = useState("");
-  const [submitted, setSubmitted] = useState(false);
-
-  if (questions.length === 0) return null;
-
-  const q = questions[idx];
-  const isLast = idx === questions.length - 1;
-  const multi = !!q.multiSelect;
-  const selected = answers[idx] || [];
-
-  const commitCustom = (base) => {
-    const v = custom.trim();
-    if (!v) return base;
-    const cur = base[idx] || [];
-    return multi ? { ...base, [idx]: [...cur.filter((x) => x !== v), v] } : { ...base, [idx]: [v] };
-  };
-
-  const submit = (final) => {
-    const all = final || answers;
-    const lines = questions.map((qq, i) => {
-      const a = all[i]?.length ? all[i].join(", ") : "(no answer)";
-      return `${qq.header || qq.question}: ${a}`;
-    });
-    setSubmitted(true);
-    onAnswer(questions.length === 1 ? (all[0]?.join(", ") || "") : lines.join("\n"));
-  };
-
-  const toggleOption = (o) => {
-    if (multi) {
-      setAnswers((a) => ({ ...a, [idx]: selected.includes(o) ? selected.filter((x) => x !== o) : [...selected, o] }));
-    } else {
-      const next = { ...answers, [idx]: [o] };
-      setAnswers(next);
-      if (questions.length === 1) submit(next);
-    }
-  };
-
-  if (submitted) {
-    return (
-      <div className="rounded-xl border border-primary/40 bg-primary/10 px-4 py-3">
-        <p className="text-[11px] text-text-muted">Answered ✓</p>
-      </div>
-    );
-  }
-
-  const hasOptions = (q.options || []).length > 0;
-
-  return (
-    <div className="rounded-xl border border-primary/40 bg-primary/10 px-4 py-3">
-      <div className="flex items-start gap-2">
-        <span className="material-symbols-outlined text-[20px] text-primary">help</span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            {q.header ? (
-              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">{q.header}</span>
-            ) : null}
-            {questions.length > 1 ? (
-              <span className="text-[11px] text-text-muted">{idx + 1}/{questions.length}</span>
-            ) : null}
-          </div>
-          <p className="mt-1.5 text-sm font-medium">{q.question}</p>
-
-          {hasOptions ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {q.options.map((o) => (
-                <Button
-                  key={o}
-                  size="sm"
-                  variant={selected.includes(o) ? "secondary" : "outline"}
-                  onClick={() => toggleOption(o)}
-                >
-                  {o}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-
-          <input
-            type="text"
-            value={custom}
-            onChange={(e) => setCustom(e.target.value)}
-            placeholder={hasOptions ? "Or type your own…" : "Type your answer…"}
-            className="mt-2.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (isLast) submit(commitCustom(answers));
-                else {
-                  setAnswers(commitCustom(answers));
-                  setCustom("");
-                  setIdx((i) => Math.min(questions.length - 1, i + 1));
-                }
-              }
-            }}
-          />
-
-          <div className="mt-3 flex items-center justify-between gap-2">
-            <Button size="sm" variant="ghost" disabled={idx === 0} onClick={() => setIdx((i) => Math.max(0, i - 1))}>
-              Prev
-            </Button>
-            {isLast ? (
-              <Button size="sm" onClick={() => submit(commitCustom(answers))}>Submit</Button>
-            ) : (
-              <Button
-                size="sm"
-                onClick={() => {
-                  setAnswers(commitCustom(answers));
-                  setCustom("");
-                  setIdx((i) => Math.min(questions.length - 1, i + 1));
-                }}
-              >
-                Next
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function ChatPageClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -732,6 +191,7 @@ export default function ChatPageClient() {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
   const [activeSessionId, setActiveSessionId] = useState(() => {
     if (urlSessionId) return urlSessionId;
     try {
@@ -745,11 +205,13 @@ export default function ChatPageClient() {
       return "";
     }
   });
+
   const [messages, setMessages] = useState([]);
   const messagesRef = useRef([]);
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [apiKey, setApiKey] = useState("");
@@ -776,7 +238,7 @@ export default function ChatPageClient() {
   useEffect(() => {
     sessionQueuesRef.current = sessionQueues;
   }, [sessionQueues]);
-  const [appNotice, setAppNotice] = useState(null); // { text: string, type: 'error' | 'warning' | 'info' | 'success' }
+  const [appNotice, setAppNotice] = useState(null);
   const noticeTimerRef = useRef(null);
 
   const setNotice = useCallback((text, type = "error") => {
@@ -812,7 +274,6 @@ export default function ChatPageClient() {
     setNotice(val, "error");
   }, [setNotice]);
 
-  const error = appNotice?.type === "error" ? appNotice.text : "";
   const [renameId, setRenameId] = useState("");
   const [renameValue, setRenameValue] = useState("");
   const [deleteConfirmSession, setDeleteConfirmSession] = useState(null);
@@ -843,7 +304,7 @@ export default function ChatPageClient() {
       return "raw";
     }
   });
-  const [imagePreview, setImagePreview] = useState(null); // { src, name }
+  const [imagePreview, setImagePreview] = useState(null);
   const [showReasoning, setShowReasoning] = useState(true);
   const [reasoningEffort, setReasoningEffort] = useState(() => {
     try {
@@ -878,6 +339,12 @@ export default function ChatPageClient() {
   useEffect(() => {
     asksRef.current = asks;
   }, [asks]);
+
+  // Docked bottom terminal state
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const toggleTerminal = useCallback(() => {
+    setTerminalOpen((prev) => !prev);
+  }, []);
 
   const pendingAskSessionIds = useMemo(() => {
     const sids = new Set();
@@ -918,12 +385,11 @@ export default function ChatPageClient() {
       }
       try {
         globalThis.localStorage?.setItem("chat.projectOpen", next ? "true" : "false");
-      } catch {
-        // ignore
-      }
+      } catch {}
       return next;
     });
   }, [projectTab]);
+
   const [projectInfo, setProjectInfo] = useState(null);
   const [projectRefresh, setProjectRefresh] = useState(0);
   const [pendingProject, setPendingProject] = useState(null);
@@ -931,12 +397,12 @@ export default function ChatPageClient() {
   const [codebaseEdit, setCodebaseEdit] = useState(false);
   const [codebaseValue, setCodebaseValue] = useState("");
   const [sessionModalOpen, setSessionModalOpen] = useState(false);
-  const [sessionModalMode, setSessionModalMode] = useState("create"); // create | edit
+  const [sessionModalMode, setSessionModalMode] = useState("create");
   const [sessionFormName, setSessionFormName] = useState("");
   const [sessionFormUrl, setSessionFormUrl] = useState("");
   const [sessionFormEditId, setSessionFormEditId] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
-  const [folderPickerTarget, setFolderPickerTarget] = useState("sessionModal"); // sessionModal | codebaseModal
+  const [folderPickerTarget, setFolderPickerTarget] = useState("sessionModal");
   const [mcpServers, setMcpServers] = useState([]);
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [skillsModalOpen, setSkillsModalOpen] = useState(false);
@@ -947,9 +413,7 @@ export default function ChatPageClient() {
       const res = await fetch("/api/chat/shortcodes");
       const data = await res.json().catch(() => ({}));
       if (Array.isArray(data.shortcodes)) setShortcodes(data.shortcodes);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, []);
 
   const [mcpForm, setMcpForm] = useState({ name: "", url: "", transport: "sse", command: "", args: "" });
@@ -981,10 +445,10 @@ export default function ChatPageClient() {
   const transcriptScrollRef = useRef(null);
   const listRef = useRef(null);
   const composerRef = useRef(null);
-  const websocketRef = useRef(new Map()); // runId → WebSocket
-  const reconnectTimerRef = useRef(new Map()); // runId → timer
-  const pollTimerRef = useRef(new Map()); // runId → polling timer
-  const liveRunRef = useRef(new Map()); // runId → live run context
+  const websocketRef = useRef(new Map());
+  const reconnectTimerRef = useRef(new Map());
+  const pollTimerRef = useRef(new Map());
+  const liveRunRef = useRef(new Map());
 
   activeSessionIdRef.current = activeSessionId;
 
@@ -1022,7 +486,6 @@ export default function ChatPageClient() {
     }).catch(() => {});
   }, [sessions]);
 
-  // Stable callback for clicking images in transcripts (prevents Markdown re-render)
   const handleImageClick = useCallback((src, name) => {
     setImagePreview({ src, name });
   }, []);
@@ -1030,49 +493,46 @@ export default function ChatPageClient() {
   const handleCopy = useCallback(async (text) => {
     try {
       await navigator.clipboard.writeText(text);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, []);
+
+  // Debounced auto-save draft to IndexedDB
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const timer = setTimeout(() => {
+      setCachedDraft(activeSessionId, draft, attachments);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [activeSessionId, draft, attachments]);
 
   useEffect(() => {
     try {
       globalThis.localStorage?.setItem("chat.agentRole", agentRole);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [agentRole]);
 
   useEffect(() => {
     try {
       globalThis.localStorage?.setItem("chat.accessMode", accessMode);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [accessMode]);
 
   useEffect(() => {
     try {
       globalThis.localStorage?.setItem("chat.maxSteps", String(maxSteps));
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [maxSteps]);
 
   useEffect(() => {
     try {
       globalThis.localStorage?.setItem("chat.viewMode", viewMode);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [viewMode]);
 
   useEffect(() => {
     try {
       globalThis.localStorage?.setItem("chat.reasoningEffort", reasoningEffort);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }, [reasoningEffort]);
 
   useEffect(() => {
@@ -1089,9 +549,6 @@ export default function ChatPageClient() {
     return messages.filter((m) => m.role !== "tool" || (viewMode === "raw" && !embeddedTools.has(m.tool_call_id)));
   }, [messages, viewMode]);
 
-
-
-  // Strictly bound to active session; never falls back to an unrelated previous session's path
   const activeSessionCodebase = useMemo(
     () => activeSession?.workspacePath || activeSession?.codebase || "",
     [activeSession?.workspacePath, activeSession?.codebase]
@@ -1102,7 +559,6 @@ export default function ChatPageClient() {
     [sessionQueues, activeSessionId]
   );
 
-  // Stable session ordering by pin and update time; does not jump running sessions to top
   const sortedSessions = useMemo(() => {
     const q = search.trim().toLowerCase();
     const list = q
@@ -1225,7 +681,6 @@ export default function ChatPageClient() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Failed to load session");
 
-    // Always update list record so codebase / workspacePath / title are fresh
     setSessions((prev) => {
       const exists = prev.some((s) => s.id === id);
       if (exists) {
@@ -1234,9 +689,9 @@ export default function ChatPageClient() {
       return [{ ...data, messages: undefined }, ...prev];
     });
 
-    // Only update view state if user is still on this session
     if (activeSessionIdRef.current !== id) return data;
-    setMessages(data.messages || []);
+    const msgs = data.messages || [];
+    setMessages(msgs);
     setTasks(Array.isArray(data.tasks) ? data.tasks : []);
     const team = data.teamState || {};
     const isLive = isRunActiveFor(id);
@@ -1263,6 +718,14 @@ export default function ChatPageClient() {
         [id]: prev[id]?.length ? prev[id] : savedQueue,
       }));
     }
+
+    // Persist transcript cache to IndexedDB
+    setCachedTranscript(id, {
+      messages: msgs,
+      tasks: data.tasks || [],
+      teamState: data.teamState || null,
+    }).catch(() => {});
+
     return data;
   }, []);
 
@@ -1278,7 +741,6 @@ export default function ChatPageClient() {
         }
         return next;
       });
-      // Strict session isolation: background runs never hijack active UI view
       if (!run || run.sessionId !== activeSessionIdRef.current) return;
       setMessages(run.messages || []);
       setIsSending(!!run.isSending);
@@ -1554,8 +1016,6 @@ export default function ChatPageClient() {
           setRunningSessionIds(merged);
           runningSessionIdsRef.current = merged;
 
-          // Multi-session background queue processor:
-          // Check all sessions with queued messages regardless of focus/active tab
           const allQueueSids = Object.keys(sessionQueuesRef.current || {});
           for (const sid of allQueueSids) {
             const q = sessionQueuesRef.current[sid] || [];
@@ -1569,7 +1029,6 @@ export default function ChatPageClient() {
             }
           }
 
-          // Zombie run safeguard: if UI thinks activeSession is running, but server does not have it active
           const curSid = activeSessionIdRef.current;
           if (curSid && isSendingRef.current && !serverActive.includes(curSid)) {
             fetch(`/api/chat/runs/${curSid}?bySession=1`)
@@ -1589,9 +1048,7 @@ export default function ChatPageClient() {
               .catch(() => {});
           }
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     };
     fetchActiveRuns();
     const interval = setInterval(fetchActiveRuns, 3000);
@@ -1922,9 +1379,7 @@ export default function ChatPageClient() {
         liveRunRef.current.set(data.runId, liveCtx);
       }
       connectRunSocket(data.runId, 0, liveRunRef.current.get(data.runId));
-    } catch {
-      // Ignore sync failures
-    }
+    } catch {}
   }, [agentRole, loadSessionDetail]);
 
   useEffect(() => {
@@ -2039,9 +1494,7 @@ export default function ChatPageClient() {
           workspacePath = inspData.workspacePath;
           projectMeta = { name: inspData.name, packageName: inspData.packageName };
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
     try {
       if (sessionModalMode === "edit" && sessionFormEditId) {
@@ -2138,18 +1591,36 @@ export default function ChatPageClient() {
         window.history.replaceState(null, "", url.toString());
       }
     } catch {}
+
     const targetSession = sessionsRef.current.find((s) => s.id === id);
     const targetPath = targetSession?.workspacePath || targetSession?.codebase || "";
     setCodebase(targetPath);
     setCodebaseValue(targetPath);
-    setDraft("");
-    setAttachments([]);
-    setTasks([]);
-    setSubAgents([]);
-    setTeamTasks([]);
-    setTeamRoster([]);
-    setTeamMessages([]);
     setError("");
+
+    // Instant restoration from IndexedDB cache
+    getCachedTranscript(id).then((cached) => {
+      if (activeSessionIdRef.current === id && cached?.messages?.length) {
+        setMessages(cached.messages);
+        if (cached.tasks) setTasks(cached.tasks);
+        if (cached.teamState?.roster) setTeamRoster(cached.teamState.roster);
+        if (cached.teamState?.tasks) setTeamTasks(cached.teamState.tasks);
+        if (cached.teamState?.messages) setTeamMessages(cached.teamState.messages);
+      }
+    }).catch(() => {});
+
+    getCachedDraft(id).then((cachedDraft) => {
+      if (activeSessionIdRef.current === id) {
+        if (cachedDraft?.draft || cachedDraft?.attachments?.length) {
+          setDraft(cachedDraft.draft || "");
+          setAttachments(cachedDraft.attachments || []);
+        } else {
+          setDraft("");
+          setAttachments([]);
+        }
+      }
+    }).catch(() => {});
+
     const run = getChatRun(id);
     const targetHasAsk = (asksRef.current || []).some((a) => a.sessionId === id);
     const targetHasApproval = (approvalsRef.current || []).some((a) => a.sessionId === id);
@@ -2158,6 +1629,7 @@ export default function ChatPageClient() {
       waiting: targetHasAsk || targetHasApproval,
       notice: "",
     }));
+
     if (run?.isSending && run.sessionId === id) {
       setMessages(run.messages || []);
       setIsSending(true);
@@ -2174,7 +1646,7 @@ export default function ChatPageClient() {
         .catch(() => {});
     }
   }, [loadSessionDetail, syncActiveSessionRunState]);
-  // Sync active session when URL query parameter changes (e.g. from Redmine links)
+
   useEffect(() => {
     if (!urlSessionId) return;
     if (urlSessionId === activeSessionIdRef.current) return;
@@ -2192,9 +1664,7 @@ export default function ChatPageClient() {
               setSessions((prev) => (prev.some((s) => s.id === data.id) ? prev : [data, ...prev]));
             }
           }
-        } catch {
-          // quiet fallback
-        }
+        } catch {}
       }
       if (!cancelled) {
         handleSelectSession(target?.id || urlSessionId);
@@ -2207,7 +1677,6 @@ export default function ChatPageClient() {
     };
   }, [urlSessionId, handleSelectSession]);
 
-  // Sync session workspace when urlWorkspace parameter is passed
   useEffect(() => {
     if (!urlWorkspace || urlSessionId) return;
     const match = sessions.find(
@@ -2217,7 +1686,6 @@ export default function ChatPageClient() {
       handleSelectSession(match.id);
     }
   }, [urlWorkspace, urlSessionId, sessions, handleSelectSession]);
-
 
   const handleDeleteSession = useCallback((target) => {
     const sessionObj = typeof target === "object" && target !== null
@@ -2254,6 +1722,10 @@ export default function ChatPageClient() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to delete");
       }
+
+      deleteCachedTranscript(id);
+      clearCachedDraft(id);
+
       setSessionQueues((prev) => {
         const copy = { ...prev };
         delete copy[id];
@@ -2481,7 +1953,7 @@ export default function ChatPageClient() {
       if (timer) { clearTimeout(timer); reconnectTimerRef.current.delete(runId); }
       const socket = websocketRef.current.get(runId);
       if (socket) {
-        try { socket.onclose = null; socket.onerror = null; socket.close(); } catch { /* ignore */ }
+        try { socket.onclose = null; socket.onerror = null; socket.close(); } catch {}
         websocketRef.current.delete(runId);
       }
       return;
@@ -2491,7 +1963,7 @@ export default function ChatPageClient() {
     for (const timer of reconnectTimerRef.current.values()) clearTimeout(timer);
     reconnectTimerRef.current.clear();
     for (const socket of websocketRef.current.values()) {
-      try { socket.onclose = null; socket.onerror = null; socket.close(); } catch { /* ignore */ }
+      try { socket.onclose = null; socket.onerror = null; socket.close(); } catch {}
     }
     websocketRef.current.clear();
   };
@@ -2537,9 +2009,7 @@ export default function ChatPageClient() {
               return;
             }
           }
-        } catch {
-          // ignore
-        }
+        } catch {}
         if (live.isActive()) {
           const timer = setTimeout(poll, 1000);
           pollTimerRef.current.set(runId, timer);
@@ -2691,6 +2161,13 @@ export default function ChatPageClient() {
     }).catch(() => {});
     await persistChatMessages(sessionId, finalMessages).catch(() => {});
 
+    // Save to IndexedDB transcript cache
+    setCachedTranscript(sessionId, {
+      messages: finalMessages,
+      tasks,
+      teamState: { roster: teamRoster, tasks: teamTasks, messages: teamMessages },
+    }).catch(() => {});
+
     patchChatRun(sessionId, {
       messages: finalMessages,
       assistantText: summary,
@@ -2753,7 +2230,6 @@ export default function ChatPageClient() {
     const curQueue = sessionQueuesRef.current[targetId] || [];
     if (curQueue.length === 0) return;
 
-    // Check if THIS specific session is active/sending
     if (
       isRunActiveFor(targetId) ||
       getChatRun(targetId)?.isSending ||
@@ -2796,11 +2272,9 @@ export default function ChatPageClient() {
       handleSelectSession(sid);
     }
 
-    // 1. Capture existing run info BEFORE clearing it
     const existingRun = getChatRun(sid);
     const existingRunId = existingRun?.runId;
 
-    // 2. Abort and stop transport for the old run
     if (existingRunId) {
       stopRunTransport(existingRunId);
       fetch(`/api/chat/runs/${existingRunId}`, { method: "DELETE" }).catch(() => {});
@@ -2815,7 +2289,6 @@ export default function ChatPageClient() {
       setAgentStatus("");
     }
 
-    // 3. Remove from queue state and persist immediately
     setSessionQueues((prev) => {
       const cur = prev[sid] || [];
       const updated = cur.filter((x) => x.id !== item.id);
@@ -2824,7 +2297,6 @@ export default function ChatPageClient() {
       return { ...prev, [sid]: updated };
     });
 
-    // 4. Immediately trigger execution with force
     setTimeout(() => {
       sendMessageRef.current?.({ queuedItem: item, force: true });
     }, 40);
@@ -2861,6 +2333,7 @@ export default function ChatPageClient() {
         });
         setDraft("");
         setAttachments([]);
+        clearCachedDraft(sessionId);
         setError("Message queued for this session. Will send automatically when current response finishes.");
         return;
       }
@@ -2951,15 +2424,14 @@ export default function ChatPageClient() {
       if (isTargetActive && !queuedItem) {
         setDraft("");
         setAttachments([]);
+        clearCachedDraft(sessionId);
       }
       if (userText) {
         setInputHistory((prev) => {
           const next = prev[0] === userText ? prev : [userText, ...prev.filter((x) => x !== userText)].slice(0, 50);
           try {
             globalThis.localStorage?.setItem("chat.inputHistory", JSON.stringify(next));
-          } catch {
-            // ignore
-          }
+          } catch {}
           return next;
         });
       }
@@ -3093,6 +2565,13 @@ export default function ChatPageClient() {
         sessionMeta?.title === "New chat" || !sessionMeta?.title
           ? makeSessionTitle(titleSeed)
           : sessionMeta.title;
+
+      setCachedTranscript(sessionId, {
+        messages: finalMessages,
+        tasks,
+        teamState: { roster: teamRoster, tasks: teamTasks, messages: teamMessages },
+      }).catch(() => {});
+
       patchChatRun(sessionId, {
         messages: finalMessages,
         assistantText: finalText,
@@ -3386,6 +2865,13 @@ export default function ChatPageClient() {
   }, [isSending, sessionQueues, activeSessionId, activeSession?.model, apiKey, processNextQueuedMessage]);
 
   const handleKeyDown = (event) => {
+    // Ctrl+` or Cmd+` toggles bottom terminal
+    if ((event.ctrlKey || event.metaKey) && (event.key === "`" || event.key === "~")) {
+      event.preventDefault();
+      toggleTerminal();
+      return;
+    }
+
     if (commandOptions.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -3537,9 +3023,7 @@ export default function ChatPageClient() {
       const res = await fetch("/api/chat/mcp");
       const data = await res.json().catch(() => ({}));
       if (res.ok) setMcpServers(data.servers || []);
-    } catch {
-      // ignore
-    }
+    } catch {}
   };
 
   const addMcpServer = async () => {
@@ -3651,6 +3135,7 @@ export default function ChatPageClient() {
         if (!current) throw new Error("No active session to copy");
         await handleCopySession(current);
       }
+      else if (name === "terminal") toggleTerminal();
       else if (name === "clear") await sessionAction("clear");
       else if (name === "undo") await sessionAction("undo");
       else if (name === "fork") await sessionAction("fork", { title: value });
@@ -3729,25 +3214,6 @@ export default function ChatPageClient() {
       else if (name === "mcp") {
         await loadMcpServers();
         setMcpModalOpen(true);
-      } else if (name === "goal") {
-        const [sub, ...rest] = value.split(/\s+/);
-        const arg = rest.join(" ");
-        if (!sub) throw new Error("Usage: /goal <text> | status | pause | resume | clear");
-        let action = "set";
-        let text = value;
-        if (sub === "status") action = "status";
-        else if (sub === "pause") action = "pause";
-        else if (sub === "resume") action = "resume";
-        else if (sub === "clear") action = "clear";
-        else if (sub === "set") { action = "set"; text = arg; if (!text) throw new Error("/goal set <text>"); }
-        const res = await fetch(`/api/chat/sessions/${activeSessionId}/goal`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action, text }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || "Unable to update goal");
-        setError(data.goal ? `Goal: ${data.goal.text} (${data.goal.status}, ${data.goal.iterations} iterations)` : "Goal cleared");
       } else if (name === "verify") {
         setVerifyMode((v) => !v);
         setError(verifyMode ? "Verification disabled for next run" : "Verification enabled for next run");
@@ -3782,195 +3248,62 @@ export default function ChatPageClient() {
 
   return (
     <div className="flex flex-1 min-h-0 h-full w-full bg-background text-text-main overflow-hidden">
-      {/* Sessions rail */}
-      <aside className="hidden md:flex w-72 shrink-0 flex-col border-r border-border bg-sidebar/40">
-        <div className="p-3 border-b border-border space-y-2">
-          <Button className="w-full" icon="add" onClick={openCreateModal}>
-            New chat
-          </Button>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search sessions…"
-            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-          />
-        </div>
-        <div ref={listRef} className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-          {sortedSessions.length === 0 ? (
-            <p className="text-xs text-text-muted p-3">No sessions yet.</p>
-          ) : (
-            sortedSessions.map((session) => (
-              <SessionRailItem
-                key={session.id}
-                session={session}
-                active={session.id === activeSessionId}
-                isRunning={runningSessionIds.has(session.id)}
-                hasPendingAsk={pendingAskSessionIds.has(session.id)}
-                renameId={renameId}
-                renameValue={renameValue}
-                onSelect={handleSelectSession}
-                onTogglePin={handleTogglePin}
-                onEdit={openEditModal}
-                onCopy={handleCopySession}
-                onDelete={handleDeleteSession}
-                onRenameChange={setRenameValue}
-                onRenameSubmit={handleRename}
-                onRenameCancel={() => setRenameId("")}
-              />
-            ))
-          )}
-        </div>
-      </aside>
+      {/* Sessions rail component */}
+      <ChatSessionRail
+        sessions={sortedSessions}
+        activeSessionId={activeSessionId}
+        runningSessionIds={runningSessionIds}
+        pendingAskSessionIds={pendingAskSessionIds}
+        search={search}
+        setSearch={setSearch}
+        renameId={renameId}
+        renameValue={renameValue}
+        onOpenCreateModal={openCreateModal}
+        onSelectSession={handleSelectSession}
+        onTogglePin={handleTogglePin}
+        onEditSession={openEditModal}
+        onCopySession={handleCopySession}
+        onDeleteSession={handleDeleteSession}
+        onRenameChange={setRenameValue}
+        onRenameSubmit={handleRename}
+        onRenameCancel={() => setRenameId("")}
+        listRef={listRef}
+      />
 
-      {/* Main */}
+      {/* Main Area */}
       <section className="flex flex-1 min-w-0 flex-col">
-        <header className="shrink-0 flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5 lg:px-4">
-          <button
-            type="button"
-            onClick={() => setModelModalOpen(true)}
-            className="flex min-w-0 items-center gap-2 rounded-xl border border-border bg-sidebar/50 px-3 py-2 text-left hover:bg-sidebar"
-          >
-            <span className="material-symbols-outlined text-[18px] text-primary">smart_toy</span>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">{activeSession?.model || "Select model"}</p>
-              <p className="truncate text-[11px] text-text-muted">Click to change</p>
-            </div>
-          </button>
-
-          {activeSessionCodebase ? (
-            <button
-              type="button"
-              onClick={() => { setCodebaseValue(activeSessionCodebase); setCodebaseEdit(true); }}
-              className="hidden min-w-0 max-w-[16rem] items-center gap-1.5 rounded-xl border border-border bg-sidebar/50 px-3 py-2 text-left hover:bg-sidebar md:flex"
-              title="Session codebase / repository URL — click to edit"
-            >
-              <span className="material-symbols-outlined text-[15px] text-primary">link</span>
-              <span className="truncate font-mono text-[11px] text-text-muted">{activeSessionCodebase}</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => { setCodebaseValue(""); setCodebaseEdit(true); }}
-              className="hidden items-center gap-1.5 rounded-xl border border-dashed border-border px-3 py-2 text-[11px] text-text-muted hover:bg-sidebar md:flex"
-              title="Set a codebase / repository URL for this session"
-            >
-              <span className="material-symbols-outlined text-[15px]">link</span>
-              Codebase
-            </button>
-          )}
-
-          <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
-            <div className="flex rounded-full border border-border overflow-hidden text-[11px]">
-              <button
-                type="button"
-                onClick={() => setViewMode("raw")}
-                className={`px-2.5 py-1.5 ${
-                  viewMode === "raw"
-                    ? "bg-primary/15 text-primary font-medium"
-                    : "text-text-muted hover:bg-sidebar"
-                }`}
-                title="Show tool calls in transcript"
-              >
-                Raw
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("chat")}
-                className={`px-2.5 py-1.5 border-l border-border ${
-                  viewMode === "chat"
-                    ? "bg-primary/15 text-primary font-medium"
-                    : "text-text-muted hover:bg-sidebar"
-                }`}
-                title="Hide tool calls — only user/assistant messages"
-              >
-                Only chat
-              </button>
-            </div>
-            <Button variant="ghost" size="sm" icon="tune" onClick={() => setParamsOpen((v) => !v)}>
-              Params
-            </Button>
-            <Button variant="ghost" size="sm" icon="psychology" onClick={() => setShowReasoning((value) => !value)}>
-              {showReasoning ? "Reasoning" : "Hidden"}
-            </Button>
-            <Button variant="ghost" size="sm" icon="extension" onClick={() => { loadMcpServers(); setMcpModalOpen(true); }}>
-              MCP
-            </Button>
-            <Button variant={skillsModalOpen ? "secondary" : "ghost"} size="sm" icon="auto_awesome" onClick={() => setSkillsModalOpen(true)} title="Agent Skills Hub">
-              Skills
-            </Button>
-            <Button variant={shortcodesModalOpen ? "secondary" : "ghost"} size="sm" icon="bookmark" onClick={() => setShortcodesModalOpen(true)} title="Shortcode Prompts">
-              Shortcodes
-            </Button>
-            {activeSessionCodebase ? (
-              <>
-                <Button
-                  variant={projectOpen && projectTab === "terminal" ? "secondary" : "ghost"}
-                  size="sm"
-                  icon="terminal"
-                  onClick={() => toggleProject("terminal")}
-                  title="Terminal (auto cd to project path)"
-                >
-                  Terminal
-                </Button>
-                <Button
-                  variant={projectOpen && projectTab === "scripts" ? "secondary" : "ghost"}
-                  size="sm"
-                  icon="play_circle"
-                  onClick={() => toggleProject("scripts")}
-                  title="Running Scripts & Processes"
-                >
-                  Scripts
-                </Button>
-                <Button
-                  variant={projectOpen && projectTab === "git" ? "secondary" : "ghost"}
-                  size="sm"
-                  icon="fork_right"
-                  onClick={() => toggleProject("git")}
-                  title="Source Control (Git)"
-                >
-                  Git
-                </Button>
-                <Button
-                  variant={projectOpen && projectTab === "graph" ? "secondary" : "ghost"}
-                  size="sm"
-                  icon="schema"
-                  onClick={() => toggleProject("graph")}
-                  title="Git Graph & History"
-                >
-                  Graph
-                </Button>
-                <Button
-                  variant={projectOpen && !["git", "scripts", "graph", "terminal"].includes(projectTab) ? "secondary" : "ghost"}
-                  size="sm"
-                  icon="folder_open"
-                  onClick={() => toggleProject("info")}
-                  title="Project Workspace"
-                >
-                  Project
-                </Button>
-              </>
-            ) : null}
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="content_copy"
-              onClick={() => activeSession && handleCopySession(activeSession)}
-              title="Duplicate session (new session with same name and path)"
-              disabled={!activeSession}
-            >
-              Duplicate
-            </Button>
-            <Button variant="ghost" size="sm" icon="download" onClick={() => handleExport("md")}>
-              MD
-            </Button>
-            <Button variant="ghost" size="sm" icon="data_object" onClick={() => handleExport("json")}>
-              JSON
-            </Button>
-            <Button className="md:hidden" variant="ghost" size="sm" icon="add" onClick={openCreateModal}>
-              New
-            </Button>
-          </div>
-        </header>
+        {/* Modular Header */}
+        <ChatHeader
+          activeSession={activeSession}
+          activeSessionCodebase={activeSessionCodebase}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+          paramsOpen={paramsOpen}
+          setParamsOpen={setParamsOpen}
+          showReasoning={showReasoning}
+          setShowReasoning={setShowReasoning}
+          skillsModalOpen={skillsModalOpen}
+          setSkillsModalOpen={setSkillsModalOpen}
+          shortcodesModalOpen={shortcodesModalOpen}
+          setShortcodesModalOpen={setShortcodesModalOpen}
+          terminalOpen={terminalOpen}
+          toggleTerminal={toggleTerminal}
+          projectOpen={projectOpen}
+          projectTab={projectTab}
+          toggleProject={toggleProject}
+          onOpenModelModal={() => setModelModalOpen(true)}
+          onOpenCodebaseEdit={() => {
+            setCodebaseValue(activeSessionCodebase || "");
+            setCodebaseEdit(true);
+          }}
+          onOpenMcpModal={() => {
+            loadMcpServers();
+            setMcpModalOpen(true);
+          }}
+          onDuplicateSession={() => activeSession && handleCopySession(activeSession)}
+          onExport={handleExport}
+          onOpenCreateModal={openCreateModal}
+        />
 
         {isSending ? (
           <div className="shrink-0 border-b border-border bg-primary/5 px-4 py-1.5 text-[11px] text-primary flex items-center gap-2">
@@ -4128,78 +3461,38 @@ export default function ChatPageClient() {
           </div>
         ) : null}
 
-        <div className="relative flex-1 min-h-0 flex flex-col">
-          <div ref={transcriptScrollRef} onScroll={handleTranscriptScroll} className="flex-1 overflow-y-auto custom-scrollbar px-3 py-4 lg:px-6">
-            {messages.length === 0 ? (
-              <div className="flex min-h-[50vh] flex-col items-center justify-center text-center gap-4">
-                <div className="size-14 rounded-2xl border border-border bg-sidebar flex items-center justify-center">
-                  <span className="material-symbols-outlined text-[28px] text-primary">chat</span>
-                </div>
-                <div>
-                  <h2 className="text-xl font-semibold">Start a conversation</h2>
-                  <p className="mt-1 text-sm text-text-muted max-w-md">
-                    Multi-session chat over your connected providers. History is stored in SQLite.
-                  </p>
-                </div>
-                <div className="flex flex-wrap justify-center gap-2 max-w-xl">
-                  {[
-                    "Explain this error and propose a fix",
-                    "Write a unit test for this function",
-                    "Review this design for hidden risks",
-                  ].map((chip) => (
-                    <button
-                      key={chip}
-                      type="button"
-                      onClick={() => setDraft(chip)}
-                      className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-sidebar"
-                    >
-                      {chip}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
-                {visibleMessages.map((message, idx) => (
-                  <ChatMessageRow
-                    key={message.id}
-                    message={message}
-                    globalIndex={idx}
-                    activeSessionModel={activeSession?.model}
-                    isSending={isSending}
-                    viewMode={viewMode}
-                    showReasoning={showReasoning}
-                    onCopy={handleCopy}
-                    onEdit={handleEditMessage}
-                    onRegenerate={handleRegenerate}
-                    onImageClick={handleImageClick}
-                  />
-                ))}
-                <div ref={bottomRef} />
-              </div>
-            )}
-          </div>
-          {showScrollBottomBtn && (
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
-              <button
-                type="button"
-                onClick={handleJumpToBottom}
-                className="flex items-center gap-1.5 rounded-full border border-primary/35 bg-surface/95 backdrop-blur-md px-3.5 py-1.5 text-xs font-medium text-text-main shadow-lg hover:bg-surface-2 hover:border-primary/60 transition-all cursor-pointer"
-                title="Scroll to bottom"
-              >
-                <span className="material-symbols-outlined text-[16px] text-primary">arrow_downward</span>
-                <span>Latest messages</span>
-                {isSending && (
-                  <span className="relative flex size-2 ml-0.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
-                    <span className="relative inline-flex size-2 rounded-full bg-primary" />
-                  </span>
-                )}
-              </button>
-            </div>
-          )}
-        </div>
+        {/* Modular Message List */}
+        <MessageList
+          messages={messages}
+          visibleMessages={visibleMessages}
+          activeSessionModel={activeSession?.model}
+          isSending={isSending}
+          viewMode={viewMode}
+          showReasoning={showReasoning}
+          transcriptScrollRef={transcriptScrollRef}
+          onTranscriptScroll={handleTranscriptScroll}
+          bottomRef={bottomRef}
+          showScrollBottomBtn={showScrollBottomBtn}
+          onJumpToBottom={handleJumpToBottom}
+          onSetDraft={setDraft}
+          onCopy={handleCopy}
+          onEditMessage={handleEditMessage}
+          onRegenerate={handleRegenerate}
+          onImageClick={handleImageClick}
+        />
 
+        {/* Docked Terminal Panel */}
+        <DockedTerminalPanel
+          isOpen={terminalOpen}
+          onClose={() => setTerminalOpen(false)}
+          workspacePath={activeSessionCodebase}
+          onSendToChat={(msg) => {
+            setDraft(msg);
+            sendMessage({ userText: msg });
+          }}
+        />
+
+        {/* Composer & Overlay Area */}
         <div className="shrink-0 border-t border-border px-3 py-3 lg:px-6">
           {attachments.length > 0 ? (
             <div className="mx-auto mb-2 flex max-w-3xl flex-wrap gap-2">
@@ -4212,7 +3505,7 @@ export default function ChatPageClient() {
                     <button
                       type="button"
                       onClick={() => handleImageClick(a.dataUrl, a.name || "Image")}
-                      className="shrink-0"
+                      className="shrink-0 cursor-pointer"
                       title="View image"
                     >
                       <img src={a.dataUrl} alt={a.name} className="h-10 w-10 rounded-lg object-cover border border-border" />
@@ -4224,7 +3517,7 @@ export default function ChatPageClient() {
                   <button
                     type="button"
                     onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
-                    className="material-symbols-outlined text-[14px] text-text-muted"
+                    className="material-symbols-outlined text-[14px] text-text-muted transition hover:text-red-500 cursor-pointer"
                   >
                     close
                   </button>
@@ -4232,6 +3525,7 @@ export default function ChatPageClient() {
               ))}
             </div>
           ) : null}
+
           {agentRole === "team" || teamTasks.length > 0 || (teamRoster.length > 0 && teamRoster.some((r) => r.name !== "orchestrator" && r.status !== "idle")) ? (
             <TeamPanel
               roster={teamRoster.length > 0 ? teamRoster : [
@@ -4262,31 +3556,19 @@ export default function ChatPageClient() {
               {subAgents.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                   <span className="font-medium text-text-muted">Agents:</span>
-                  {subAgents.map((agent) => <button key={agent.id} type="button" title={agent.task} onClick={() => setViewingAgent(agent)} className="rounded-full border border-border bg-background px-2 py-0.5 hover:bg-sidebar"><span className={agent.status === "running" ? "text-primary" : agent.status === "failed" ? "text-red-500" : "text-emerald-500"}>●</span> {agent.role}</button>)}
+                  {subAgents.map((agent) => <button key={agent.id} type="button" title={agent.task} onClick={() => setViewingAgent(agent)} className="rounded-full border border-border bg-background px-2 py-0.5 hover:bg-sidebar transition cursor-pointer"><span className={agent.status === "running" ? "text-primary" : agent.status === "failed" ? "text-red-500" : "text-emerald-500"}>●</span> {agent.role}</button>)}
                 </div>
               ) : null}
             </div>
           ) : null}
-          {activeSessionApprovals.map((approval) => (
-            <div key={approval.id} className="mx-auto mb-2 max-w-3xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-              <div className="flex items-start gap-2">
-                <span className="material-symbols-outlined text-[20px] text-amber-500">shield</span>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">Allow {approval.tool} to run?</p>
-                  <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-background/60 p-2.5 font-mono text-[11px] leading-5">{approval.arguments || "{}"}</pre>
-                  <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                    <Button size="sm" onClick={() => resolveGate(approval, "allow")}>Allow</Button>
-                    <Button size="sm" variant="outline" onClick={() => resolveGate(approval, "allow", true)}>Always allow</Button>
-                    <Button size="sm" variant="ghost" onClick={() => resolveGate(approval, "deny")}>Deny</Button>
-                    <span className="text-[10px] text-text-muted">Auto-deny after 120s</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-          {activeSessionAsks.map((ask) => (
-            <AskWizard key={ask.id} ask={ask} onAnswer={(answer) => resolveGate(ask, answer)} />
-          ))}
+
+          {/* Ask & Approval Overlay */}
+          <AskApprovalOverlay
+            approvals={activeSessionApprovals}
+            asks={activeSessionAsks}
+            onResolveGate={resolveGate}
+          />
+
           {activeQueue.length > 0 && (
             <div className="mx-auto mb-2 max-w-3xl rounded-xl border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-xs backdrop-blur-sm">
               <div className="flex items-center justify-between font-medium text-primary">
@@ -4297,7 +3579,7 @@ export default function ChatPageClient() {
                 <button
                   type="button"
                   onClick={clearQueue}
-                  className="text-[11px] text-text-muted hover:text-red-400 transition-colors"
+                  className="text-[11px] text-text-muted hover:text-red-400 transition-colors cursor-pointer"
                 >
                   Clear all
                 </button>
@@ -4316,7 +3598,7 @@ export default function ChatPageClient() {
                       <button
                         type="button"
                         onClick={() => runQueuedItemImmediately(item)}
-                        className="flex items-center gap-1 rounded bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-300 hover:bg-sky-500/25 transition-colors"
+                        className="flex items-center gap-1 rounded bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-300 hover:bg-sky-500/25 transition-colors cursor-pointer"
                         title="Send this message now"
                       >
                         <span className="material-symbols-outlined text-[13px]">play_arrow</span>
@@ -4325,7 +3607,7 @@ export default function ChatPageClient() {
                       <button
                         type="button"
                         onClick={() => removeFromQueue(item.id)}
-                        className="text-text-muted hover:text-red-400 transition-colors p-0.5 rounded"
+                        className="text-text-muted hover:text-red-400 transition-colors p-0.5 rounded cursor-pointer"
                         title="Remove from queue"
                       >
                         <span className="material-symbols-outlined text-[14px]">close</span>
@@ -4336,6 +3618,8 @@ export default function ChatPageClient() {
               </div>
             </div>
           )}
+
+          {/* Composer */}
           <div
             ref={composerRef}
             className="relative mx-auto max-w-3xl rounded-2xl border border-border bg-sidebar/40 p-2 shadow-sm"
@@ -4344,13 +3628,17 @@ export default function ChatPageClient() {
             }}
             onDrop={handleComposerDrop}
           >
-            <SlashCommandPalette matches={commandOptions} selected={commandIndex} onPick={(command) => {
-              if (command.isShortcode) {
-                setDraft(`/shortcode ${command.tag} `);
-              } else {
-                setDraft(`/${command.name}${command.args ? " " : ""}`);
-              }
-            }} />
+            <SlashCommandPalette
+              matches={commandOptions}
+              selected={commandIndex}
+              onPick={(command) => {
+                if (command.isShortcode) {
+                  setDraft(`/shortcode ${command.tag} `);
+                } else {
+                  setDraft(`/${command.name}${command.args ? " " : ""}`);
+                }
+              }}
+            />
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -4369,7 +3657,7 @@ export default function ChatPageClient() {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="rounded-lg p-2 text-text-muted hover:bg-sidebar hover:text-text-main"
+                  className="rounded-lg p-2 text-text-muted hover:bg-sidebar hover:text-text-main transition cursor-pointer"
                   title="Attach or paste images"
                 >
                   <span className="material-symbols-outlined text-[20px]">image</span>
@@ -4384,7 +3672,7 @@ export default function ChatPageClient() {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="hidden rounded-lg p-2 text-text-muted hover:bg-sidebar hover:text-text-main sm:block"
+                  className="hidden rounded-lg p-2 text-text-muted hover:bg-sidebar hover:text-text-main sm:block transition cursor-pointer"
                   title="Attach or drop files"
                 >
                   <span className="material-symbols-outlined text-[20px]">attach_file</span>
@@ -4400,7 +3688,7 @@ export default function ChatPageClient() {
                       if (rid) fetch(`/api/chat/runs/${rid}/gates`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoApprove: true }) }).catch(() => {});
                     }
                   }}
-                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${autoApprove ? "bg-emerald-500/10 text-emerald-600" : "text-text-muted hover:bg-sidebar"}`}
+                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex transition cursor-pointer ${autoApprove ? "bg-emerald-500/10 text-emerald-600" : "text-text-muted hover:bg-sidebar"}`}
                   title="Auto-approve all tools for this run"
                 >
                   <span className="material-symbols-outlined text-[15px]">{autoApprove ? "task_alt" : "shield"}</span>
@@ -4410,7 +3698,7 @@ export default function ChatPageClient() {
                   <button
                     type="button"
                     onClick={() => setRoleMenuOpen((value) => !value)}
-                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium text-text-muted hover:bg-sidebar hover:text-text-main"
+                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium text-text-muted hover:bg-sidebar hover:text-text-main transition cursor-pointer"
                     title="Choose agent role"
                   >
                     <span className="material-symbols-outlined text-[16px] text-primary">
@@ -4430,7 +3718,7 @@ export default function ChatPageClient() {
                             updateAgentRole(role.id);
                             setRoleMenuOpen(false);
                           }}
-                          className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${agentRole === role.id ? "border-primary/35 bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
+                          className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors cursor-pointer ${agentRole === role.id ? "border-primary/35 bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
                         >
                           <span className="material-symbols-outlined mt-0.5 text-[17px] text-primary">{role.icon}</span>
                           <span className="min-w-0 flex-1">
@@ -4446,7 +3734,7 @@ export default function ChatPageClient() {
                 <button
                   type="button"
                   onClick={() => setAccessMode((value) => value === "full" ? "sandbox" : "full")}
-                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] ${accessMode === "full" ? "bg-amber-500/10 text-amber-700 dark:text-amber-300" : "text-text-muted hover:bg-sidebar"}`}
+                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] transition cursor-pointer ${accessMode === "full" ? "bg-amber-500/10 text-amber-700 dark:text-amber-300" : "text-text-muted hover:bg-sidebar"}`}
                   title={accessMode === "full" ? "Full: bash and file writes enabled" : "Sandbox: read-only host tools"}
                 >
                   <span className="material-symbols-outlined text-[15px]">{accessMode === "full" ? "admin_panel_settings" : "shield"}</span>
@@ -4455,7 +3743,7 @@ export default function ChatPageClient() {
                 <button
                   type="button"
                   onClick={() => setShowReasoning((value) => !value)}
-                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] ${showReasoning ? "text-primary" : "text-text-muted hover:bg-sidebar"}`}
+                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] transition cursor-pointer ${showReasoning ? "text-primary" : "text-text-muted hover:bg-sidebar"}`}
                   title="Show or hide reasoning"
                 >
                   <span className="material-symbols-outlined text-[15px]">psychology</span>
@@ -4465,7 +3753,7 @@ export default function ChatPageClient() {
                   <button
                     type="button"
                     onClick={() => setEffortMenuOpen((value) => !value)}
-                    className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex ${reasoningEffort ? "text-primary" : "text-text-muted hover:bg-sidebar"}`}
+                    className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] sm:flex transition cursor-pointer ${reasoningEffort ? "text-primary" : "text-text-muted hover:bg-sidebar"}`}
                     title="Reasoning effort for the next turn"
                   >
                     <span className="material-symbols-outlined text-[15px]">tune</span>
@@ -4483,7 +3771,7 @@ export default function ChatPageClient() {
                             setReasoningEffort(option.value);
                             setEffortMenuOpen(false);
                           }}
-                          className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${reasoningEffort === option.value ? "border-primary/35 bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
+                          className={`flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors cursor-pointer ${reasoningEffort === option.value ? "border-primary/35 bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
                         >
                           <span className={`material-symbols-outlined text-[15px] ${reasoningEffort === option.value ? "text-primary" : "text-text-muted"}`}>{reasoningEffort === option.value ? "check" : "radio_button_unchecked"}</span>
                           <span className="min-w-0 flex-1">
@@ -4515,7 +3803,7 @@ export default function ChatPageClient() {
             </div>
           </div>
           <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-text-muted">
-            Enter send · Shift+Enter newline · ↑/↓ history · Esc stop · / for commands · {AGENT_ROLES.find((role) => role.id === agentRole)?.label} · {accessMode} access
+            Enter send · Shift+Enter newline · ↑/↓ history · Esc stop · Ctrl+` terminal · / for commands · {AGENT_ROLES.find((role) => role.id === agentRole)?.label} · {accessMode} access
           </p>
         </div>
       </section>
@@ -4556,8 +3844,6 @@ export default function ChatPageClient() {
         }}
       />
 
-
-
       <ModelSelectModal
         isOpen={modelModalOpen}
         onClose={() => setModelModalOpen(false)}
@@ -4585,7 +3871,7 @@ export default function ChatPageClient() {
                 <span className="material-symbols-outlined text-[20px] text-primary">extension</span>
                 <p className="text-sm font-semibold">MCP Servers</p>
               </div>
-              <button onClick={() => setMcpModalOpen(false)} className="text-text-muted hover:text-text-main">
+              <button onClick={() => setMcpModalOpen(false)} className="text-text-muted hover:text-text-main transition cursor-pointer">
                 <span className="material-symbols-outlined text-[18px]">close</span>
               </button>
             </div>
@@ -4602,14 +3888,14 @@ export default function ChatPageClient() {
                 <button
                   type="button"
                   onClick={() => setMcpForm((f) => ({ ...f, transport: "sse" }))}
-                  className={`px-3 py-1.5 ${mcpForm.transport === "sse" ? "bg-primary/15 text-primary font-medium" : "text-text-muted hover:bg-sidebar"}`}
+                  className={`px-3 py-1.5 transition ${mcpForm.transport === "sse" ? "bg-primary/15 text-primary font-medium" : "text-text-muted hover:bg-sidebar"}`}
                 >
                   SSE / HTTP
                 </button>
                 <button
                   type="button"
                   onClick={() => setMcpForm((f) => ({ ...f, transport: "stdio" }))}
-                  className={`px-3 py-1.5 border-l border-border ${mcpForm.transport === "stdio" ? "bg-primary/15 text-primary font-medium" : "text-text-muted hover:bg-sidebar"}`}
+                  className={`px-3 py-1.5 border-l border-border transition ${mcpForm.transport === "stdio" ? "bg-primary/15 text-primary font-medium" : "text-text-muted hover:bg-sidebar"}`}
                 >
                   Stdio
                 </button>
@@ -4658,7 +3944,7 @@ export default function ChatPageClient() {
               {mcpProbe?.error ? <p className="text-[11px] text-red-500">{mcpProbe.error}</p> : null}
             </div>
 
-            <div className="max-h-56 space-y-1 overflow-y-auto">
+            <div className="max-h-56 space-y-1 overflow-y-auto custom-scrollbar">
               {mcpServers.length === 0 ? (
                 <p className="py-3 text-center text-xs text-text-muted">No MCP servers yet.</p>
               ) : (
@@ -4666,19 +3952,15 @@ export default function ChatPageClient() {
                   <div key={s.id} className="flex items-center gap-2 rounded-lg border border-border px-2.5 py-2">
                     <button
                       onClick={() => toggleMcpServer(s)}
-                      className={`size-3.5 rounded-full ${s.enabled ? "bg-emerald-500" : "bg-border"}`}
+                      className={`size-3.5 rounded-full transition ${s.enabled ? "bg-emerald-500" : "bg-border"}`}
                       title={s.enabled ? "Enabled" : "Disabled"}
                     />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-xs font-medium">{s.name}</p>
-                      <p className="truncate font-mono text-[10px] text-text-muted">{s.url || s.command}</p>
+                      <p className="truncate text-[10px] text-text-muted font-mono">{s.transport === "sse" ? s.url : `${s.command} ${(s.args || []).join(" ")}`}</p>
                     </div>
-                    <span className="text-[10px] uppercase text-text-muted">{s.transport}</span>
-                    <button
-                      onClick={() => removeMcpServer(s.id)}
-                      className="material-symbols-outlined text-[15px] text-text-muted hover:text-red-500"
-                    >
-                      delete
+                    <button onClick={() => removeMcpServer(s.id)} className="text-text-muted hover:text-red-500 transition cursor-pointer" title="Delete MCP server">
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
                     </button>
                   </div>
                 ))
@@ -4758,7 +4040,7 @@ export default function ChatPageClient() {
                   setFolderPickerTarget("sessionModal");
                   setFolderPickerOpen(true);
                 }}
-                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-sidebar px-2.5 py-2 text-xs font-medium text-text-main hover:bg-surface-2 hover:border-primary/50 transition shadow-sm"
+                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-sidebar px-2.5 py-2 text-xs font-medium text-text-main hover:bg-surface-2 hover:border-primary/50 transition shadow-sm cursor-pointer"
                 title="Open file manager / browse local project folder"
               >
                 <span className="material-symbols-outlined text-[17px] text-primary">folder_open</span>
@@ -4825,7 +4107,7 @@ export default function ChatPageClient() {
                   setFolderPickerTarget("codebaseModal");
                   setFolderPickerOpen(true);
                 }}
-                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-sidebar px-2.5 py-2 text-xs font-medium text-text-main hover:bg-surface-2 hover:border-primary/50 transition shadow-sm"
+                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-sidebar px-2.5 py-2 text-xs font-medium text-text-main hover:bg-surface-2 hover:border-primary/50 transition shadow-sm cursor-pointer"
                 title="Open file manager / browse local project folder"
               >
                 <span className="material-symbols-outlined text-[17px] text-primary">folder_open</span>
@@ -4902,7 +4184,7 @@ export default function ChatPageClient() {
                 <a
                   href={imagePreview.src}
                   download={imagePreview.name || "image.png"}
-                  className="rounded-lg p-1.5 text-text-muted hover:bg-sidebar hover:text-primary"
+                  className="rounded-lg p-1.5 text-text-muted hover:bg-sidebar hover:text-primary transition"
                   title="Download"
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -4910,7 +4192,7 @@ export default function ChatPageClient() {
                 </a>
                 <button
                   type="button"
-                  className="rounded-lg p-1.5 text-text-muted hover:bg-sidebar hover:text-text-main"
+                  className="rounded-lg p-1.5 text-text-muted hover:bg-sidebar hover:text-text-main transition cursor-pointer"
                   onClick={() => setImagePreview(null)}
                   title="Close"
                 >

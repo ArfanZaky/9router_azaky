@@ -798,8 +798,27 @@ export async function executeTool(name, args = {}, ctx = {}) {
       case "write_file": {
         const p = resolveSafePath(args.path, workspace, accessMode);
         fs.mkdirSync(path.dirname(p), { recursive: true });
+        let previousContent = null;
+        let isNew = true;
+        if (fs.existsSync(p)) {
+          isNew = false;
+          try {
+            const st = fs.statSync(p);
+            if (st.isFile() && st.size <= 2_000_000) {
+              previousContent = fs.readFileSync(p, "utf8");
+            }
+          } catch {
+            // ignore
+          }
+        }
         fs.writeFileSync(p, String(args.content ?? ""), "utf8");
-        return JSON.stringify({ ok: true, path: p, bytes: Buffer.byteLength(String(args.content ?? "")) });
+        return JSON.stringify({
+          ok: true,
+          path: p,
+          bytes: Buffer.byteLength(String(args.content ?? "")),
+          isNew,
+          previousContent: previousContent !== null ? truncate(previousContent, MAX_READ) : null,
+        });
       }
       case "list_dir": {
         const p = resolveSafePath(args.path || ".", workspace, accessMode);
