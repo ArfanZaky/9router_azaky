@@ -402,6 +402,7 @@ const SessionRailItem = memo(function SessionRailItem({
   onSelect,
   onTogglePin,
   onEdit,
+  onCopy,
   onDelete,
   onRenameChange,
   onRenameSubmit,
@@ -477,6 +478,18 @@ const SessionRailItem = memo(function SessionRailItem({
             }}
           >
             edit
+          </button>
+          <button
+            type="button"
+            className="material-symbols-outlined text-[15px] text-text-muted hover:text-primary"
+            title="Copy session (new session with same name and path)"
+            aria-label="Copy session"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCopy(session);
+            }}
+          >
+            content_copy
           </button>
           <button
             type="button"
@@ -2213,6 +2226,64 @@ export default function ChatPageClient() {
     }
   }, [deleteConfirmSession]);
 
+  const handleCopySession = useCallback(async (session) => {
+    if (!session) return;
+    try {
+      setError("");
+      const sessionName = session.title || "New chat";
+      const workspacePath = session.workspacePath || session.codebase || "";
+      const codebase = session.codebase || session.workspacePath || "";
+      const { queuedMessages, ...cleanProjectMeta } = session.projectMeta || {};
+
+      const res = await fetch("/api/chat/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: sessionName,
+          model: session.model || activeSession?.model || "",
+          providerId: session.providerId || activeSession?.providerId || "",
+          systemPrompt: session.systemPrompt || "",
+          params: session.params || DEFAULT_PARAMS,
+          codebase,
+          workspacePath,
+          projectMeta: cleanProjectMeta,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to copy session");
+
+      setSessions((prev) => [data, ...prev]);
+      setActiveSessionId(data.id);
+      activeSessionIdRef.current = data.id;
+      try {
+        globalThis.localStorage?.setItem("chat.activeSessionId", data.id);
+        if (typeof window !== "undefined") {
+          const url = new URL(window.location.href);
+          url.searchParams.set("sessionId", data.id);
+          url.searchParams.delete("session");
+          window.history.replaceState(null, "", url.toString());
+        }
+      } catch {}
+
+      setCodebase(workspacePath || codebase);
+      setCodebaseValue(workspacePath || codebase);
+      setMessages([]);
+      setDraft("");
+      setAttachments([]);
+      setTasks([]);
+      setSubAgents([]);
+      setTeamRoster([]);
+      setTeamTasks([]);
+      setTeamMessages([]);
+      if (cleanProjectMeta.agentRole) {
+        setAgentRole(cleanProjectMeta.agentRole);
+      }
+      setNotice(`Copied session: ${sessionName}`, "success");
+    } catch (e) {
+      setError(textValue(e.message));
+    }
+  }, [activeSession?.model, activeSession?.providerId, setNotice, setError]);
+
   const handleRename = useCallback(async (id) => {
     const title = renameValue.trim();
     if (!title) return;
@@ -3486,6 +3557,11 @@ export default function ChatPageClient() {
         const list = CHAT_COMMANDS.map((command) => `/${command.name}${command.args ? ` ${command.args}` : ""} — ${command.summary}`).join("\n");
         setMessages((prev) => [...prev, { id: `sys_${Date.now()}`, role: "system", content: list, status: "done", createdAt: new Date().toISOString() }]);
       } else if (name === "new") await handleNewChat();
+      else if (name === "copy") {
+        const current = sessions.find((s) => s.id === activeSessionId) || activeSession;
+        if (!current) throw new Error("No active session to copy");
+        await handleCopySession(current);
+      }
       else if (name === "clear") await sessionAction("clear");
       else if (name === "undo") await sessionAction("undo");
       else if (name === "fork") await sessionAction("fork", { title: value });
@@ -3619,6 +3695,7 @@ export default function ChatPageClient() {
                 onSelect={handleSelectSession}
                 onTogglePin={handleTogglePin}
                 onEdit={openEditModal}
+                onCopy={handleCopySession}
                 onDelete={handleDeleteSession}
                 onRenameChange={setRenameValue}
                 onRenameSubmit={handleRename}

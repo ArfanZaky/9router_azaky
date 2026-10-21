@@ -3,6 +3,7 @@
 export const CHAT_COMMANDS = [
   { name: "help", summary: "List chat commands" },
   { name: "new", summary: "Start a new chat" },
+  { name: "copy", summary: "Create new session with same name and path" },
   { name: "clear", summary: "Clear this transcript" },
   { name: "undo", summary: "Remove the latest exchange" },
   { name: "fork", args: "[title]", summary: "Fork this conversation" },
