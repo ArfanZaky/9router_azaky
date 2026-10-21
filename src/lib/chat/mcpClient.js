@@ -6,6 +6,7 @@
 // shot per call for HTTP, and keep a short-lived child for stdio.
 
 import { spawn } from "node:child_process";
+import { normalizeStdioArgs } from "./mcpArgsHelper.js";
 
 const PROTOCOL_VERSION = "2024-11-05";
 const TIMEOUT_MS = 60_000;
@@ -97,9 +98,12 @@ function stdioRpc(command, args, method, params, env = {}) {
     });
     const id = nextId();
     let buffer = "";
+    let stderr = "";
     let settled = false;
+    child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString("utf8")).slice(-2000); });
+    const failure = (message) => ({ error: { message: stderr.trim() ? `${message}: ${stderr.trim().slice(-600)}` : message } });
     const timer = setTimeout(() => {
-      if (!settled) { settled = true; try { child.kill(); } catch { /* ignore */ } resolve({ error: { message: "stdio MCP timeout" } }); }
+      if (!settled) { settled = true; try { child.kill(); } catch { /* ignore */ } resolve(failure("stdio MCP timeout")); }
     }, TIMEOUT_MS);
 
     child.stdout.on("data", (chunk) => {
@@ -124,10 +128,10 @@ function stdioRpc(command, args, method, params, env = {}) {
       }
     });
     child.on("error", (err) => {
-      if (!settled) { settled = true; clearTimeout(timer); resolve({ error: { message: err.message } }); }
+      if (!settled) { settled = true; clearTimeout(timer); resolve(failure(err.message)); }
     });
     child.on("close", () => {
-      if (!settled) { settled = true; clearTimeout(timer); resolve({ error: { message: "stdio MCP exited before response" } }); }
+      if (!settled) { settled = true; clearTimeout(timer); resolve(failure("stdio MCP exited before response")); }
     });
 
     // Initialize first (required by spec).
@@ -141,8 +145,11 @@ function stdioRpc(command, args, method, params, env = {}) {
 // ── Public API ──────────────────────────────────────────────────────────
 export async function listTools(server) {
   if (server.transport === "stdio") {
-    const msg = await stdioRpc(server.command, server.args, "tools/list", {}, server.env || {});
-    return (msg?.result?.tools || []).map((t) => ({
+    const args = normalizeStdioArgs(server.command, server.args);
+    const msg = await stdioRpc(server.command, args, "tools/list", {}, server.env || {});
+    if (msg?.error) throw new Error(msg.error.message || "MCP tools/list failed");
+    if (!Array.isArray(msg?.result?.tools)) throw new Error("MCP tools/list returned no tool inventory");
+    return msg.result.tools.map((t) => ({
       name: t.name,
       description: t.description || "",
       inputSchema: t.inputSchema || { type: "object", properties: {}, additionalProperties: true },
@@ -157,7 +164,8 @@ export async function listTools(server) {
   await httpJsonRpc(server.url, "notifications/initialized", {}, { sessionId }).catch(() => {});
   const list = await httpJsonRpc(server.url, "tools/list", {}, { sessionId });
   if (list?.data?.error) throw new Error(list.data.error.message || "tools/list failed");
-  return (list?.data?.result?.tools || []).map((t) => ({
+  if (!Array.isArray(list?.data?.result?.tools)) throw new Error("MCP tools/list returned no tool inventory");
+  return list.data.result.tools.map((t) => ({
     name: t.name,
     description: t.description || "",
     inputSchema: t.inputSchema || { type: "object", properties: {}, additionalProperties: true },
@@ -174,7 +182,8 @@ export async function callTool(server, name, args = {}) {
     }
   }
   if (server.transport === "stdio") {
-    const msg = await stdioRpc(server.command, server.args, "tools/call", { name, arguments: cleanedArgs }, server.env || {});
+    const stdioArgs = normalizeStdioArgs(server.command, server.args);
+    const msg = await stdioRpc(server.command, stdioArgs, "tools/call", { name, arguments: cleanedArgs }, server.env || {});
     return normalizeToolResult(msg);
   }
   const { data, sessionId } = await httpJsonRpc(server.url, "initialize", {

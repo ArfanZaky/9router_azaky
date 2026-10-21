@@ -5,6 +5,8 @@
       "enabled": true,
       "command": "uvx",
       "args": [
+        "--python",
+        "3.12",
         "--with",
         "browser-use==0.1.43",
         "mcp-browser-use"

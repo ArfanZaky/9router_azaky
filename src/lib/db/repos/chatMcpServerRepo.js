@@ -1,16 +1,20 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson } from "../helpers/jsonCol.js";
+import { normalizeStdioArgs } from "../../chat/mcpArgsHelper.js";
 
 function toServer(row) {
   if (!row) return null;
+  const rawArgs = parseJson(row.args, []);
+  const command = row.command || "";
+  const args = normalizeStdioArgs(command, rawArgs);
   return {
     id: row.id,
     name: row.name,
     url: row.url,
     transport: row.transport,
-    command: row.command || "",
-    args: parseJson(row.args, []),
+    command,
+    args,
     env: parseJson(row.env, {}),
     enabled: row.enabled === 1,
     createdAt: row.createdAt,
@@ -32,13 +36,17 @@ export async function getChatMcpServer(id) {
 export async function createChatMcpServer(data = {}) {
   const db = await getAdapter();
   const now = new Date().toISOString();
+  const command = data.command || "";
+  const rawArgs = Array.isArray(data.args) ? data.args : [];
+  const args = normalizeStdioArgs(command, rawArgs);
+
   const server = {
     id: data.id || uuidv4(),
     name: String(data.name || "").trim(),
     url: String(data.url || "").trim(),
     transport: data.transport === "stdio" ? "stdio" : "sse",
-    command: data.command || "",
-    args: Array.isArray(data.args) ? data.args : [],
+    command,
+    args,
     env: data.env && typeof data.env === "object" ? data.env : {},
     enabled: data.enabled !== false,
     createdAt: now,
@@ -57,15 +65,19 @@ export async function createChatMcpServer(data = {}) {
 
 export async function updateChatMcpServer(id, data = {}) {
   const db = await getAdapter();
-  const prev = getChatMcpServer(id);
+  const prev = await getChatMcpServer(id);
   if (!prev) return null;
+  const command = data.command !== undefined ? data.command : prev.command;
+  const rawArgs = Array.isArray(data.args) ? data.args : prev.args;
+  const args = normalizeStdioArgs(command, rawArgs);
+
   const merged = {
     ...prev,
     name: data.name !== undefined ? String(data.name).trim() : prev.name,
     url: data.url !== undefined ? String(data.url).trim() : prev.url,
     transport: data.transport === "stdio" ? "stdio" : data.transport === "sse" ? "sse" : prev.transport,
-    command: data.command !== undefined ? data.command : prev.command,
-    args: Array.isArray(data.args) ? data.args : prev.args,
+    command,
+    args,
     env: data.env && typeof data.env === "object" ? data.env : prev.env,
     enabled: data.enabled !== undefined ? !!data.enabled : prev.enabled,
     updatedAt: new Date().toISOString(),
