@@ -3,7 +3,7 @@ import {
   getChatShortcode,
   updateChatShortcode,
   deleteChatShortcode,
-} from "@/lib/localDb";
+} from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

@@ -6,13 +6,15 @@ import path from "node:path";
 let tempDir;
 let originalDataDir;
 let db;
+let localDb;
 
 beforeAll(async () => {
   originalDataDir = process.env.DATA_DIR;
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "9router-shortcode-test-"));
   process.env.DATA_DIR = tempDir;
   vi.resetModules();
-  db = await import("@/lib/db/index.js");
+  db = await import("../../src/lib/db/index.js");
+  localDb = await import("../../src/lib/localDb.js");
   await db.initDb();
 });
 
@@ -92,6 +94,17 @@ describe("SlashCommandPalette shortcode integration contract", () => {
 
     const emptyMatches = commandMatches("/shortcode unknown-xyz", sampleShortcodes);
     expect(emptyMatches.length).toBe(0);
+  });
+});
+
+describe("localDb barrel re-export contract", () => {
+  it("exports all shortcode CRUD functions from @/lib/localDb", () => {
+    expect(typeof localDb.listChatShortcodes).toBe("function");
+    expect(typeof localDb.getChatShortcode).toBe("function");
+    expect(typeof localDb.getChatShortcodeByTag).toBe("function");
+    expect(typeof localDb.createChatShortcode).toBe("function");
+    expect(typeof localDb.updateChatShortcode).toBe("function");
+    expect(typeof localDb.deleteChatShortcode).toBe("function");
   });
 });
 

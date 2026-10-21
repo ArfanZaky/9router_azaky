@@ -27,6 +27,8 @@ export {
    clearChatGoal, bumpChatGoalIteration, completeChatGoal,
    listChatMcpServers, getChatMcpServer, createChatMcpServer,
    updateChatMcpServer, deleteChatMcpServer,
+  listChatShortcodes, getChatShortcode, getChatShortcodeByTag,
+  createChatShortcode, updateChatShortcode, deleteChatShortcode,
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
   getImageAsset, addImageAssets,
   listVideoPromptProjects, getVideoPromptProject, createVideoPromptProject,
