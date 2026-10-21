@@ -11,6 +11,7 @@ import SlashCommandPalette, { CHAT_COMMANDS, commandMatches } from "./SlashComma
 import ProjectSidebar from "./ProjectSidebar";
 import FolderPickerModal from "./FolderPickerModal";
 import SkillsModal from "./SkillsModal";
+import ShortcodesModal from "./ShortcodesModal";
 import {
   abortChatRun,
   buildStopSummary,
@@ -939,6 +940,18 @@ export default function ChatPageClient() {
   const [mcpServers, setMcpServers] = useState([]);
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [skillsModalOpen, setSkillsModalOpen] = useState(false);
+  const [shortcodesModalOpen, setShortcodesModalOpen] = useState(false);
+  const [shortcodes, setShortcodes] = useState([]);
+  const loadShortcodes = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/shortcodes");
+      const data = await res.json().catch(() => ({}));
+      if (Array.isArray(data.shortcodes)) setShortcodes(data.shortcodes);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const [mcpForm, setMcpForm] = useState({ name: "", url: "", transport: "sse", command: "", args: "" });
   const [mcpProbe, setMcpProbe] = useState(null);
   const [commandIndex, setCommandIndex] = useState(0);
@@ -1116,7 +1129,7 @@ export default function ChatPageClient() {
     !!activeSession?.model &&
     !!apiKey &&
     (draft.trim().length > 0 || attachments.length > 0);
-  const commandOptions = useMemo(() => commandMatches(draft), [draft]);
+  const commandOptions = useMemo(() => commandMatches(draft, shortcodes), [draft, shortcodes]);
 
   const scrollToBottom = useCallback((smooth = false) => {
     bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
@@ -1495,6 +1508,7 @@ export default function ChatPageClient() {
         const validStored = storedId && list.some((s) => s.id === storedId) ? storedId : null;
         const bootId = validUrl || validStored || (activeSessionIdRef.current && list.some((s) => s.id === activeSessionIdRef.current) ? activeSessionIdRef.current : null) || list[0]?.id;
         fetch("/api/chat/mcp").then((r) => r.json()).then((d) => { if (!cancelled && d.servers) setMcpServers(d.servers); }).catch(() => {});
+        fetch("/api/chat/shortcodes").then((r) => r.json()).then((d) => { if (!cancelled && d.shortcodes) setShortcodes(d.shortcodes); }).catch(() => {});
         if (!cancelled && bootId) {
           activeSessionIdRef.current = bootId;
           setActiveSessionId(bootId);
@@ -2816,7 +2830,7 @@ export default function ChatPageClient() {
     }, 40);
   }, [persistSessionQueue, handleSelectSession]);
 
-  const sendMessage = async ({ regenerate = false, sourceMessages = null, queuedItem = null, force = false } = {}) => {
+  const sendMessage = async ({ regenerate = false, sourceMessages = null, queuedItem = null, force = false, userText: overrideUserText = null } = {}) => {
     const sessionId = queuedItem?.sessionId || activeSessionIdRef.current;
     const targetSession = sessions.find((s) => s.id === sessionId) || activeSession;
     const modelToUse = targetSession?.model || activeSession?.model;
@@ -2910,7 +2924,7 @@ export default function ChatPageClient() {
       if (lastUserIdx < 0) return;
       workingMessages = workingMessages.slice(0, lastUserIdx + 1);
     } else {
-      const userText = queuedItem ? (queuedItem.text || "").trim() : draft.trim();
+      const userText = overrideUserText != null ? overrideUserText.trim() : (queuedItem ? (queuedItem.text || "").trim() : draft.trim());
       const userAttachments = queuedItem ? (queuedItem.attachments || []) : attachments;
       if (!userText && userAttachments.length === 0) return;
       const docList = userAttachments.filter((a) => a.docPath);
@@ -3386,12 +3400,20 @@ export default function ChatPageClient() {
       if (event.key === "Tab") {
         event.preventDefault();
         const command = commandOptions[commandIndex];
-        setDraft(`/${command.name}${command.args ? " " : ""}`);
+        if (command?.isShortcode) {
+          setDraft(`/shortcode ${command.tag} `);
+        } else if (command) {
+          setDraft(`/${command.name}${command.args ? " " : ""}`);
+        }
         return;
       }
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
+      if (commandOptions.length > 0 && commandOptions[commandIndex]?.isShortcode && draft.trim() === "/shortcode") {
+        runCommand(`/shortcode ${commandOptions[commandIndex].tag}`);
+        return;
+      }
       if (draft.trim().startsWith("/")) runCommand(draft);
       else if (canSend) sendMessage();
       return;
@@ -3680,6 +3702,30 @@ export default function ChatPageClient() {
         const current = sessions.find((s) => s.id === activeSessionId);
         if (current) openEditModal(current);
       } else if (name === "skills" || name === "skill") setSkillsModalOpen(true);
+      else if (name === "shortcode" || name === "shortcodes") {
+        if (!value) {
+          setShortcodesModalOpen(true);
+        } else {
+          const [targetTag, ...rest] = value.split(/\s+/);
+          const cleanTag = targetTag.toLowerCase().replace(/^\/+/, "");
+          let found = shortcodes.find((sc) => sc.tag.toLowerCase() === cleanTag);
+          if (!found) {
+            try {
+              const res = await fetch(`/api/chat/shortcodes?tag=${encodeURIComponent(cleanTag)}`);
+              if (res.ok) {
+                const data = await res.json().catch(() => null);
+                if (data?.shortcode) found = data.shortcode;
+              }
+            } catch {}
+          }
+          if (!found) {
+            throw new Error(`Shortcode "${cleanTag}" not found. Type /shortcode to view all.`);
+          }
+          const extra = rest.join(" ").trim();
+          const expandedText = extra ? `${found.description}\n\n${extra}` : found.description;
+          await sendMessage({ userText: expandedText });
+        }
+      }
       else if (name === "mcp") {
         await loadMcpServers();
         setMcpModalOpen(true);
@@ -3851,6 +3897,9 @@ export default function ChatPageClient() {
             </Button>
             <Button variant={skillsModalOpen ? "secondary" : "ghost"} size="sm" icon="auto_awesome" onClick={() => setSkillsModalOpen(true)} title="Agent Skills Hub">
               Skills
+            </Button>
+            <Button variant={shortcodesModalOpen ? "secondary" : "ghost"} size="sm" icon="bookmark" onClick={() => setShortcodesModalOpen(true)} title="Shortcode Prompts">
+              Shortcodes
             </Button>
             {activeSessionCodebase ? (
               <>
@@ -4295,7 +4344,13 @@ export default function ChatPageClient() {
             }}
             onDrop={handleComposerDrop}
           >
-            <SlashCommandPalette matches={commandOptions} selected={commandIndex} onPick={(command) => setDraft(`/${command.name}${command.args ? " " : ""}`)} />
+            <SlashCommandPalette matches={commandOptions} selected={commandIndex} onPick={(command) => {
+              if (command.isShortcode) {
+                setDraft(`/shortcode ${command.tag} `);
+              } else {
+                setDraft(`/${command.name}${command.args ? " " : ""}`);
+              }
+            }} />
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -4488,6 +4543,20 @@ export default function ChatPageClient() {
         onClose={() => setSkillsModalOpen(false)}
         onInsertPrompt={(p) => setDraft((d) => d ? `${d}\n\n${p}` : p)}
       />
+
+      <ShortcodesModal
+        isOpen={shortcodesModalOpen}
+        onClose={() => {
+          setShortcodesModalOpen(false);
+          loadShortcodes();
+        }}
+        onSelectShortcode={(sc) => {
+          setDraft(`/shortcode ${sc.tag}`);
+          loadShortcodes();
+        }}
+      />
+
+
 
       <ModelSelectModal
         isOpen={modelModalOpen}

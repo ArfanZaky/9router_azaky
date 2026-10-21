@@ -2,6 +2,7 @@
 
 export const CHAT_COMMANDS = [
   { name: "help", summary: "List chat commands" },
+  { name: "shortcode", args: "[tag]", summary: "Insert or manage saved shortcode prompts" },
   { name: "new", summary: "Start a new chat" },
   { name: "duplicate", summary: "Duplicate active session with same name and path" },
   { name: "copy", summary: "Create new session with same name and path" },
@@ -27,13 +28,84 @@ export const CHAT_COMMANDS = [
   { name: "compact", summary: "Compress transcript: summarize old messages, keep recent ones verbatim" },
 ];
 
-export function commandMatches(value) {
-  if (!value.startsWith("/") || value.includes(" ") || value.includes("\n")) return [];
-  const query = value.slice(1).toLowerCase();
+export function commandMatches(value, shortcodes = []) {
+  if (!value.startsWith("/") || value.includes("\n")) return [];
+  const text = value.slice(1);
+  const spaceIdx = text.indexOf(" ");
+
+  // Shortcode suggestion when user types "/shortcode" or "/shortcode <option>"
+  if (text.startsWith("shortcode ") || text === "shortcode") {
+    const option = spaceIdx >= 0 ? text.slice(spaceIdx + 1).trim().toLowerCase() : "";
+    const filtered = (shortcodes || []).filter((sc) => {
+      if (!option) return true;
+      return (
+        sc.tag.toLowerCase().includes(option) ||
+        (sc.description || "").toLowerCase().includes(option)
+      );
+    });
+
+    const shortcodeItems = filtered.map((sc) => ({
+      name: `shortcode ${sc.tag}`,
+      tag: sc.tag,
+      description: sc.description,
+      summary: sc.description.length > 70 ? `${sc.description.slice(0, 70)}…` : sc.description,
+      isShortcode: true,
+    }));
+
+    if (text === "shortcode") {
+      return [
+        { name: "shortcode", args: "[tag]", summary: "Open shortcode manager or insert a saved shortcode" },
+        ...shortcodeItems,
+      ];
+    }
+
+    return shortcodeItems;
+  }
+
+  // Normal slash command matching (before space)
+  if (value.includes(" ")) return [];
+  const query = text.toLowerCase();
   return CHAT_COMMANDS.filter((command) => command.name.startsWith(query));
 }
 
 export default function SlashCommandPalette({ matches, selected, onPick }) {
   if (!matches.length) return null;
-  return <div role="listbox" className="absolute bottom-full left-0 right-0 z-40 mb-3 max-h-64 overflow-auto rounded-xl border border-primary/35 bg-surface p-1.5 shadow-[0_20px_55px_rgba(0,0,0,0.65)] ring-1 ring-black/30">{matches.map((command, index) => <button key={command.name} type="button" role="option" aria-selected={selected === index} onMouseDown={(event) => { event.preventDefault(); onPick(command); }} className={`flex w-full items-baseline gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${selected === index ? "border-primary/35 bg-surface-2" : "border-transparent hover:bg-surface-2"}`}><span className="font-mono text-xs font-semibold text-primary">/{command.name}{command.args ? ` ${command.args}` : ""}</span><span className="truncate text-[11px] text-text-muted">{command.summary}</span></button>)}</div>;
+  return (
+    <div
+      role="listbox"
+      className="absolute bottom-full left-0 right-0 z-40 mb-3 max-h-64 overflow-auto rounded-xl border border-primary/35 bg-surface p-1.5 shadow-[0_20px_55px_rgba(0,0,0,0.65)] ring-1 ring-black/30 custom-scrollbar"
+    >
+      {matches.map((command, index) => (
+        <button
+          key={command.name}
+          type="button"
+          role="option"
+          aria-selected={selected === index}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            onPick(command);
+          }}
+          className={`flex w-full items-baseline gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
+            selected === index
+              ? "border-primary/35 bg-surface-2"
+              : "border-transparent hover:bg-surface-2"
+          }`}
+        >
+          <span className="font-mono text-xs font-semibold text-primary shrink-0">
+            {command.isShortcode ? (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[14px]">bookmark</span>
+                <span>/shortcode {command.tag}</span>
+              </span>
+            ) : (
+              <span>/{command.name}{command.args ? ` ${command.args}` : ""}</span>
+            )}
+          </span>
+          <span className="truncate text-[11px] text-text-muted">
+            {command.summary}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
 }

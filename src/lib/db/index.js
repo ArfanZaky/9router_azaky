@@ -87,6 +87,10 @@ export {
   listChatMcpServers, getChatMcpServer, createChatMcpServer,
   updateChatMcpServer, deleteChatMcpServer,
 } from "./repos/chatMcpServerRepo.js";
+export {
+  listChatShortcodes, getChatShortcode, getChatShortcodeByTag,
+  createChatShortcode, updateChatShortcode, deleteChatShortcode,
+} from "./repos/chatShortcodeRepo.js";
 // Image generation playground
 export {
   listImageJobs, getImageJob, createImageJob, updateImageJob, deleteImageJob,
