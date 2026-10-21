@@ -397,6 +397,7 @@ const SessionRailItem = memo(function SessionRailItem({
   session,
   active,
   isRunning,
+  hasPendingAsk,
   renameId,
   renameValue,
   onSelect,
@@ -450,7 +451,15 @@ const SessionRailItem = memo(function SessionRailItem({
           ) : (
             <div className="flex items-center justify-between gap-1.5">
               <p className="truncate text-sm font-medium">{session.title || "New chat"}</p>
-              {isRunning && (
+              {hasPendingAsk ? (
+                <span
+                  className="shrink-0 inline-flex items-center gap-1 rounded-md bg-amber-500/20 border border-amber-500/35 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400 animate-pulse"
+                  title="Agent is waiting for your answer in this session"
+                >
+                  <span className="material-symbols-outlined text-[12px]">help</span>
+                  Waiting
+                </span>
+              ) : isRunning ? (
                 <span
                   className="shrink-0 inline-flex items-center gap-1 rounded-md bg-primary/20 border border-primary/30 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
                   title="Session is actively running"
@@ -461,7 +470,7 @@ const SessionRailItem = memo(function SessionRailItem({
                   </span>
                   Running
                 </span>
-              )}
+              ) : null}
             </div>
           )}
           <p className="truncate text-[11px] text-text-muted mt-0.5">
@@ -859,7 +868,35 @@ export default function ChatPageClient() {
   const [viewingAgent, setViewingAgent] = useState(null);
   const [liveInfo, setLiveInfo] = useState({ turn: 0, tool: null, waiting: false, notice: "", elapsed: 0 });
   const [approvals, setApprovals] = useState([]);
+  const approvalsRef = useRef([]);
+  useEffect(() => {
+    approvalsRef.current = approvals;
+  }, [approvals]);
   const [asks, setAsks] = useState([]);
+  const asksRef = useRef([]);
+  useEffect(() => {
+    asksRef.current = asks;
+  }, [asks]);
+
+  const pendingAskSessionIds = useMemo(() => {
+    const sids = new Set();
+    for (const a of asks) {
+      if (a.sessionId) sids.add(a.sessionId);
+    }
+    for (const ap of approvals) {
+      if (ap.sessionId) sids.add(ap.sessionId);
+    }
+    return sids;
+  }, [asks, approvals]);
+
+  const activeSessionApprovals = useMemo(
+    () => approvals.filter((a) => a.sessionId === activeSessionId),
+    [approvals, activeSessionId]
+  );
+  const activeSessionAsks = useMemo(
+    () => asks.filter((a) => a.sessionId === activeSessionId),
+    [asks, activeSessionId]
+  );
   const [projectOpen, setProjectOpen] = useState(() => {
     try {
       return globalThis.localStorage?.getItem("chat.projectOpen") === "true";
@@ -1318,12 +1355,14 @@ export default function ChatPageClient() {
                 setTeamMessages((prev) => [...prev, nextBc]);
               }
             } else if (event.type === "approval") {
-              setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+              const approvalItem = { ...data, sessionId: existingSessionId, runId: existing.runId };
+              setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), approvalItem]);
               if (activeSessionIdRef.current === existingSessionId) {
                 setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
               }
             } else if (event.type === "ask") {
-              setAsks((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+              const askItem = { ...data, sessionId: existingSessionId, runId: existing.runId };
+              setAsks((prev) => [...prev.filter((item) => item.id !== data.id), askItem]);
               if (activeSessionIdRef.current === existingSessionId) {
                 setAgentStatus("Waiting for your answer…");
               }
@@ -1365,8 +1404,8 @@ export default function ChatPageClient() {
               clearChatRun(existingSessionId);
               stopRunTransport(existing.runId);
               liveRunRef.current.delete(existing.runId);
-              setApprovals([]);
-              setAsks([]);
+              setApprovals((prev) => prev.filter((item) => item.sessionId !== existingSessionId));
+              setAsks((prev) => prev.filter((item) => item.sessionId !== existingSessionId));
               if (mountedRef.current && activeSessionIdRef.current === existing.sessionId) {
                 setMessages(finalMessages);
                 setIsSending(false);
@@ -1619,6 +1658,18 @@ export default function ChatPageClient() {
         if (Array.isArray(data.subAgents)) {
           setSubAgents(data.subAgents.map((s) => ({ ...s, sessionId })));
         }
+        if (Array.isArray(data.gates)) {
+          const incomingApprovals = data.gates.filter((g) => g.kind === "approval");
+          const incomingAsks = data.gates.filter((g) => g.kind === "ask");
+          setApprovals((prev) => [
+            ...prev.filter((i) => i.sessionId !== sessionId),
+            ...incomingApprovals.map((g) => ({ ...g, sessionId, runId: data.runId })),
+          ]);
+          setAsks((prev) => [
+            ...prev.filter((i) => i.sessionId !== sessionId),
+            ...incomingAsks.map((g) => ({ ...g, sessionId, runId: data.runId })),
+          ]);
+        }
         setIsSending(true);
         setAgentStatus(statusText);
       }
@@ -1634,7 +1685,7 @@ export default function ChatPageClient() {
             if (!event || event.seq <= lastSeq) return;
             lastSeq = event.seq;
             const eventData = event.data || {};
-            updateLiveFromEvent(event, eventData);
+            updateLiveFromEvent(event, eventData, sessionId);
             if (event.type === "text") {
               assistantText = eventData.content || assistantText;
               const currentRun = getChatRun(sessionId);
@@ -1773,12 +1824,14 @@ export default function ChatPageClient() {
                 setTasks(eventData.items || []);
               }
             } else if (event.type === "approval") {
-              setApprovals((prev) => [...prev.filter((item) => item.id !== eventData.id), eventData]);
+              const approvalItem = { ...eventData, sessionId, runId: data.runId };
+              setApprovals((prev) => [...prev.filter((item) => item.id !== eventData.id), approvalItem]);
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
                 setAgentStatus(`Waiting for approval: ${eventData.tool || "tool"}`);
               }
             } else if (event.type === "ask") {
-              setAsks((prev) => [...prev.filter((item) => item.id !== eventData.id), eventData]);
+              const askItem = { ...eventData, sessionId, runId: data.runId };
+              setAsks((prev) => [...prev.filter((item) => item.id !== eventData.id), askItem]);
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
                 setAgentStatus("Waiting for your answer…");
               }
@@ -1838,8 +1891,8 @@ export default function ChatPageClient() {
               stopRunTransport(data.runId);
               liveRunRef.current.delete(data.runId);
               setRunningSessionIds((prev) => { const n = new Set(prev); n.delete(sessionId); return n; });
-              setApprovals([]);
-              setAsks([]);
+              setApprovals((prev) => prev.filter((item) => item.sessionId !== sessionId));
+              setAsks((prev) => prev.filter((item) => item.sessionId !== sessionId));
               if (mountedRef.current && activeSessionIdRef.current === sessionId) {
                 setMessages(finalMessages);
                 setIsSending(false);
@@ -2084,6 +2137,13 @@ export default function ChatPageClient() {
     setTeamMessages([]);
     setError("");
     const run = getChatRun(id);
+    const targetHasAsk = (asksRef.current || []).some((a) => a.sessionId === id);
+    const targetHasApproval = (approvalsRef.current || []).some((a) => a.sessionId === id);
+    setLiveInfo((s) => ({
+      ...s,
+      waiting: targetHasAsk || targetHasApproval,
+      notice: "",
+    }));
     if (run?.isSending && run.sessionId === id) {
       setMessages(run.messages || []);
       setIsSending(true);
@@ -2395,6 +2455,8 @@ export default function ChatPageClient() {
   const handleStop = () => {
     abortChatRun(activeSessionId);
     abortRef.current?.abort();
+    setApprovals((prev) => prev.filter((item) => item.sessionId !== activeSessionId));
+    setAsks((prev) => prev.filter((item) => item.sessionId !== activeSessionId));
   };
 
   const stopRunTransport = (runId) => {
@@ -2542,7 +2604,8 @@ export default function ChatPageClient() {
     fn();
   };
 
-  const updateLiveFromEvent = (event, data) => {
+  const updateLiveFromEvent = (event, data, eventSessionId) => {
+    if (eventSessionId && activeSessionIdRef.current !== eventSessionId) return;
     if (event.type === "status") {
       const notice = data.phase === "thinking" ? "Thinking…" : "";
       setLiveInfo((s) => ({ ...s, turn: Number(data.step) || s.turn, notice, waiting: false }));
@@ -2643,8 +2706,8 @@ export default function ChatPageClient() {
       setAgentStatus("");
       if (errorText) setError(errorText);
     });
-    setApprovals([]);
-    setAsks([]);
+    setApprovals((prev) => prev.filter((item) => item.sessionId !== sessionId));
+    setAsks((prev) => prev.filter((item) => item.sessionId !== sessionId));
     setTimeout(() => {
       processNextQueuedMessage(sessionId);
     }, 300);
@@ -3032,8 +3095,8 @@ export default function ChatPageClient() {
       if (currentRunId) liveRunRef.current.delete(currentRunId);
       setRunningSessionIds((prev) => { const n = new Set(prev); n.delete(sessionId); return n; });
       runningSessionIdsRef.current.delete(sessionId);
-      setApprovals([]);
-      setAsks([]);
+      setApprovals((prev) => prev.filter((item) => item.sessionId !== sessionId));
+      setAsks((prev) => prev.filter((item) => item.sessionId !== sessionId));
       stopRunTransport(currentRunId || undefined);
       if (mountedRef.current) {
         setSessions((prev) =>
@@ -3107,7 +3170,7 @@ export default function ChatPageClient() {
           if (!event || event.seq <= lastSeq) return;
           lastSeq = event.seq;
           const data = event.data || {};
-          updateLiveFromEvent(event, data);
+          updateLiveFromEvent(event, data, sessionId);
           if (event.type === "text") {
             assistantText = data.content || assistantText;
             pushLive(
@@ -3230,12 +3293,14 @@ export default function ChatPageClient() {
               setTeamMessages((prev) => [...prev, nextBc]);
             }
           } else if (event.type === "approval") {
-            setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+            const approvalItem = { ...data, sessionId, runId: started.id };
+            setApprovals((prev) => [...prev.filter((item) => item.id !== data.id), approvalItem]);
             if (activeSessionIdRef.current === sessionId) {
               setAgentStatus(`Waiting for approval: ${data.tool || "tool"}`);
             }
           } else if (event.type === "ask") {
-            setAsks((prev) => [...prev.filter((item) => item.id !== data.id), data]);
+            const askItem = { ...data, sessionId, runId: started.id };
+            setAsks((prev) => [...prev.filter((item) => item.id !== data.id), askItem]);
             if (activeSessionIdRef.current === sessionId) {
               setAgentStatus("Waiting for your answer…");
             }
@@ -3356,16 +3421,18 @@ export default function ChatPageClient() {
     if (event.key === "Escape" && isSending) handleStop();
     if ((event.altKey || event.ctrlKey) && !event.shiftKey) {
       if (event.key === "a" || event.key === "A") {
-        if (approvals.length > 0) {
+        const curApprovals = approvals.filter((a) => a.sessionId === activeSessionId);
+        if (curApprovals.length > 0) {
           event.preventDefault();
-          resolveGate(approvals[0], "allow");
+          resolveGate(curApprovals[0], "allow");
         }
         return;
       }
       if (event.key === "d" || event.key === "D") {
-        if (approvals.length > 0) {
+        const curApprovals = approvals.filter((a) => a.sessionId === activeSessionId);
+        if (curApprovals.length > 0) {
           event.preventDefault();
-          resolveGate(approvals[0], "deny");
+          resolveGate(curApprovals[0], "deny");
         }
         return;
       }
@@ -3373,7 +3440,7 @@ export default function ChatPageClient() {
   };
 
   const resolveGate = async (gate, outcome, always = false) => {
-    let runId = gate.runId || getChatRun(activeSessionId)?.runId;
+    let runId = gate.runId || (gate.sessionId ? getChatRun(gate.sessionId)?.runId : null) || getChatRun(activeSessionId)?.runId;
     if (!runId) {
       for (const [id, ctx] of liveRunRef.current.entries()) {
         if (ctx.isActive?.()) { runId = id; break; }
@@ -3590,12 +3657,14 @@ export default function ChatPageClient() {
         if (!res.ok) throw new Error(data.error || "Unable to steer run");
         setAgentStatus("Steering queued");
       } else if (name === "approve") {
-        if (approvals.length === 0) throw new Error("No pending approval");
-        await resolveGate(approvals[0], "allow");
+        const curApprovals = approvals.filter((a) => a.sessionId === activeSessionId);
+        if (curApprovals.length === 0) throw new Error("No pending approval");
+        await resolveGate(curApprovals[0], "allow");
         setError("Approval granted");
       } else if (name === "deny") {
-        if (approvals.length === 0) throw new Error("No pending approval");
-        await resolveGate(approvals[0], "deny");
+        const curApprovals = approvals.filter((a) => a.sessionId === activeSessionId);
+        if (curApprovals.length === 0) throw new Error("No pending approval");
+        await resolveGate(curApprovals[0], "deny");
         setError("Approval denied");
       } else if (name === "project") {
         if (!value) throw new Error("Usage: /project <absolute path>");
@@ -3690,6 +3759,7 @@ export default function ChatPageClient() {
                 session={session}
                 active={session.id === activeSessionId}
                 isRunning={runningSessionIds.has(session.id)}
+                hasPendingAsk={pendingAskSessionIds.has(session.id)}
                 renameId={renameId}
                 renameValue={renameValue}
                 onSelect={handleSelectSession}
@@ -4138,7 +4208,7 @@ export default function ChatPageClient() {
               ) : null}
             </div>
           ) : null}
-          {approvals.map((approval) => (
+          {activeSessionApprovals.map((approval) => (
             <div key={approval.id} className="mx-auto mb-2 max-w-3xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
               <div className="flex items-start gap-2">
                 <span className="material-symbols-outlined text-[20px] text-amber-500">shield</span>
@@ -4155,7 +4225,7 @@ export default function ChatPageClient() {
               </div>
             </div>
           ))}
-          {asks.map((ask) => (
+          {activeSessionAsks.map((ask) => (
             <AskWizard key={ask.id} ask={ask} onAnswer={(answer) => resolveGate(ask, answer)} />
           ))}
           {activeQueue.length > 0 && (

@@ -117,8 +117,8 @@ async function openGate(run, kind, payload) {
       }).catch(() => {});
       resolve(kind === "approval" ? false : null);
     }, GATE_TIMEOUT_MS);
-    run.gates.set(id, { kind, resolve, timer });
-    emit(run, kind === "approval" ? "approval" : "ask", { id, runId: run.id, ...payload }).catch(() => {});
+    run.gates.set(id, { kind, resolve, timer, payload });
+    emit(run, kind === "approval" ? "approval" : "ask", { id, runId: run.id, sessionId: run.sessionId, ...payload }).catch(() => {});
   });
 }
 

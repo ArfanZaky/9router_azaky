@@ -32,6 +32,13 @@ export async function GET(request, { params }) {
       teamRoster: Array.from(liveRun.teamRoster?.values() || []),
       teamTasks: Array.from(liveRun.teamTasks?.values() || []),
       teamMessages: liveRun.teamMessages || [],
+      gates: Array.from(liveRun.gates?.entries() || []).map(([gid, g]) => ({
+        id: gid,
+        kind: g.kind,
+        runId: liveRun.id,
+        sessionId: liveRun.sessionId,
+        ...(g.payload || {}),
+      })),
     });
   }
 
