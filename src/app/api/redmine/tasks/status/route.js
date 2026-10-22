@@ -8,7 +8,6 @@ import {
   findActiveRedmineSession,
   spawnRedmineTaskSession,
 } from "@/lib/redmine/taskSpawner";
-import { postTaskCompletionComment } from "@/lib/redmine/commentSummary";
 
 export const dynamic = "force-dynamic";
 
@@ -141,29 +140,12 @@ export async function POST(req) {
     const resolvedSessionId = existing?.id || currentTracked?.sessionId || null;
     const resolvedSessionTitle = existing?.title || currentTracked?.sessionTitle || null;
 
-    let commentSent = false;
-    let commentError = null;
-
-    if (status === "done" && (body.sendComment === true || body.postComment === true)) {
-      try {
-        const commentRes = await postTaskCompletionComment(issueKey, {
-          sessionId: resolvedSessionId,
-          force: true,
-        });
-        commentSent = commentRes?.commentSent === true;
-      } catch (err) {
-        commentError = err.message;
-      }
-    }
-
     rts[issueKey] = {
       ...(currentTracked || {}),
       status,
       sessionId: resolvedSessionId,
       sessionTitle: resolvedSessionTitle,
       reason: body.reason !== undefined ? body.reason : (status === "done" ? null : (currentTracked?.reason || null)),
-      summaryCommentSent: commentSent || currentTracked?.summaryCommentSent || false,
-      summaryCommentAt: commentSent ? new Date().toISOString() : (currentTracked?.summaryCommentAt || null),
       updatedAt: new Date().toISOString(),
     };
 
@@ -171,12 +153,7 @@ export async function POST(req) {
 
     if (existing) {
       await updateChatSession(existing.id, {
-        projectMeta: {
-          ...existing.projectMeta,
-          localStatus: status,
-          summaryCommentSent: rts[issueKey].summaryCommentSent,
-          summaryCommentAt: rts[issueKey].summaryCommentAt,
-        },
+        projectMeta: { ...existing.projectMeta, localStatus: status },
       }).catch(() => {});
     }
 
@@ -186,8 +163,6 @@ export async function POST(req) {
       status,
       sessionId: resolvedSessionId,
       sessionTitle: resolvedSessionTitle,
-      summaryCommentSent: rts[issueKey].summaryCommentSent,
-      commentError,
       updatedRecord: rts[issueKey] || null,
     });
   } catch (err) {
