@@ -1246,6 +1246,28 @@ async function execute(run) {
     run.status = status;
     await updateChatRunRecord(run.id, { status, error: status === "failed" ? message : null, result: { messages: run.messages, finalText: content }, finishedAt: new Date().toISOString() });
     await emit(run, status === "failed" ? "error" : "done", { message, messages: run.messages, finalText: content, stopped: status === "stopped" });
+
+    // Redmine Task tracking on failure/stop: ensure status is updated so task doesn't freeze in "working"
+    try {
+      const sess = await getChatSession(run.sessionId, { includeMessages: false });
+      if (sess?.projectMeta?.redmineIssueId) {
+        const rIssueId = String(sess.projectMeta.redmineIssueId);
+        const currentSettings = await getSettings();
+        const rts = { ...(currentSettings?.redmineTaskStatuses || {}) };
+        if (rts[rIssueId]?.status === "working") {
+          rts[rIssueId] = {
+            ...rts[rIssueId],
+            status: status === "stopped" ? "stopped" : "failed",
+            finishedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            reason: status === "stopped" ? "Session stopped" : (error?.message || "Run failed"),
+          };
+          await updateSettings({ redmineTaskStatuses: rts }).catch(() => {});
+        }
+      }
+    } catch {
+      // ignore
+    }
   } finally {
     setTimeout(() => liveRuns.delete(run.id), 30 * 60 * 1000).unref?.();
   }

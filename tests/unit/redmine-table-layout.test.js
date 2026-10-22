@@ -3,7 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 describe("Redmine Tasks Table Layout", () => {
-  const filePath = path.resolve(process.cwd(), "../src/app/(dashboard)/dashboard/redmine/RedminePageClient.js");
+  const filePath = fs.existsSync(path.resolve(process.cwd(), "src/app/(dashboard)/dashboard/redmine/RedminePageClient.js"))
+    ? path.resolve(process.cwd(), "src/app/(dashboard)/dashboard/redmine/RedminePageClient.js")
+    : path.resolve(process.cwd(), "../src/app/(dashboard)/dashboard/redmine/RedminePageClient.js");
   const content = fs.readFileSync(filePath, "utf-8");
 
   it("does not contain standalone # ID, Priority, or Updated columns in the tasks table header", () => {

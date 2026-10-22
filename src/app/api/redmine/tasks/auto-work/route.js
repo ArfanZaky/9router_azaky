@@ -7,10 +7,11 @@ import {
   getRedmineIssues,
   getRedmineIssueDetail,
 } from "@/lib/redmine/redmineClient";
+import { spawnRedmineTaskSession } from "@/lib/redmine/taskSpawner";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(req) {
+export async function POST() {
   try {
     const config = await getRedmineConfig();
     if (!config.apiKey) {
@@ -66,28 +67,22 @@ export async function POST(req) {
     }
 
     const spawned = [];
-    const origin = req.nextUrl?.origin || "http://127.0.0.1:20128";
 
     for (const issue of eligible) {
       try {
-        const spawnRes = await fetch(`${origin}/api/redmine/tasks/spawn`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            issueId: issue.id,
-            model: config.aiModel,
-          }),
+        const spawnData = await spawnRedmineTaskSession({
+          issueId: issue.id,
+          model: config.aiModel,
         });
-        const spawnData = await spawnRes.json().catch(() => ({}));
-        if (spawnRes.ok && spawnData.spawned) {
+        if (spawnData?.spawned) {
           spawned.push({
             issueId: issue.id,
             subject: issue.subject,
             sessionId: spawnData.sessionId,
           });
         }
-      } catch {
-        // Continue to next issue
+      } catch (err) {
+        console.error(`[Redmine Auto-Work] Failed to spawn issue #${issue.id}:`, err?.message || err);
       }
     }
 
