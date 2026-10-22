@@ -32,6 +32,7 @@ export async function GET() {
         userName: config.userName,
         autoWorkWithAi: config.autoWorkWithAi === true,
         aiModel: config.aiModel || "anthropic/claude-3-7-sonnet",
+        autoCommentOnDone: config.autoCommentOnDone !== false,
       },
       verified,
       user: userInfo,
@@ -54,6 +55,7 @@ export async function POST(request) {
     const userEmail = body.userEmail !== undefined ? body.userEmail.trim() : current.userEmail;
     const autoWorkWithAi = body.autoWorkWithAi !== undefined ? Boolean(body.autoWorkWithAi) : current.autoWorkWithAi;
     const aiModel = body.aiModel ? String(body.aiModel).trim() : current.aiModel;
+    const autoCommentOnDone = body.autoCommentOnDone !== undefined ? Boolean(body.autoCommentOnDone) : current.autoCommentOnDone !== false;
 
     if (!baseUrl) {
       return NextResponse.json({ error: "baseUrl is required" }, { status: 400 });
@@ -73,6 +75,7 @@ export async function POST(request) {
       userName: user ? `${user.firstname || ""} ${user.lastname || ""}`.trim() : current.userName,
       autoWorkWithAi,
       aiModel,
+      autoCommentOnDone,
     });
 
     return NextResponse.json({

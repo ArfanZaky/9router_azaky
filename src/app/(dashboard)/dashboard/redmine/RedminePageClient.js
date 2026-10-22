@@ -656,6 +656,8 @@ export default function RedminePageClient() {
   const [cfgApiKey, setCfgApiKey] = useState("");
   const [cfgEmail, setCfgEmail] = useState("");
   const [cfgAutoWorkWithAi, setCfgAutoWorkWithAi] = useState(false);
+  const [cfgAutoCommentOnDone, setCfgAutoCommentOnDone] = useState(true);
+  const [postingSummaryId, setPostingSummaryId] = useState(null);
   const [cfgAiModel, setCfgAiModel] = useState("anthropic/claude-3-7-sonnet");
   const [availableModels, setAvailableModels] = useState([]);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -715,6 +717,7 @@ export default function RedminePageClient() {
           setCfgBaseUrl(data.config.baseUrl || "https://redmine.profescipta.co.id");
           setCfgEmail(data.config.userEmail || "");
           setCfgAutoWorkWithAi(data.config.autoWorkWithAi === true);
+          setCfgAutoCommentOnDone(data.config.autoCommentOnDone !== false);
           setCfgAiModel(data.config.aiModel || "anthropic/claude-3-7-sonnet");
         }
       }
@@ -1290,6 +1293,30 @@ export default function RedminePageClient() {
     }
   };
 
+  const handlePostSummaryToRedmine = async (issueId, sessionId, e) => {
+    if (e) e.stopPropagation();
+    if (!issueId || postingSummaryId) return;
+    setPostingSummaryId(issueId);
+    try {
+      const res = await fetch("/api/redmine/tasks/post-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueId, sessionId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal mengirim rangkuman ke Redmine");
+      alert(`Rangkuman pengerjaan berhasil dikirim ke komentar tiket Redmine #${issueId}.`);
+      if (selectedIssueId && (selectedIssueId === issueId || String(selectedIssueId) === String(issueId))) {
+        await openIssueDetail(issueId, true);
+      }
+      fetchIssues(false);
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      setPostingSummaryId(null);
+    }
+  };
+
   const handleSaveConfig = async (e) => {
     e.preventDefault();
     setSavingConfig(true);
@@ -1305,6 +1332,7 @@ export default function RedminePageClient() {
           userEmail: cfgEmail.trim(),
           autoWorkWithAi: cfgAutoWorkWithAi,
           aiModel: cfgAiModel.trim(),
+          autoCommentOnDone: cfgAutoCommentOnDone,
         }),
       });
 
@@ -1319,6 +1347,7 @@ export default function RedminePageClient() {
             ...prev.config,
             ...data.config,
             autoWorkWithAi: data.config.autoWorkWithAi === true,
+            autoCommentOnDone: data.config.autoCommentOnDone !== false,
           },
         }));
       }
@@ -1779,10 +1808,21 @@ export default function RedminePageClient() {
                                 </span>
                               )}
                               {issue.localStatus === "done" && (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
-                                  <span className="material-symbols-outlined text-[12px]">task_alt</span>
-                                  9Router: Done
-                                </span>
+                                <div className="flex flex-col gap-0.5 items-start">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
+                                    <span className="material-symbols-outlined text-[12px]">task_alt</span>
+                                    9Router: Done
+                                  </span>
+                                  {issue.summaryCommentSent ? (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[9px] text-emerald-600 dark:text-emerald-400 font-medium pl-0.5"
+                                      title={issue.summaryCommentAt ? `Komentar terkirim: ${new Date(issue.summaryCommentAt).toLocaleString()}` : "Komentar rangkuman terkirim ke Redmine"}
+                                    >
+                                      <span className="material-symbols-outlined text-[11px]">mark_chat_read</span>
+                                      Comment sent
+                                    </span>
+                                  ) : null}
+                                </div>
                               )}
                               {issue.localStatus === "pending" && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30" title={issue.localStatusReason || "Menunggu konfirmasi pertanyaan atau koneksi database"}>
@@ -2714,10 +2754,21 @@ export default function RedminePageClient() {
                           </span>
                         )}
                         {issueDetail.localStatus === "done" && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
-                            <span className="material-symbols-outlined text-[13px]">task_alt</span>
-                            Done in 9Router
-                          </span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
+                              <span className="material-symbols-outlined text-[13px]">task_alt</span>
+                              Done in 9Router
+                            </span>
+                            {issueDetail.summaryCommentSent ? (
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                                title={issueDetail.summaryCommentAt ? `Komentar terkirim: ${new Date(issueDetail.summaryCommentAt).toLocaleString()}` : "Komentar rangkuman sudah dikirim ke Redmine"}
+                              >
+                                <span className="material-symbols-outlined text-[12px]">mark_chat_read</span>
+                                Comment Sent to Redmine
+                              </span>
+                            ) : null}
+                          </div>
                         )}
                         {issueDetail.localStatus === "pending" && (
                           <span
@@ -2746,6 +2797,31 @@ export default function RedminePageClient() {
                               >
                                 <span className="material-symbols-outlined text-[15px] text-primary">chat</span>
                                 Open Chat Session
+                              </button>
+                            )}
+
+                            {issueDetail.localStatus === "done" && (
+                              <button
+                                type="button"
+                                onClick={(e) => handlePostSummaryToRedmine(issueDetail.id, issueDetail.localSessionId, e)}
+                                disabled={postingSummaryId === issueDetail.id}
+                                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition inline-flex items-center gap-1.5 shadow-2xs min-h-[36px] disabled:opacity-50 cursor-pointer ${
+                                  issueDetail.summaryCommentSent
+                                    ? "bg-surface-2 hover:bg-surface-3 text-text-muted hover:text-text-main border border-border"
+                                    : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                                }`}
+                                title={issueDetail.summaryCommentSent ? "Kirim ulang rangkuman pengerjaan ke komentar Redmine" : "Kirim rangkuman pengerjaan AI ke komentar tiket Redmine"}
+                              >
+                                <span className="material-symbols-outlined text-[15px]">
+                                  {postingSummaryId === issueDetail.id ? "sync" : issueDetail.summaryCommentSent ? "forward_to_inbox" : "send"}
+                                </span>
+                                <span>
+                                  {postingSummaryId === issueDetail.id
+                                    ? "Mengirim..."
+                                    : issueDetail.summaryCommentSent
+                                    ? "Re-send Summary to Redmine"
+                                    : "Kirim Rangkuman ke Redmine"}
+                                </span>
                               </button>
                             )}
 
@@ -3594,6 +3670,30 @@ export default function RedminePageClient() {
                     <span
                       className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
                         cfgAutoWorkWithAi ? "translate-x-5" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Auto Comment on Done Toggle */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl bg-bg border border-border">
+                  <div className="pr-3">
+                    <span className="text-xs font-semibold text-text-main block">Auto Post Comment on Done</span>
+                    <span className="text-[11px] text-text-muted block mt-0.5 leading-tight">
+                      Otomatis kirim komentar rangkuman pengerjaan ke tiket Redmine saat task selesai (status Done in 9Router).
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCfgAutoCommentOnDone(!cfgAutoCommentOnDone)}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      cfgAutoCommentOnDone ? "bg-primary" : "bg-surface-3"
+                    }`}
+                    aria-label="Toggle auto post comment on done"
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        cfgAutoCommentOnDone ? "translate-x-5" : "translate-x-0"
                       }`}
                     />
                   </button>

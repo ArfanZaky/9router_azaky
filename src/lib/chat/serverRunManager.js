@@ -1156,26 +1156,9 @@ async function execute(run) {
             }
           }
 
-          await updateChatSession(run.sessionId, {
-            projectMeta: {
-              ...sess.projectMeta,
-              localStatus: finalLocalStatus,
-              localStatusReason: pendingReason,
-            },
-          }).catch(() => {});
-
-          const currentSettings = await getSettings();
-          const rts = { ...(currentSettings?.redmineTaskStatuses || {}) };
-          rts[rIssueId] = {
-            ...(rts[rIssueId] || {}),
-            status: finalLocalStatus,
-            sessionId: run.sessionId,
-            sessionTitle: sess.title,
-            finishedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            reason: isPending ? pendingReason : null,
-          };
-          await updateSettings({ redmineTaskStatuses: rts }).catch(() => {});
+          let latestCommitHash = "";
+          let commitMsg = "";
+          let commentSentOk = false;
 
           if (isPending) {
             await emit(run, "notice", {
@@ -1196,7 +1179,7 @@ async function execute(run) {
                 if (gitStatus && gitStatus.trim().length > 0) {
                   const rawSubject = sess.projectMeta.redmineIssueSubject || sess.title || "resolve redmine task";
                   const cleanSubject = String(rawSubject).replace(/[\r\n"\\`$]/g, " ").trim();
-                  const commitMsg = `feat(#${rIssueId}): ${cleanSubject}`;
+                  commitMsg = `feat(#${rIssueId}): ${cleanSubject}`;
                   execSync("git add -A", { cwd: projectDir, stdio: "ignore", timeout: 15000 });
                   try {
                     execSync(`git commit -m "${commitMsg}"`, { cwd: projectDir, stdio: "ignore", timeout: 15000 });
@@ -1212,11 +1195,71 @@ async function execute(run) {
                     message: `Task changes committed locally: "${commitMsg}" (local commit only, remote push disabled).`,
                   }).catch(() => {});
                 }
+
+                try {
+                  latestCommitHash = execSync("git rev-parse --short HEAD", {
+                    cwd: projectDir,
+                    encoding: "utf8",
+                    stdio: ["ignore", "pipe", "ignore"],
+                    timeout: 5000,
+                  }).trim();
+                } catch {}
               }
             } catch {
               // Not a git repository or commit error, safely ignore
             }
+
+            // Automatically post comment with detail summary to Redmine if enabled
+            try {
+              const { getRedmineConfig } = await import("@/lib/redmine/redmineClient");
+              const redmineCfg = await getRedmineConfig();
+              if (redmineCfg?.apiKey && redmineCfg?.autoCommentOnDone !== false && content?.trim()) {
+                const { postTaskCompletionComment } = await import("@/lib/redmine/commentSummary");
+                const postRes = await postTaskCompletionComment(rIssueId, {
+                  summary: content,
+                  sessionId: run.sessionId,
+                  commitMsg,
+                  commitHash: latestCommitHash,
+                  config: redmineCfg,
+                });
+                if (postRes?.commentSent) {
+                  commentSentOk = true;
+                  await emit(run, "notice", {
+                    message: `Komentar ringkasan pengerjaan berhasil dikirim ke Redmine tiket #${rIssueId}.`,
+                  }).catch(() => {});
+                }
+              }
+            } catch (commentErr) {
+              await emit(run, "notice", {
+                message: `Gagal mengirim komentar otomatis ke Redmine #${rIssueId}: ${commentErr.message}`,
+              }).catch(() => {});
+            }
           }
+
+          await updateChatSession(run.sessionId, {
+            projectMeta: {
+              ...sess.projectMeta,
+              localStatus: finalLocalStatus,
+              localStatusReason: pendingReason,
+              summaryCommentSent: commentSentOk,
+              summaryCommentAt: commentSentOk ? new Date().toISOString() : null,
+            },
+          }).catch(() => {});
+
+          const currentSettings = await getSettings();
+          const rts = { ...(currentSettings?.redmineTaskStatuses || {}) };
+          rts[rIssueId] = {
+            ...(rts[rIssueId] || {}),
+            status: finalLocalStatus,
+            sessionId: run.sessionId,
+            sessionTitle: sess.title,
+            finishedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            reason: isPending ? pendingReason : null,
+            summaryCommentSent: commentSentOk || rts[rIssueId]?.summaryCommentSent || false,
+            summaryCommentAt: commentSentOk ? new Date().toISOString() : (rts[rIssueId]?.summaryCommentAt || null),
+          };
+          await updateSettings({ redmineTaskStatuses: rts }).catch(() => {});
         }
       } catch {
         // ignore

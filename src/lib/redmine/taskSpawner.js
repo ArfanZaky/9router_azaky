@@ -146,7 +146,7 @@ async function executeSpawn(body) {
         ? `\n\n**Lampiran Gambar dari Redmine:**\n` + imageAttachments.map((img) => `- ${img.name} (${img.type})`).join("\n") + "\nPeriksa lampiran gambar ini untuk melihat context UI / error yang dilaporkan."
         : "";
 
-      const instruction = `Tiket Redmine #${issue.id} sebelumnya PENDING. Ada komentar baru sebagai instruksi tambahan. Lanjutkan pekerjaan pada tiket yang sama dengan mempertimbangkan deskripsi, riwayat chat, lampiran gambar, dan klarifikasi baru berikut. Jika masih kurang jelas, laporkan [STATUS: PENDING] beserta pertanyaannya.\n\n**Komentar baru:**\n${formatInstructionComments(newComments)}${imagesNote}`;
+      const instruction = `Tiket Redmine #${issue.id} sebelumnya PENDING. Ada komentar baru sebagai instruksi tambahan. Lanjutkan pekerjaan pada tiket yang sama dengan mempertimbangkan deskripsi, riwayat chat, lampiran gambar, dan klarifikasi baru berikut. Jika masih kurang jelas, laporkan [STATUS: PENDING] beserta pertanyaannya. Jika pengerjaan telah selesai, berikan ringkasan pengerjaan yang terstruktur (Analisis masalah, File yang diubah, Penjelasan perubahan kode, Hasil verifikasi) untuk otomatis dikirimkan ke komentar Redmine.\n\n**Komentar baru:**\n${formatInstructionComments(newComments)}${imagesNote}`;
       const session = await getChatSession(existing.id, { messageLimit: 10000 });
       if (!session) throw createError("Chat session not found", 404);
 
@@ -301,7 +301,8 @@ Workspace project path: ${assigned.path}
    - JANGAN melakukan git commit jika task berstatus PENDING.
 3. Tulis kode yang bersih, modular, dan teruji sesuai standar kualitas tinggi (Anti-Slop standard: no em dashes, no dead code, mobile responsive).
 4. Jangan mengubah status tiket Redmine di remote server; selesaikan pekerjaan di codebase lokal dan verifikasi dengan teliti.
-5. GIT COMMIT LOKAL (JANGAN PUSH): Setelah seluruh perubahan selesai dan diverifikasi (jika BUKAN pending), lakukan git commit secara lokal (git add + git commit) dengan pesan commit yang jelas mencantumkan nomor tiket #${issue.id} (contoh: git commit -m "feat(#${issue.id}): ${issue.subject}"). DILARANG KERAS melakukan git push! Remote repository TIDAK BOLEH di-push.`;
+5. GIT COMMIT LOKAL (JANGAN PUSH): Setelah seluruh perubahan selesai dan diverifikasi (jika BUKAN pending), lakukan git commit secara lokal (git add + git commit) dengan pesan commit yang jelas mencantumkan nomor tiket #${issue.id} (contoh: git commit -m "feat(#${issue.id}): ${issue.subject}"). DILARANG KERAS melakukan git push! Remote repository TIDAK BOLEH di-push.
+6. RINGKASAN PENGERJAAN LENGKAP: Di akhir jawaban Anda saat task selesai, selalu sertakan ringkasan pengerjaan yang terstruktur dan detail (Analisis & Solusi, Daftar file dan baris yang diubah/dibuat, Penjelasan kode, dan Bukti hasil testing/verifikasi). Ringkasan ini akan otomatis dikirimkan ke komentar tiket Redmine agar tim dapat meninjau hasil pengerjaan.`;
 
   const userPrompt = `Kerjakan task Redmine berikut pada project ini:
 
@@ -333,7 +334,8 @@ Gunakan deskripsi, komentar, dan lampiran gambar di atas sebagai instruksi task.
    - JANGAN membuat git commit jika berstatus PENDING.
 4. Selesaikan implementasi atau perbaikan bug dengan teliti, dan pastikan tidak ada syntax error / build error.
 5. LAKUKAN GIT COMMIT LOKAL SAJA (DILARANG GIT PUSH): Jika task berhasil selesai (bukan pending), buat git commit lokal (git add + git commit -m '...') menyertakan nomor tiket #${issue.id}. JANGAN PERNAH mengeksekusi git push ke remote!
-6. Jangan ubah status tiket Redmine remote; status akan dicatat di sistem lokal 9Router.`;
+6. Jangan ubah status tiket Redmine remote; status akan dicatat di sistem lokal 9Router.
+7. RINGKASAN PENGERJAAN LENGKAP: Tulis ringkasan pengerjaan terstruktur di akhir (Analisis masalah, File yang diubah, Penjelasan perubahan kode, Hasil verifikasi/testing). Ringkasan ini otomatis dikirimkan sebagai komentar ke tiket Redmine saat status task selesai.`;
 
   // 6. Spawn session with title: (project - title task)
   const sessionTitle = `${issue.project.name} - ${issue.subject}`;

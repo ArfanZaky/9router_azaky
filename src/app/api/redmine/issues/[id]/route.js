@@ -75,6 +75,8 @@ export async function GET(request, { params }) {
       localStatusReason: localTask?.reason || null,
       localSessionId: validSessionId,
       localSessionTitle: validSessionId ? localSessionTitle : null,
+      summaryCommentSent: Boolean(localTask?.summaryCommentSent),
+      summaryCommentAt: localTask?.summaryCommentAt || null,
     });
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 });

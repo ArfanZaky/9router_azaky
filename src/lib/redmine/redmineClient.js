@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getSettings, updateSettings, listChatSessions } from "@/lib/localDb";
-import { sortIssuesByDueDate } from "./sortIssuesByDueDate";
+import { getSettings, updateSettings, listChatSessions } from "../localDb.js";
+import { sortIssuesByDueDate } from "./sortIssuesByDueDate.js";
 
 export const DEFAULT_REDMINE_CONFIG = {
   baseUrl: "https://redmine.profescipta.co.id",
@@ -12,6 +12,7 @@ export const DEFAULT_REDMINE_CONFIG = {
   projectPaths: {},
   autoWorkWithAi: false,
   aiModel: "anthropic/claude-3-7-sonnet",
+  autoCommentOnDone: true,
 };
 
 export async function getRedmineConfig() {
@@ -26,6 +27,7 @@ export async function getRedmineConfig() {
     projectPaths: stored.projectPaths || {},
     autoWorkWithAi: stored.autoWorkWithAi === true,
     aiModel: stored.aiModel || DEFAULT_REDMINE_CONFIG.aiModel,
+    autoCommentOnDone: stored.autoCommentOnDone !== undefined ? stored.autoCommentOnDone === true : DEFAULT_REDMINE_CONFIG.autoCommentOnDone,
   };
 }
 
@@ -37,6 +39,7 @@ export async function saveRedmineConfig(updates = {}) {
     baseUrl: (updates.baseUrl || current.baseUrl).replace(/\/+$/, ""),
     autoWorkWithAi: updates.autoWorkWithAi !== undefined ? Boolean(updates.autoWorkWithAi) : current.autoWorkWithAi,
     aiModel: updates.aiModel ? String(updates.aiModel).trim() : current.aiModel,
+    autoCommentOnDone: updates.autoCommentOnDone !== undefined ? Boolean(updates.autoCommentOnDone) : current.autoCommentOnDone,
   };
   await updateSettings({ redmine: next });
   return next;
@@ -340,6 +343,8 @@ export async function getRedmineIssues({
       localStatusReason: localTask?.reason || null,
       localSessionId: validSessionId,
       localSessionTitle: validSessionId ? localSessionTitle : null,
+      summaryCommentSent: Boolean(localTask?.summaryCommentSent),
+      summaryCommentAt: localTask?.summaryCommentAt || null,
     };
   });
 
@@ -520,6 +525,7 @@ export async function getRedmineProjectAssignees(projectId, customConfig = null)
 
   return [...assignees.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
+
 export async function getRedmineStatuses(customConfig = null) {
   const config = customConfig || (await getRedmineConfig());
   if (!config.apiKey) return [];
