@@ -29,6 +29,10 @@ const MIME_MAP = {
   ".json": "application/json",
   ".txt": "text/plain; charset=utf-8",
   ".lua": "text/plain; charset=utf-8",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".eot": "application/vnd.ms-fontobject",
 };
 
 function serveWorkspaceFile(request, response, relativePath) {
@@ -88,6 +92,37 @@ const server = http.createServer((request, response) => {
       return serveWorkspaceFile(request, response, requestedPath);
     }
   }
+
+  // Direct disk serving for Next.js static files to eliminate chunk mismatch 404s across builds
+  if (url.pathname.startsWith("/_next/static/")) {
+    try {
+      const rel = decodeURIComponent(url.pathname.slice("/_next/static/".length));
+      const staticBase = path.resolve(projectRoot, ".next", "static");
+      const target = path.resolve(staticBase, rel);
+
+      if (target.startsWith(staticBase) && fs.existsSync(target) && fs.statSync(target).isFile()) {
+        const ext = path.extname(target).toLowerCase();
+        const contentType =
+          ext === ".js"
+            ? "application/javascript; charset=UTF-8"
+            : ext === ".css"
+            ? "text/css; charset=UTF-8"
+            : ext === ".json"
+            ? "application/json"
+            : MIME_MAP[ext] || "application/octet-stream";
+        const stat = fs.statSync(target);
+        response.writeHead(200, {
+          "Content-Type": contentType,
+          "Content-Length": stat.size,
+          "Cache-Control": "public, max-age=31536000, immutable",
+        });
+        fs.createReadStream(target).pipe(response);
+        return;
+      }
+    } catch {}
+  }
+
+  // CSS fallback for stale css links across re-builds
   if (url.pathname.startsWith("/_next/static/css/")) {
     const cssFile = path.basename(url.pathname);
     const cssTarget = path.resolve(projectRoot, ".next", "static", "css", cssFile);
@@ -117,6 +152,7 @@ const server = http.createServer((request, response) => {
       } catch {}
     }
   }
+
   return handle(request, response);
 });
 const wss = new WebSocketServer({ noServer: true });
