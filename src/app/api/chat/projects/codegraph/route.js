@@ -7,6 +7,9 @@ import { resolveProjectWorkspace } from "@/lib/chat/projectWorkspace.js";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+const statusCache = new Map(); // workspace -> { data, timestamp }
+const STATUS_CACHE_TTL_MS = 5000;
+
 function cleanAnsi(str = "") {
   return String(str || "").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
 }
@@ -33,21 +36,31 @@ function parseCodegraphStatus(raw = "") {
 
 function runCodegraph(args, cwd, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
-    execFile("codegraph", args, { shell: true, cwd, timeout: timeoutMs }, (err, stdout, stderr) => {
-      const outStr = cleanAnsi(stdout);
-      const errStr = cleanAnsi(stderr);
-      if (err) {
-        const error = new Error(errStr || outStr || err.message);
-        error.code = err.code;
-        error.stdout = outStr;
-        error.stderr = errStr;
-        return reject(error);
+    execFile(
+      "codegraph",
+      args,
+      {
+        shell: true,
+        cwd,
+        timeout: timeoutMs,
+        windowsHide: true,
+      },
+      (err, stdout, stderr) => {
+        const outStr = cleanAnsi(stdout);
+        const errStr = cleanAnsi(stderr);
+        if (err) {
+          const error = new Error(errStr || outStr || err.message);
+          error.code = err.code;
+          error.stdout = outStr;
+          error.stderr = errStr;
+          return reject(error);
+        }
+        resolve({
+          stdout: outStr,
+          stderr: errStr,
+        });
       }
-      resolve({
-        stdout: outStr,
-        stderr: errStr,
-      });
-    });
+    );
   });
 }
 
@@ -68,16 +81,46 @@ export async function GET(request) {
       return NextResponse.json({ ok: false, error: "Invalid workspace path" }, { status: 400 });
     }
 
+    const now = Date.now();
+    const cached = statusCache.get(workspace);
+    if (cached && now - cached.timestamp < STATUS_CACHE_TTL_MS) {
+      return NextResponse.json(cached.data);
+    }
+
+    // Fast-path: if .codegraph folder does not exist, it's not initialized
+    const hasCodegraphDir = fs.existsSync(path.join(workspace, ".codegraph"));
+    if (!hasCodegraphDir) {
+      const responsePayload = {
+        ok: true,
+        installed: true,
+        status: {
+          initialized: false,
+          files: null,
+          nodes: null,
+          edges: null,
+          dbSize: null,
+          isUpToDate: false,
+          raw: "Project not initialized",
+        },
+      };
+      statusCache.set(workspace, { data: responsePayload, timestamp: now });
+      return NextResponse.json(responsePayload);
+    }
+
     try {
       const res = await runCodegraph(["status", workspace], workspace, 20000);
       const parsed = parseCodegraphStatus(res.stdout);
-      return NextResponse.json({ ok: true, installed: true, status: parsed });
+      const responsePayload = { ok: true, installed: true, status: parsed };
+      statusCache.set(workspace, { data: responsePayload, timestamp: now });
+      return NextResponse.json(responsePayload);
     } catch (err) {
       if (err.message?.includes("not recognized") || err.message?.includes("not found")) {
         return NextResponse.json({ ok: false, installed: false, error: "codegraph CLI not installed or not in PATH" });
       }
       const parsed = parseCodegraphStatus(err.stderr || err.stdout || err.message);
-      return NextResponse.json({ ok: true, installed: true, status: parsed, error: err.message });
+      const responsePayload = { ok: true, installed: true, status: parsed, error: err.message };
+      statusCache.set(workspace, { data: responsePayload, timestamp: now });
+      return NextResponse.json(responsePayload);
     }
   } catch (err) {
     return NextResponse.json({ ok: false, error: err.message || "Failed to get codegraph status" }, { status: 500 });
@@ -101,6 +144,8 @@ export async function POST(request) {
       return NextResponse.json({ ok: false, error: "Invalid workspace path" }, { status: 400 });
     }
 
+    statusCache.delete(workspace);
+
     const action = String(body.action || "sync").toLowerCase();
 
     // Check if initialized
@@ -114,6 +159,12 @@ export async function POST(request) {
     try {
       const statusRes = await runCodegraph(["status", workspace], workspace, 20000);
       status = parseCodegraphStatus(statusRes.stdout);
+      if (status) {
+        statusCache.set(workspace, {
+          data: { ok: true, installed: true, status },
+          timestamp: Date.now(),
+        });
+      }
     } catch {
       // ignore status fetch failure
     }

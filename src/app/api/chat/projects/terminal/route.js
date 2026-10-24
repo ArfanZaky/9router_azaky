@@ -30,7 +30,7 @@ function getAvailableTerminals() {
   if (isWin) {
     let hasWt = false;
     try {
-      execSync("where wt.exe", { stdio: "ignore" });
+      execSync("where wt.exe", { stdio: "ignore", windowsHide: true });
       hasWt = true;
     } catch {
       // not in PATH
@@ -144,7 +144,7 @@ function launchSystemTerminal(resolvedPath, preferredType = "default") {
 
     let hasWt = false;
     try {
-      execSync("where wt.exe", { stdio: "ignore" });
+      execSync("where wt.exe", { stdio: "ignore", windowsHide: true });
       hasWt = true;
     } catch {
       // ignore
@@ -313,6 +313,7 @@ export async function POST(request) {
             timeout: timeoutMs,
             maxBuffer: 1024 * 1024 * 2,
             shell: shellOption,
+            windowsHide: true,
           },
           (error, stdout, stderr) => {
             resolve(
