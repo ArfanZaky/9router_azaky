@@ -5,6 +5,7 @@ import { DATA_DIR } from "../dataDir.js";
 import { getSkillByName, loadAllSkillIndex, resolveSkillRoots, parseSkillFrontmatter } from "./skills.js";
 import { registerProcess, startBackgroundProcess } from "../chat/processManager.js";
 import { loadDualTierMemory, saveDualTierMemory } from "./memory.js";
+import { runAgentReach } from "./agentReach.js";
 
 const MAX_READ = 200_000;
 const MAX_LIST = 500;
@@ -72,6 +73,7 @@ const TOOL_ACCESS = {
   read_file: "sandbox",
   list_dir: "sandbox",
   grep: "sandbox",
+  agent_reach: "full",
   web_search: "sandbox",
   web_fetch: "sandbox",
   generate_image: "sandbox",
@@ -250,6 +252,22 @@ function walkDir(dir, { max = MAX_LIST, depth = 3, prefix = "" } = {}) {
 }
 
 export const TOOL_DEFS = [
+  {
+    type: "function",
+    function: {
+      name: "agent_reach",
+      description: "Search or read public web content using Agent Reach. Only public web search/read, no login, account, or setup actions. Queries may be sent to external web providers.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["search", "read"] },
+          query: { type: "string", description: "Search terms, maximum 500 characters" },
+          url: { type: "string", description: "Public HTTP or HTTPS URL to read" },
+        },
+        required: ["action"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -700,6 +718,13 @@ export async function executeTool(name, args = {}, ctx = {}) {
 
   try {
     switch (name) {
+      case "agent_reach": {
+        if (accessMode !== "full") return JSON.stringify({ ok: false, error: "Agent Reach requires Full access" });
+        if (!ctx.onApproval) return JSON.stringify({ ok: false, error: "Agent Reach requires explicit user approval" });
+        const allowed = await ctx.onApproval({ name, arguments: args });
+        if (!allowed) return JSON.stringify({ ok: false, denied: true, error: "User denied Agent Reach" });
+        return JSON.stringify(await runAgentReach(args, { signal: ctx.signal }));
+      }
       case "bash": {
         const cwd = args.cwd
           ? resolveSafePath(args.cwd, workspace, accessMode)

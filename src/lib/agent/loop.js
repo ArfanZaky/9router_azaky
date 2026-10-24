@@ -564,6 +564,7 @@ export async function runAgentLoop({
           origin,
           accessMode: mode,
           isRedmineTask,
+          signal,
           onTaskUpdate,
           onDelegate: depth < 1 ? onDelegate : null,
           onTeamRoster: depth < 2 ? onTeamRoster : null,
