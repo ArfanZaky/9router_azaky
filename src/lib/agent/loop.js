@@ -12,6 +12,27 @@ async function ensureTranslators() {
   }
 }
 
+export function isUpstreamConnectionError(err) {
+  if (!err) return false;
+  const msg = (typeof err === "string" ? err : (err?.message || String(err))).toLowerCase();
+  return (
+    msg.includes("upstream connection lost") ||
+    msg.includes("stream stall timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("etimedout") ||
+    msg.includes("socket hang up") ||
+    msg.includes("fetch failed") ||
+    msg.includes("und_err_socket") ||
+    msg.includes("premature close") ||
+    msg.includes("other side closed") ||
+    msg.includes("network error") ||
+    msg.includes("connection reset") ||
+    msg.includes("broken pipe") ||
+    msg.includes("connection closed before message completed") ||
+    msg.includes("terminated")
+  );
+}
+
 function sseEncode(event, data) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
@@ -94,6 +115,7 @@ async function callChatCompletions({
   reasoning_effort,
   onReasoningDelta,
   onTextDelta,
+  onNotice,
 }) {
   await ensureTranslators();
   const body = {
@@ -115,116 +137,137 @@ async function callChatCompletions({
   };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-  const request = new Request("http://9router.local/api/v1/chat/completions", {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
+  const MAX_UPSTREAM_RETRIES = 10;
+  for (let attempt = 1; attempt <= MAX_UPSTREAM_RETRIES; attempt++) {
+    if (signal?.aborted) throw new Error("(Stopped)");
 
-  const response = await handleChat(request, {
-    endpoint: "/api/v1/chat/completions",
-    body,
-    headers,
-  });
+    let accumulatedText = "";
+    let accumulatedReasoning = "";
+    let usage = null;
+    let finishReason = "";
+    const toolCallMap = new Map();
 
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    const msg =
-      data?.error?.message ||
-      data?.error ||
-      data?.message ||
-      `Chat completions failed (${response.status})`;
-    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
-  }
-
-  const contentType = response.headers.get("content-type") || "";
-  if (!contentType.includes("text/event-stream") || !response.body) {
-    return await response.json().catch(() => ({}));
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let eventName = "message";
-  let accumulatedText = "";
-  let accumulatedReasoning = "";
-  let usage = null;
-  let finishReason = "";
-  const toolCallMap = new Map();
-
-  const consume = (_eventName, payload) => {
-    if (!payload || payload === "[DONE]") return;
-    let chunk;
     try {
-      chunk = JSON.parse(payload);
-    } catch {
-      return;
-    }
-    if (chunk.error) {
-      throw new Error(typeof chunk.error === "string" ? chunk.error : chunk.error?.message || "Stream error");
-    }
-    const choice = chunk.choices?.[0];
-    const delta = choice?.delta || {};
-    const reasoningPiece = delta.reasoning_content || delta.reasoning || delta.thinking || delta.thought || "";
-    const textPiece = delta.content || "";
-    if (choice?.finish_reason) finishReason = choice.finish_reason;
-    if (chunk.usage) usage = chunk.usage;
+      const request = new Request("http://9router.local/api/v1/chat/completions", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal,
+      });
 
-    if (reasoningPiece) {
-      accumulatedReasoning += reasoningPiece;
-      onReasoningDelta?.(accumulatedReasoning);
-    }
-    if (textPiece) {
-      accumulatedText += textPiece;
-      onTextDelta?.(accumulatedText);
-    }
-    if (Array.isArray(delta.tool_calls)) {
-      for (const tc of delta.tool_calls) {
-        const idx = tc.index ?? 0;
-        if (!toolCallMap.has(idx)) {
-          toolCallMap.set(idx, { id: tc.id || "", type: "function", name: "", arguments: "" });
-        }
-        const existing = toolCallMap.get(idx);
-        if (tc.id) existing.id = tc.id;
-        if (tc.function?.name) existing.name += tc.function.name;
-        if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+      const response = await handleChat(request, {
+        endpoint: "/api/v1/chat/completions",
+        body,
+        headers,
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const msg =
+          data?.error?.message ||
+          data?.error ||
+          data?.message ||
+          `Chat completions failed (${response.status})`;
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
       }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("text/event-stream") || !response.body) {
+        return await response.json().catch(() => ({}));
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let eventName = "message";
+
+      const consume = (_eventName, payload) => {
+        if (!payload || payload === "[DONE]") return;
+        let chunk;
+        try {
+          chunk = JSON.parse(payload);
+        } catch {
+          return;
+        }
+        if (chunk.error) {
+          throw new Error(typeof chunk.error === "string" ? chunk.error : chunk.error?.message || "Stream error");
+        }
+        const choice = chunk.choices?.[0];
+        const delta = choice?.delta || {};
+        const reasoningPiece = delta.reasoning_content || delta.reasoning || delta.thinking || delta.thought || "";
+        const textPiece = delta.content || "";
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        if (chunk.usage) usage = chunk.usage;
+
+        if (reasoningPiece) {
+          accumulatedReasoning += reasoningPiece;
+          onReasoningDelta?.(accumulatedReasoning);
+        }
+        if (textPiece) {
+          accumulatedText += textPiece;
+          onTextDelta?.(accumulatedText);
+        }
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            if (!toolCallMap.has(idx)) {
+              toolCallMap.set(idx, { id: tc.id || "", type: "function", name: "", arguments: "" });
+            }
+            const existing = toolCallMap.get(idx);
+            if (tc.id) existing.id = tc.id;
+            if (tc.function?.name) existing.name += tc.function.name;
+            if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+          }
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseSseLineBuffer(buffer, consume, eventName);
+        buffer = parsed.remainder;
+        eventName = parsed.eventName;
+      }
+      const tail = buffer.trim();
+      if (tail.startsWith("data:")) consume(eventName, tail.slice(5).trim());
+
+      const toolCalls = toolCallMap.size > 0
+        ? [...toolCallMap.entries()].sort((a, b) => a[0] - b[0]).map(([, tc]) => ({
+            id: tc.id || `call_${Date.now()}`,
+            type: "function",
+            function: { name: tc.name, arguments: tc.arguments }
+          }))
+        : undefined;
+
+      return {
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: accumulatedText || null,
+            ...(accumulatedReasoning ? { reasoning_content: accumulatedReasoning } : {}),
+            ...(toolCalls ? { tool_calls: toolCalls } : {}),
+          },
+          finish_reason: finishReason || (toolCalls?.length ? "tool_calls" : "stop"),
+        }],
+        usage,
+      };
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      const isUpstream = isUpstreamConnectionError(err);
+      if (!isUpstream || attempt >= MAX_UPSTREAM_RETRIES) {
+        throw err;
+      }
+      const delayMs = Math.min(1000 * Math.pow(1.2, attempt - 1), 6000);
+      const noticeMsg = `Upstream connection lost. Retrying (attempt ${attempt}/${MAX_UPSTREAM_RETRIES})...`;
+      console.warn(`[AgentLoop] ${noticeMsg} (in ${Math.round(delayMs)}ms)`);
+      if (onNotice) {
+        try { await onNotice(noticeMsg); } catch {}
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-  };
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parsed = parseSseLineBuffer(buffer, consume, eventName);
-    buffer = parsed.remainder;
-    eventName = parsed.eventName;
   }
-  const tail = buffer.trim();
-  if (tail.startsWith("data:")) consume(eventName, tail.slice(5).trim());
-
-  const toolCalls = toolCallMap.size > 0
-    ? [...toolCallMap.entries()].sort((a, b) => a[0] - b[0]).map(([, tc]) => ({
-        id: tc.id || `call_${Date.now()}`,
-        type: "function",
-        function: { name: tc.name, arguments: tc.arguments }
-      }))
-    : undefined;
-
-  return {
-    choices: [{
-      index: 0,
-      message: {
-        role: "assistant",
-        content: accumulatedText || null,
-        ...(accumulatedReasoning ? { reasoning_content: accumulatedReasoning } : {}),
-        ...(toolCalls ? { tool_calls: toolCalls } : {}),
-      },
-      finish_reason: finishReason || (toolCalls?.length ? "tool_calls" : "stop"),
-    }],
-    usage,
-  };
 }
 
 function extractReasoning(message) {
@@ -316,6 +359,9 @@ export async function runAgentLoop({
         top_p: 1,
         signal,
         reasoning_effort: "",
+        onNotice: async (msg) => {
+          await emit("notice", { message: msg });
+        },
       });
       const summary = extractMessageText(compact?.choices?.[0]?.message);
       if (!summary || summary.length < 20) return false;
@@ -404,6 +450,9 @@ export async function runAgentLoop({
         top_p,
         signal,
         reasoning_effort,
+        onNotice: async (msg) => {
+          await emit("notice", { message: msg });
+        },
         onReasoningDelta: async (liveReasoning) => {
           didStreamReasoning = true;
           lastStreamedReasoning = liveReasoning;
@@ -635,6 +684,9 @@ export async function runAgentLoop({
         top_p,
         signal,
         reasoning_effort,
+        onNotice: async (msg) => {
+          await emit("notice", { message: msg });
+        },
       });
       if (data?.error) {
         throw new Error(typeof data.error === "string" ? data.error : data.error?.message || JSON.stringify(data.error));

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
-import { runAgentLoop } from "@/lib/agent/loop.js";
+import { runAgentLoop, isUpstreamConnectionError } from "@/lib/agent/loop.js";
 import {
   appendChatRunEvent,
   createChatRun,
@@ -436,108 +436,129 @@ async function runPlainChat(run) {
   const modelName = String(run.request.model || "");
   const preferJson =
     /fusion/i.test(modelName) || run.request.params?.stream === false;
-  const request = new Request("http://9router.local/api/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${run.request.apiKey}` },
-    body: JSON.stringify({
-      model: run.request.model,
-      messages: run.request.messages,
-      stream: !preferJson,
-      temperature: run.request.params.temperature,
-      max_tokens: run.request.params.max_tokens,
-      top_p: run.request.params.top_p,
-      ...(run.request.params.reasoning_effort ? { reasoning_effort: run.request.params.reasoning_effort } : {}),
-    }),
-    signal: run.abortController.signal,
-  });
-  await ensureTranslators();
-  const response = await handleChat(request);
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(text(body.error?.message || body.error || body.message) || `Request failed (${response.status})`);
-  }
-  const contentType = response.headers.get("content-type") || "";
-  if (preferJson || contentType.includes("application/json") || !response.body) {
-    const body = await response.json().catch(() => ({}));
-    if (body?.error) {
-      throw new Error(text(body.error?.message || body.error || body.message) || "Chat failed");
-    }
-    run.assistantText = text(
-      body.choices?.[0]?.message?.content ||
-        body.choices?.[0]?.text ||
-        body.output_text ||
-        body.content
-    );
-    if (body.usage) {
-      run.tokenUsage = body.usage;
-      await emit(run, "usage", {
-        input_tokens: body.usage.prompt_tokens || 0,
-        output_tokens: body.usage.completion_tokens || 0,
-        context_tokens: body.usage.prompt_tokens || 0,
+
+  const MAX_UPSTREAM_RETRIES = 10;
+  for (let attempt = 1; attempt <= MAX_UPSTREAM_RETRIES; attempt++) {
+    if (run.abortController.signal.aborted) return;
+    try {
+      const request = new Request("http://9router.local/api/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${run.request.apiKey}` },
+        body: JSON.stringify({
+          model: run.request.model,
+          messages: run.request.messages,
+          stream: !preferJson,
+          temperature: run.request.params.temperature,
+          max_tokens: run.request.params.max_tokens,
+          top_p: run.request.params.top_p,
+          ...(run.request.params.reasoning_effort ? { reasoning_effort: run.request.params.reasoning_effort } : {}),
+        }),
+        signal: run.abortController.signal,
       });
+      await ensureTranslators();
+      const response = await handleChat(request);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(text(body.error?.message || body.error || body.message) || `Request failed (${response.status})`);
+      }
+      const contentType = response.headers.get("content-type") || "";
+      if (preferJson || contentType.includes("application/json") || !response.body) {
+        const body = await response.json().catch(() => ({}));
+        if (body?.error) {
+          throw new Error(text(body.error?.message || body.error || body.message) || "Chat failed");
+        }
+        run.assistantText = text(
+          body.choices?.[0]?.message?.content ||
+            body.choices?.[0]?.text ||
+            body.output_text ||
+            body.content
+        );
+        if (body.usage) {
+          run.tokenUsage = body.usage;
+          await emit(run, "usage", {
+            input_tokens: body.usage.prompt_tokens || 0,
+            output_tokens: body.usage.completion_tokens || 0,
+            context_tokens: body.usage.prompt_tokens || 0,
+          });
+        }
+        if (run.assistantText) {
+          patchAssistant(run, { content: run.assistantText, status: "streaming" });
+          await emit(run, "text", { content: run.assistantText });
+          await checkpoint(run, true);
+        }
+        return;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) {
+        const body = await response.json().catch(() => ({}));
+        run.assistantText = text(body.choices?.[0]?.message?.content);
+        return;
+      }
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let eventName = "message";
+      const consume = async (_eventName, payload) => {
+        if (!payload || payload === "[DONE]") return;
+        let chunk;
+        try { chunk = JSON.parse(payload); } catch { return; }
+        if (chunk.error) {
+          throw new Error(text(chunk.error?.message || chunk.error) || "Stream error");
+        }
+        const choice = chunk.choices?.[0];
+        const delta = choice?.delta || {};
+        const reasoningPiece = text(delta.reasoning_content || delta.reasoning || delta.thinking || delta.thought || "");
+        const piece = text(delta.content || choice?.message?.content || chunk.output_text || chunk.text);
+        if (chunk.usage) {
+          run.tokenUsage = chunk.usage;
+          await emit(run, "usage", {
+            input_tokens: chunk.usage.prompt_tokens || 0,
+            output_tokens: chunk.usage.completion_tokens || 0,
+            context_tokens: chunk.usage.prompt_tokens || 0,
+          });
+        }
+        if (reasoningPiece) {
+          run.reasoning += reasoningPiece;
+          patchAssistant(run, { reasoning: run.reasoning, status: "streaming" });
+          appendAssistantSegment(run, { type: "reasoning", content: run.reasoning });
+          await emit(run, "reasoning", { content: run.reasoning });
+        }
+        if (!piece) return;
+        run.assistantText += piece;
+        patchAssistant(run, { content: run.assistantText, status: "streaming" });
+        appendAssistantSegment(run, { type: "text", content: run.assistantText });
+        await emit(run, "text", { content: run.assistantText });
+        await checkpoint(run);
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const entries = [];
+        const parsed = parseSseLineBuffer(buffer, (name, payload) => entries.push([name, payload]), eventName);
+        buffer = parsed.remainder;
+        eventName = parsed.eventName;
+        for (const [name, payload] of entries) await consume(name, payload);
+      }
+      const tail = buffer.trim();
+      if (tail.startsWith("data:")) await consume(eventName, tail.slice(5).trim());
+      if (!run.assistantText.trim()) {
+        throw new Error("Model returned empty response (check fusion panel / credentials)");
+      }
+      return;
+    } catch (err) {
+      if (run.abortController.signal.aborted) throw err;
+      const isUpstream = isUpstreamConnectionError(err);
+      if (!isUpstream || attempt >= MAX_UPSTREAM_RETRIES) {
+        throw err;
+      }
+      const delayMs = Math.min(1000 * Math.pow(1.2, attempt - 1), 6000);
+      const noticeMsg = `⚠️ Upstream connection lost. Retrying (attempt ${attempt}/${MAX_UPSTREAM_RETRIES})...`;
+      console.warn(`[PlainChat] ${noticeMsg}`);
+      await emit(run, "notice", { message: noticeMsg });
+      run.assistantText = "";
+      run.reasoning = "";
+      await new Promise((r) => setTimeout(r, delayMs));
     }
-    if (run.assistantText) {
-      patchAssistant(run, { content: run.assistantText, status: "streaming" });
-      await emit(run, "text", { content: run.assistantText });
-      await checkpoint(run, true);
-    }
-    return;
-  }
-  const reader = response.body?.getReader();
-  if (!reader) {
-    const body = await response.json().catch(() => ({}));
-    run.assistantText = text(body.choices?.[0]?.message?.content);
-    return;
-  }
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let eventName = "message";
-  const consume = async (_eventName, payload) => {
-    if (!payload || payload === "[DONE]") return;
-    let chunk;
-    try { chunk = JSON.parse(payload); } catch { return; }
-    if (chunk.error) {
-      throw new Error(text(chunk.error?.message || chunk.error) || "Stream error");
-    }
-    const choice = chunk.choices?.[0];
-    const delta = choice?.delta || {};
-    const reasoningPiece = text(delta.reasoning_content || delta.reasoning || delta.thinking || delta.thought || "");
-    const piece = text(delta.content || choice?.message?.content || chunk.output_text || chunk.text);
-    if (chunk.usage) {
-      run.tokenUsage = chunk.usage;
-      await emit(run, "usage", {
-        input_tokens: chunk.usage.prompt_tokens || 0,
-        output_tokens: chunk.usage.completion_tokens || 0,
-        context_tokens: chunk.usage.prompt_tokens || 0,
-      });
-    }
-    if (reasoningPiece) {
-      run.reasoning += reasoningPiece;
-      patchAssistant(run, { reasoning: run.reasoning, status: "streaming" });
-      appendAssistantSegment(run, { type: "reasoning", content: run.reasoning });
-      await emit(run, "reasoning", { content: run.reasoning });
-    }
-    if (!piece) return;
-    run.assistantText += piece;
-    patchAssistant(run, { content: run.assistantText, status: "streaming" });
-    appendAssistantSegment(run, { type: "text", content: run.assistantText });
-    await emit(run, "text", { content: run.assistantText });
-    await checkpoint(run);
-  };
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const entries = [];
-    const parsed = parseSseLineBuffer(buffer, (name, payload) => entries.push([name, payload]), eventName);
-    buffer = parsed.remainder;
-    eventName = parsed.eventName;
-    for (const [name, payload] of entries) await consume(name, payload);
-  }
-  const tail = buffer.trim();
-  if (tail.startsWith("data:")) await consume(eventName, tail.slice(5).trim());
-  if (!run.assistantText.trim()) {
-    throw new Error("Model returned empty response (check fusion panel / credentials)");
   }
 }
 
@@ -1224,6 +1245,18 @@ async function execute(run) {
     }
 
   } catch (error) {
+    if (!run.abortController.signal.aborted && isUpstreamConnectionError(error)) {
+      run.retryCount = (run.retryCount || 0) + 1;
+      if (run.retryCount <= 10) {
+        const delayMs = Math.min(1500 * run.retryCount, 6000);
+        const retryNotice = `⚠️ Upstream connection lost. Auto-retrying run (attempt ${run.retryCount}/10)...`;
+        console.warn(`[execute] ${retryNotice}`);
+        await emit(run, "notice", { message: retryNotice });
+        await new Promise((r) => setTimeout(r, delayMs));
+        return execute(run);
+      }
+    }
+
     const message = run.abortController.signal.aborted ? "(Stopped)" : (error?.message || String(error));
     const content = run.abortController.signal.aborted
       ? stoppedSummary(run.messages, run.assistantText, true)
