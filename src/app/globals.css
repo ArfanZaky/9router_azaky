@@ -36,6 +36,10 @@
   --color-surface-3: #e7e7e9;
   --color-sidebar: rgba(244, 241, 236, 0.85);
 
+  /* Common UI aliases */
+  --color-card: var(--color-surface);
+  --color-background: var(--color-bg);
+
   /* Borders */
   --color-border: #e5e7eb;
   --color-border-subtle: #f1f1f3;
@@ -92,6 +96,10 @@
   --color-surface-2: #303030;
   --color-surface-3: #3a3a3a;
   --color-sidebar: rgba(30, 30, 30, 0.85);
+
+  /* Common UI aliases */
+  --color-card: var(--color-surface);
+  --color-background: var(--color-bg);
 
   --color-border: #333333;
   --color-border-subtle: #2a2a2a;
@@ -158,6 +166,8 @@ select {
   --color-surface-2: var(--color-surface-2);
   --color-surface-3: var(--color-surface-3);
   --color-sidebar: var(--color-sidebar);
+  --color-card: var(--color-card);
+  --color-background: var(--color-background);
   --color-border: var(--color-border);
   --color-border-subtle: var(--color-border-subtle);
   --color-text: var(--color-text);
@@ -254,6 +264,15 @@ input, textarea {
 }
 .dark .scroll-thin-x::-webkit-scrollbar-thumb {
   background: rgba(229, 106, 74, 0.55);
+}
+
+/* Utility to completely hide scrollbar while preserving scrollability */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
 /* Global thin mac-like scrollbars (overrides clunky Windows/Linux default) */

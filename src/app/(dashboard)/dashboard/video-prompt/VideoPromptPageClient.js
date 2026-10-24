@@ -936,205 +936,196 @@ Example format:
   const activeScene = scenes[selectedSceneIndex] || scenes[0];
 
   return (
-    <div className="flex flex-1 flex-col min-h-0 h-full w-full overflow-hidden bg-background text-text-main">
-      {/* Top Studio Bar: Branding, Dynamic Tabs, Active Model Status & Actions */}
-      <header className="h-14 border-b border-border bg-card/85 backdrop-blur-md px-3 sm:px-4 flex items-center justify-between shrink-0 z-20 gap-2">
-        {/* Left branding & editable title */}
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="h-8 w-8 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center text-primary shrink-0 shadow-xs">
-            <span className="material-symbols-outlined text-[20px]">movie_filter</span>
+    <div className="flex flex-1 flex-col min-h-0 h-full w-full overflow-hidden bg-bg text-text-main">
+      {/* Top Studio Bar: Tier 1 = project info & quick actions, Tier 2 = production pipeline stages */}
+      <header className="shrink-0 z-20 border-b border-border bg-surface/95 backdrop-blur-md">
+        {/* Tier 1: Project Identity & Global Actions */}
+        <div className="flex items-center justify-between gap-2 sm:gap-3 px-3 sm:px-5 h-13 sm:h-14">
+          {/* Project identity */}
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <div className="size-8 sm:size-9 rounded-xl bg-primary/10 border border-primary/25 flex items-center justify-center text-primary shrink-0 shadow-xs">
+              <span className="material-symbols-outlined text-[18px] sm:text-[20px]" aria-hidden="true">movie_filter</span>
+            </div>
+            <div className="min-w-0 flex flex-col justify-center">
+              <div className="flex items-center gap-1.5">
+                {isEditingTitle ? (
+                  <input
+                    type="text"
+                    autoFocus
+                    aria-label="Project title"
+                    value={projectTitle}
+                    onChange={(e) => setProjectTitle(e.target.value)}
+                    onBlur={() => setIsEditingTitle(false)}
+                    onKeyDown={(e) => (e.key === "Enter" || e.key === "Escape") && setIsEditingTitle(false)}
+                    className="h-7 sm:h-8 w-36 sm:w-60 text-xs sm:text-sm font-semibold bg-surface-2 border border-primary rounded-md px-2 outline-none text-text-main"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingTitle(true)}
+                    className="group flex items-center gap-1 min-h-[32px] max-w-[130px] sm:max-w-xs text-xs sm:text-sm font-semibold tracking-tight text-left rounded-md hover:text-primary focus-visible:outline-2 focus-visible:outline-primary transition-colors"
+                    title="Click to rename project"
+                  >
+                    <span className="truncate">{projectTitle || "Video Storyboard Studio"}</span>
+                    <span className="material-symbols-outlined text-[13px] sm:text-[14px] text-text-muted opacity-60 group-hover:opacity-100 shrink-0" aria-hidden="true">
+                      edit
+                    </span>
+                  </button>
+                )}
+              </div>
+              <div className="hidden sm:flex items-center gap-1.5 text-[11px] leading-4 text-text-muted whitespace-nowrap">
+                <span>{scenes.length} shots</span>
+                <span className="text-border" aria-hidden="true">·</span>
+                <span className="text-emerald-600 dark:text-emerald-400 font-medium">{imagesReadyCount} img</span>
+                <span className="text-border" aria-hidden="true">·</span>
+                <span className="text-blue-600 dark:text-blue-400 font-medium">{videosReadyCount} vid</span>
+              </div>
+            </div>
           </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              {isEditingTitle ? (
-                <input
-                  type="text"
-                  autoFocus
-                  value={projectTitle}
-                  onChange={(e) => setProjectTitle(e.target.value)}
-                  onBlur={() => setIsEditingTitle(false)}
-                  onKeyDown={(e) => e.key === "Enter" && setIsEditingTitle(false)}
-                  className="text-xs font-semibold bg-surface-2 border border-primary rounded px-1.5 py-0.5 outline-none text-text-main"
-                />
-              ) : (
+
+          {/* Right cluster: Active model chips + Global actions */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            {/* Active Model Quick Switchers (2xl+) */}
+            <div className="hidden 2xl:flex items-center gap-1 bg-surface-2/70 p-0.5 rounded-lg border border-border text-[11px]">
+              {[
+                { icon: "psychology", value: llmModel, empty: "No LLM", title: "Change script LLM model", open: () => setShowLlmModal(true) },
+                { icon: "image", value: imageModel, empty: "No image model", title: "Change first-frame image model", open: () => setShowImageModal(true) },
+                { icon: "movie", value: videoModel, empty: "No video model", title: "Change video model", open: () => setShowVideoModal(true) },
+              ].map((m) => (
                 <button
+                  key={m.icon}
                   type="button"
-                  onClick={() => setIsEditingTitle(true)}
-                  className="flex items-center gap-1 text-xs font-semibold tracking-tight hover:text-primary transition-colors truncate group text-left"
-                  title="Click to rename project"
+                  onClick={m.open}
+                  title={m.title}
+                  className={`inline-flex items-center gap-1.5 h-7 px-2 rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-primary ${
+                    m.value
+                      ? "text-text-main hover:bg-surface hover:text-primary"
+                      : "text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
+                  }`}
                 >
-                  <span className="truncate">{projectTitle || "Video Storyboard Studio"}</span>
-                  <span className="material-symbols-outlined text-[13px] opacity-0 group-hover:opacity-100 text-text-muted transition-opacity">
-                    edit
-                  </span>
+                  <span className="material-symbols-outlined text-[14px] text-primary" aria-hidden="true">{m.icon}</span>
+                  <span className="truncate max-w-[85px] font-medium">{m.value ? m.value.split("/").pop() : m.empty}</span>
                 </button>
-              )}
-              <span className="hidden xl:inline-flex px-1.5 py-0.2 rounded text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
-                Pipeline 3.0
-              </span>
+              ))}
             </div>
-            <div className="flex items-center gap-2 text-[11px] text-text-muted">
-              <span>{scenes.length} Shots</span>
-              <span className="text-border">•</span>
-              <span className="text-emerald-500 font-medium">{imagesReadyCount} Img</span>
-              <span className="text-border">•</span>
-              <span className="text-blue-500 font-medium">{videosReadyCount} Vid</span>
-            </div>
+
+            {/* Compact model status for xl (1280 - 1535px) */}
+            <button
+              type="button"
+              onClick={() => setActiveTab("settings")}
+              className="hidden xl:inline-flex 2xl:hidden items-center gap-1.5 h-8 px-2.5 rounded-lg border border-border bg-surface-2 text-text-muted hover:text-text-main text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-primary"
+              title="Configure AI models in Settings"
+            >
+              <span className="material-symbols-outlined text-[14px] text-primary" aria-hidden="true">tune</span>
+              <span>AI Pipeline</span>
+            </button>
+
+            <div className="hidden xl:block h-4 w-px bg-border mx-0.5" aria-hidden="true" />
+
+            {/* Action buttons */}
+            {[
+              { key: "new", icon: "add", label: "New", title: "Start fresh project", onClick: handleNewStoryboard, show: true },
+              { key: "save", icon: isSaving ? "progress_activity" : "save", label: "Save", title: "Save project", onClick: handleSaveProject, show: scenes.length > 0 || !!prompt.trim(), disabled: isSaving },
+              { key: "export", icon: "file_download", label: "Export", title: "Export script and prompts", onClick: () => setExportModalOpen(true), show: scenes.length > 0 },
+              {
+                key: "history",
+                icon: "history",
+                label: `History (${projects.length})`,
+                title: "Saved storyboard library",
+                onClick: () => {
+                  setHistoryOpen(!historyOpen);
+                  loadProjects();
+                },
+                show: true,
+                active: historyOpen,
+              },
+            ]
+              .filter((a) => a.show)
+              .map((a) => (
+                <button
+                  key={a.key}
+                  type="button"
+                  onClick={a.onClick}
+                  disabled={a.disabled}
+                  title={a.title}
+                  aria-label={a.label}
+                  aria-pressed={a.key === "history" ? !!a.active : undefined}
+                  className={`inline-flex items-center justify-center gap-1.5 h-8 min-w-[36px] sm:min-w-[40px] px-2.5 sm:px-3 rounded-lg text-xs font-semibold border transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary disabled:opacity-60 ${
+                    a.key === "new"
+                      ? "bg-brand-500 hover:bg-brand-600 text-white border-transparent shadow-xs"
+                      : a.active
+                      ? "bg-primary/10 text-primary border-primary/40"
+                      : "bg-surface-2 hover:bg-surface-3 text-text-main border-border"
+                  }`}
+                >
+                  <span className={`material-symbols-outlined text-[17px] ${a.disabled ? "animate-spin" : ""}`} aria-hidden="true">
+                    {a.icon}
+                  </span>
+                  <span className="hidden md:inline">{a.label}</span>
+                </button>
+              ))}
           </div>
         </div>
 
-        {/* Center: Responsive Studio Workflow Tabs */}
-        <div className="flex items-center bg-surface-2/80 p-0.5 sm:p-1 rounded-xl border border-border overflow-x-auto scroll-thin-x max-w-full">
-          <button
-            onClick={() => setActiveTab("story")}
-            className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1 text-xs font-medium rounded-lg transition-all shrink-0 ${
-              activeTab === "story"
-                ? "bg-card text-text-main shadow-xs border border-border/80 font-semibold"
-                : "text-text-muted hover:text-text-main"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">menu_book</span>
-            <span>1. Story</span>
-          </button>
-          <button
-            onClick={() => setActiveTab("characters")}
-            className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1 text-xs font-medium rounded-lg transition-all shrink-0 ${
-              activeTab === "characters"
-                ? "bg-card text-text-main shadow-xs border border-border/80 font-semibold"
-                : "text-text-muted hover:text-text-main"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">groups</span>
-            <span>2. Cast</span>
-            {characters.length > 0 && (
-              <span className="text-[10px] px-1 py-0.2 rounded-full bg-primary/20 text-primary font-bold">
-                {characters.length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab("storyboard")}
-            className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1 text-xs font-medium rounded-lg transition-all shrink-0 ${
-              activeTab === "storyboard"
-                ? "bg-card text-text-main shadow-xs border border-border/80 font-semibold"
-                : "text-text-muted hover:text-text-main"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">grid_view</span>
-            <span>3. Shots</span>
-            {scenes.length > 0 && (
-              <span className="text-[10px] px-1 py-0.2 rounded-full bg-primary/20 text-primary font-bold">
-                {scenes.length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab("studio")}
-            className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1 text-xs font-medium rounded-lg transition-all shrink-0 ${
-              activeTab === "studio"
-                ? "bg-card text-text-main shadow-xs border border-border/80 font-semibold"
-                : "text-text-muted hover:text-text-main"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">videocam</span>
-            <span>4. Director</span>
-          </button>
-          <button
-            onClick={() => setActiveTab("settings")}
-            className={`flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1 text-xs font-medium rounded-lg transition-all shrink-0 ${
-              activeTab === "settings"
-                ? "bg-card text-text-main shadow-xs border border-border/80 font-semibold"
-                : "text-text-muted hover:text-text-main"
-            }`}
-          >
-            <span className="material-symbols-outlined text-[16px]">tune</span>
-            <span className="hidden sm:inline">5. Settings</span>
-          </button>
-        </div>
+        {/* Tier 2: Production Pipeline Stage Track */}
+        <div className="flex items-center justify-between gap-3 px-2 sm:px-5 h-12 border-t border-border/50 bg-surface-2/30">
+          <nav aria-label="Studio workflow" className="grid grid-cols-5 sm:flex sm:items-center gap-1 sm:gap-2 w-full sm:w-auto min-w-0">
+            {[
+              { id: "story", icon: "menu_book", label: "Story" },
+              { id: "characters", icon: "groups", label: "Cast", count: characters.length },
+              { id: "storyboard", icon: "grid_view", label: "Shots", count: scenes.length },
+              { id: "studio", icon: "videocam", label: "Director" },
+              { id: "settings", icon: "tune", label: "Settings" },
+            ].map((t, i) => {
+              const active = activeTab === t.id;
+              return (
+                <div key={t.id} className="flex items-center gap-1 sm:gap-2 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab(t.id)}
+                    aria-current={active ? "page" : undefined}
+                    className={`w-full sm:w-auto inline-flex items-center justify-center gap-1.5 sm:gap-2 h-9 min-h-[40px] sm:min-h-[36px] px-1 sm:px-3 rounded-lg text-[11px] sm:text-xs font-medium transition-all focus-visible:outline-2 focus-visible:outline-primary min-w-0 ${
+                      active
+                        ? "bg-surface border border-border text-primary font-semibold shadow-xs ring-1 ring-primary/20"
+                        : "border border-transparent text-text-muted hover:text-text-main hover:bg-surface/60"
+                    }`}
+                  >
+                    <span
+                      className={`size-4 sm:size-5 rounded-full text-[9px] sm:text-[10px] font-bold flex items-center justify-center shrink-0 ${
+                        active ? "bg-primary text-white" : "bg-surface-2 text-text-muted border border-border"
+                      }`}
+                      aria-hidden="true"
+                    >
+                      {i + 1}
+                    </span>
+                    <span className="material-symbols-outlined text-[15px] sm:text-[16px] hidden sm:inline shrink-0" aria-hidden="true">{t.icon}</span>
+                    <span className="truncate">{t.label}</span>
+                    {t.count > 0 && (
+                      <span className={`min-w-4 h-4 px-1 rounded-full text-[9px] sm:text-[10px] font-bold hidden sm:flex items-center justify-center shrink-0 ${
+                        active ? "bg-primary/15 text-primary" : "bg-surface-2 text-text-muted border border-border"
+                      }`}>
+                        {t.count}
+                      </span>
+                    )}
+                  </button>
+                  {i < 4 && (
+                    <span className="hidden sm:inline-flex items-center text-text-muted/30 select-none shrink-0" aria-hidden="true">
+                      <span className="material-symbols-outlined text-[13px]">chevron_right</span>
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </nav>
 
-        {/* Right: Active Model Status Chips & Global Actions */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* Active Model Quick Switcher Chips */}
-          <div className="hidden 2xl:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-surface-2 border border-border text-[11px]">
-            <button
-              onClick={() => setShowLlmModal(true)}
-              className="flex items-center gap-1 text-text-muted hover:text-primary transition-colors"
-              title="Click to change Script LLM model"
-            >
-              <span className="material-symbols-outlined text-[14px] text-primary">psychology</span>
-              <span className="truncate max-w-[90px]">{llmModel ? llmModel.split("/").pop() : "No LLM"}</span>
-            </button>
-            <span className="text-border">|</span>
-            <button
-              onClick={() => setShowImageModal(true)}
-              className="flex items-center gap-1 text-text-muted hover:text-primary transition-colors"
-              title="Click to change First-Frame Image model"
-            >
-              <span className="material-symbols-outlined text-[14px] text-primary">image</span>
-              <span className="truncate max-w-[90px]">{imageModel ? imageModel.split("/").pop() : "No Img"}</span>
-            </button>
-            <span className="text-border">|</span>
-            <button
-              onClick={() => setShowVideoModal(true)}
-              className="flex items-center gap-1 text-text-muted hover:text-primary transition-colors"
-              title="Click to change AI Video model"
-            >
-              <span className="material-symbols-outlined text-[14px] text-primary">movie</span>
-              <span className="truncate max-w-[90px]">{videoModel ? videoModel.split("/").pop() : "No Video"}</span>
-            </button>
+          {/* Pipeline Metadata (2xl+) */}
+          <div className="hidden 2xl:flex items-center gap-2 text-[11px] text-text-muted shrink-0">
+            <span className="truncate max-w-[180px]">
+              Engine: <span className="text-text-main font-medium">{targetEngine.split("(")[0]}</span>
+            </span>
+            <span className="text-border" aria-hidden="true">·</span>
+            <span className="font-mono text-primary font-medium">~{scenes.length * 5}s runtime</span>
           </div>
-
-          <Button
-            variant="primary"
-            size="sm"
-            icon="add"
-            onClick={handleNewStoryboard}
-            className="text-xs"
-            title="Start fresh project"
-          >
-            <span className="hidden md:inline">New</span>
-          </Button>
-
-          {(scenes.length > 0 || prompt.trim()) && (
-            <Button
-              variant="outline"
-              size="sm"
-              icon="save"
-              loading={isSaving}
-              onClick={handleSaveProject}
-              className="text-xs"
-              title="Save project to SQLite database"
-            >
-              <span className="hidden md:inline">Save</span>
-            </Button>
-          )}
-
-          {scenes.length > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              icon="file_download"
-              onClick={() => setExportModalOpen(true)}
-              className="text-xs"
-              title="Export script and prompts"
-            >
-              <span className="hidden md:inline">Export</span>
-            </Button>
-          )}
-
-          <Button
-            variant={historyOpen ? "primary" : "ghost"}
-            size="sm"
-            icon="history"
-            onClick={() => {
-              setHistoryOpen(!historyOpen);
-              loadProjects();
-            }}
-            className="text-xs"
-            title="Saved Storyboard Library"
-          >
-            <span className="hidden sm:inline">History</span> ({projects.length})
-          </Button>
         </div>
       </header>
 
@@ -1159,7 +1150,7 @@ Example format:
                       key={tmpl.title}
                       type="button"
                       onClick={() => handleApplyTemplate(tmpl)}
-                      className="p-2.5 rounded-xl border border-border bg-card/60 hover:bg-card hover:border-primary/50 text-left transition-all group flex flex-col justify-between"
+                      className="p-2.5 rounded-xl border border-border bg-surface/60 hover:bg-surface hover:border-primary/50 text-left transition-all group flex flex-col justify-between"
                     >
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-text-main group-hover:text-primary">
                         <span className="material-symbols-outlined text-[16px] text-primary">{tmpl.icon}</span>
@@ -1174,7 +1165,7 @@ Example format:
               </div>
 
               {/* Main Script Editor Card */}
-              <div className="p-5 rounded-2xl bg-card border border-border shadow-sm space-y-4">
+              <div className="p-5 rounded-2xl bg-surface border border-border shadow-sm space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-sm font-semibold flex items-center gap-2">
@@ -1475,7 +1466,7 @@ Example format:
         {activeTab === "characters" && (
           <div className="flex-1 flex overflow-y-auto custom-scrollbar p-4 sm:p-6 justify-center">
             <div className="max-w-4xl w-full space-y-5">
-              <div className="p-5 rounded-2xl bg-card border border-border shadow-sm space-y-5">
+              <div className="p-5 rounded-2xl bg-surface border border-border shadow-sm space-y-5">
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                   <div>
                     <h2 className="text-sm font-semibold flex items-center gap-2">
@@ -1520,7 +1511,7 @@ Example format:
                       value={newCharName}
                       onChange={(e) => setNewCharName(e.target.value)}
                       placeholder="e.g. Jack Vance"
-                      className="w-full mt-1 text-xs bg-card border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main"
+                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main"
                     />
                   </div>
                   <div>
@@ -1528,7 +1519,7 @@ Example format:
                     <select
                       value={newCharRole}
                       onChange={(e) => setNewCharRole(e.target.value)}
-                      className="w-full mt-1 text-xs bg-card border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main cursor-pointer"
+                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main cursor-pointer"
                     >
                       <option value="Lead">Lead Protagonist</option>
                       <option value="Antagonist">Antagonist / Rival</option>
@@ -1544,7 +1535,7 @@ Example format:
                       value={newCharDesc}
                       onChange={(e) => setNewCharDesc(e.target.value)}
                       placeholder="e.g. 35yo, worn brown trench coat, glowing blue cyber eye"
-                      className="w-full mt-1 text-xs bg-card border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main"
+                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main"
                     />
                   </div>
                 </div>
@@ -1634,7 +1625,7 @@ Example format:
         {activeTab === "storyboard" && (
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Header Toolbar: Stats, View Toggles & Batch Actions */}
-            <div className="p-4 border-b border-border bg-card/60 backdrop-blur-sm shrink-0 flex flex-wrap items-center justify-between gap-3">
+            <div className="p-4 border-b border-border bg-surface/60 backdrop-blur-sm shrink-0 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-sm font-semibold flex items-center gap-2">
@@ -1658,7 +1649,7 @@ Example format:
                     onClick={() => setStoryboardViewMode("grid")}
                     className={`p-1.5 rounded text-xs transition-colors ${
                       storyboardViewMode === "grid"
-                        ? "bg-card text-text-main shadow-xs"
+                        ? "bg-surface text-text-main shadow-xs"
                         : "text-text-muted hover:text-text-main"
                     }`}
                     title="Grid Card View"
@@ -1669,7 +1660,7 @@ Example format:
                     onClick={() => setStoryboardViewMode("timeline")}
                     className={`p-1.5 rounded text-xs transition-colors ${
                       storyboardViewMode === "timeline"
-                        ? "bg-card text-text-main shadow-xs"
+                        ? "bg-surface text-text-main shadow-xs"
                         : "text-text-muted hover:text-text-main"
                     }`}
                     title="Timeline Table View"
@@ -1737,8 +1728,8 @@ Example format:
                       key={idx}
                       className={`p-4 rounded-2xl border transition-all flex flex-col justify-between group ${
                         selectedSceneIndex === idx
-                          ? "bg-card border-primary/70 shadow-md ring-1 ring-primary/30"
-                          : "bg-card/70 border-border hover:border-primary/40 hover:bg-card"
+                          ? "bg-surface border-primary/70 shadow-md ring-1 ring-primary/30"
+                          : "bg-surface/70 border-border hover:border-primary/40 hover:bg-surface"
                       }`}
                     >
                       <div className="space-y-3">
@@ -1828,7 +1819,7 @@ Example format:
                           <button
                             type="button"
                             onClick={() => copy(scene.motionPrompt)}
-                            className="absolute top-1.5 right-1.5 p-1 rounded bg-card border border-border text-text-muted hover:text-primary opacity-0 group-hover/code:opacity-100 transition-opacity"
+                            className="absolute top-1.5 right-1.5 p-1 rounded bg-surface border border-border text-text-muted hover:text-primary opacity-0 group-hover/code:opacity-100 transition-opacity"
                             title="Copy Motion Prompt"
                           >
                             <span className="material-symbols-outlined text-[13px]">content_copy</span>
@@ -1908,7 +1899,7 @@ Example format:
                 </div>
               ) : (
                 /* TIMELINE TABLE VIEW */
-                <div className="rounded-2xl border border-border bg-card overflow-hidden shadow-xs">
+                <div className="rounded-2xl border border-border bg-surface overflow-hidden shadow-xs">
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
@@ -2011,7 +2002,7 @@ Example format:
         {activeTab === "studio" && (
           <div className="flex-1 flex overflow-hidden">
             {/* Left Filmstrip Timeline Rail */}
-            <div className="w-64 border-r border-border bg-card/40 overflow-y-auto custom-scrollbar p-3 space-y-2 shrink-0 flex flex-col justify-between">
+            <div className="w-64 border-r border-border bg-surface/40 overflow-y-auto custom-scrollbar p-3 space-y-2 shrink-0 flex flex-col justify-between">
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-1">
                   <span className="text-[11px] font-bold text-text-muted uppercase tracking-wider">
@@ -2033,8 +2024,8 @@ Example format:
                       onClick={() => setSelectedSceneIndex(idx)}
                       className={`p-2 rounded-xl border text-left cursor-pointer transition-all flex items-center gap-2.5 ${
                         selectedSceneIndex === idx
-                          ? "bg-card border-primary text-text-main shadow-sm ring-1 ring-primary/20"
-                          : "bg-surface/50 border-border/80 text-text-muted hover:border-primary/40 hover:bg-card"
+                          ? "bg-surface border-primary text-text-main shadow-sm ring-1 ring-primary/20"
+                          : "bg-surface/50 border-border/80 text-text-muted hover:border-primary/40 hover:bg-surface"
                       }`}
                     >
                       <div className="h-10 w-14 rounded-lg bg-surface-2 border border-border overflow-hidden shrink-0 flex items-center justify-center relative">
@@ -2074,7 +2065,7 @@ Example format:
               {activeScene ? (
                 <div className="max-w-4xl space-y-5">
                   {/* Director Monitor Top Bar */}
-                  <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-card border border-border shadow-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-surface border border-border shadow-xs">
                     <div className="flex items-center gap-3">
                       <div className="flex items-center gap-1">
                         <button
@@ -2117,7 +2108,7 @@ Example format:
                           type="button"
                           onClick={() => setStudioMonitorMode("split")}
                           className={`px-2 py-1 rounded font-medium transition-colors ${
-                            studioMonitorMode === "split" ? "bg-card text-text-main shadow-xs" : "text-text-muted"
+                            studioMonitorMode === "split" ? "bg-surface text-text-main shadow-xs" : "text-text-muted"
                           }`}
                         >
                           Split View
@@ -2126,7 +2117,7 @@ Example format:
                           type="button"
                           onClick={() => setStudioMonitorMode("video")}
                           className={`px-2 py-1 rounded font-medium transition-colors ${
-                            studioMonitorMode === "video" ? "bg-card text-text-main shadow-xs" : "text-text-muted"
+                            studioMonitorMode === "video" ? "bg-surface text-text-main shadow-xs" : "text-text-muted"
                           }`}
                         >
                           Video Only
@@ -2135,7 +2126,7 @@ Example format:
                           type="button"
                           onClick={() => setStudioMonitorMode("image")}
                           className={`px-2 py-1 rounded font-medium transition-colors ${
-                            studioMonitorMode === "image" ? "bg-card text-text-main shadow-xs" : "text-text-muted"
+                            studioMonitorMode === "image" ? "bg-surface text-text-main shadow-xs" : "text-text-muted"
                           }`}
                         >
                           Keyframe Only
@@ -2163,7 +2154,7 @@ Example format:
                   >
                     {/* First-frame Keyframe Box */}
                     {(studioMonitorMode === "split" || studioMonitorMode === "image") && (
-                      <div className="p-4 rounded-2xl bg-card border border-border shadow-sm space-y-3">
+                      <div className="p-4 rounded-2xl bg-surface border border-border shadow-sm space-y-3">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-semibold flex items-center gap-1.5 text-text-main">
                             <span className="material-symbols-outlined text-primary text-[16px]">image</span>
@@ -2227,7 +2218,7 @@ Example format:
 
                     {/* AI Video Render Box */}
                     {(studioMonitorMode === "split" || studioMonitorMode === "video") && (
-                      <div className="p-4 rounded-2xl bg-card border border-border shadow-sm space-y-3">
+                      <div className="p-4 rounded-2xl bg-surface border border-border shadow-sm space-y-3">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-semibold flex items-center gap-1.5 text-text-main">
                             <span className="material-symbols-outlined text-primary text-[16px]">movie</span>
@@ -2316,7 +2307,7 @@ Example format:
                   </div>
 
                   {/* Prompt Engineering Inspector for Current Scene */}
-                  <div className="p-5 rounded-2xl bg-card border border-border space-y-4 shadow-sm">
+                  <div className="p-5 rounded-2xl bg-surface border border-border space-y-4 shadow-sm">
                     <div className="flex items-center justify-between">
                       <h3 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
                         Director Prompt Engineering Details
@@ -2425,7 +2416,7 @@ Example format:
         {activeTab === "settings" && (
           <div className="flex-1 flex overflow-y-auto custom-scrollbar p-4 sm:p-6 justify-center">
             <div className="max-w-4xl w-full space-y-5">
-              <div className="p-5 rounded-2xl bg-card border border-border shadow-sm space-y-5">
+              <div className="p-5 rounded-2xl bg-surface border border-border shadow-sm space-y-5">
                 <div>
                   <h2 className="text-sm font-semibold flex items-center gap-2">
                     <span className="material-symbols-outlined text-primary">tune</span>
@@ -2582,7 +2573,7 @@ Example format:
 
         {/* Saved Projects Drawer / Sidebar */}
         {historyOpen && (
-          <aside className="w-80 border-l border-border bg-card/95 backdrop-blur-md p-4 flex flex-col justify-between shrink-0 z-30 shadow-lg animate-in slide-in-from-right duration-200">
+          <aside className="w-80 border-l border-border bg-surface/95 backdrop-blur-md p-4 flex flex-col justify-between shrink-0 z-30 shadow-lg animate-in slide-in-from-right duration-200">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
@@ -2720,7 +2711,7 @@ Example format:
           onClick={() => setLightboxImage(null)}
         >
           <div
-            className="max-w-4xl w-full max-h-[90vh] overflow-hidden rounded-2xl bg-card border border-border p-4 flex flex-col justify-between"
+            className="max-w-4xl w-full max-h-[90vh] overflow-hidden rounded-2xl bg-surface border border-border p-4 flex flex-col justify-between"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between pb-3 border-b border-border">
