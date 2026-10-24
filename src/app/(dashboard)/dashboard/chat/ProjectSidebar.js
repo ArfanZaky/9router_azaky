@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import GitSourceControl from "./GitSourceControl";
 import GitGraphView from "./GitGraphView";
 import ProjectTerminalView from "./ProjectTerminalView";
+import { useModelCaps } from "@/shared/hooks/useModelCaps";
 
 function GitBranchIcon({ className = "h-3.5 w-3.5" }) {
   return (
@@ -65,6 +66,43 @@ function ProjectSidebarComponent({
     setKnownRepos([]);
   }, [workspacePath]);
 
+  // CodeGraph state
+  const [codeGraphStatus, setCodeGraphStatus] = useState(null);
+  const [codeGraphLoading, setCodeGraphLoading] = useState(false);
+  const [codeGraphSyncing, setCodeGraphSyncing] = useState(false);
+  const [codeGraphMsg, setCodeGraphMsg] = useState(null);
+
+  // Model capabilities for context window
+  const { getCaps } = useModelCaps();
+  const caps = useMemo(() => (getCaps ? getCaps(activeModel) : null), [getCaps, activeModel]);
+  const contextWindow = caps?.contextWindow || 128000;
+
+  const lastMsgWithUsage = useMemo(() => {
+    return [...(messages || [])].reverse().find(
+      (m) => m.tokenUsage && (m.tokenUsage.prompt_tokens != null || m.tokenUsage.total_tokens != null)
+    );
+  }, [messages]);
+
+  const contextTokens = useMemo(() => {
+    if (lastMsgWithUsage?.tokenUsage) {
+      return Number(
+        lastMsgWithUsage.tokenUsage.prompt_tokens ??
+        lastMsgWithUsage.tokenUsage.input_tokens ??
+        lastMsgWithUsage.tokenUsage.total_tokens ??
+        0
+      );
+    }
+    const totalChars = (messages || []).reduce(
+      (acc, m) => acc + (typeof m.content === "string" ? m.content.length : 0),
+      0
+    );
+    return Math.round(totalChars / 4);
+  }, [lastMsgWithUsage, messages]);
+
+  const contextPct = contextWindow > 0 && contextTokens > 0
+    ? Math.min(100, Math.round((contextTokens / contextWindow) * 100))
+    : 0;
+
   // Process manager state
   const [processes, setProcesses] = useState([]);
   const [expandedLogsId, setExpandedLogsId] = useState(null);
@@ -96,6 +134,61 @@ function ProjectSidebarComponent({
       .catch(() => {});
     return () => { alive = false; };
   }, [workspacePath, refreshKey]);
+
+  // Load CodeGraph status
+  const loadCodeGraphStatus = useCallback(async () => {
+    if (!workspacePath) return;
+    try {
+      setCodeGraphLoading(true);
+      const res = await fetch(`/api/chat/projects/codegraph?workspace=${encodeURIComponent(workspacePath)}`);
+      const d = await res.json().catch(() => null);
+      if (d?.ok && d.status) {
+        setCodeGraphStatus(d.status);
+      } else if (d?.status) {
+        setCodeGraphStatus(d.status);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setCodeGraphLoading(false);
+    }
+  }, [workspacePath]);
+
+  useEffect(() => {
+    if (workspacePath && (tab === "info" || tab === "graph")) {
+      loadCodeGraphStatus();
+    }
+  }, [workspacePath, tab, loadCodeGraphStatus, refreshKey]);
+
+  // Reindex CodeGraph handler
+  const handleReindexCodeGraph = async () => {
+    if (!workspacePath || codeGraphSyncing) return;
+    setCodeGraphSyncing(true);
+    setCodeGraphMsg(null);
+    try {
+      const res = await fetch("/api/chat/projects/codegraph", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "sync", workspace: workspacePath }),
+      });
+      const d = await res.json().catch(() => null);
+      if (d?.ok) {
+        if (d.status) setCodeGraphStatus(d.status);
+        setCodeGraphMsg({ type: "success", text: "CodeGraph sync completed" });
+        fetch("/api/chat/projects/detail", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: workspacePath }),
+        }).then((r) => r.json()).then((pd) => { if (!pd.error) setData(pd); }).catch(() => {});
+      } else {
+        setCodeGraphMsg({ type: "error", text: d?.error || "Reindex failed" });
+      }
+    } catch (err) {
+      setCodeGraphMsg({ type: "error", text: err?.message || "Failed to trigger reindex" });
+    } finally {
+      setCodeGraphSyncing(false);
+    }
+  };
 
   // Load running / tracked processes for this workspace
   const loadProcesses = useCallback(async () => {
@@ -313,14 +406,14 @@ function ProjectSidebarComponent({
         <button
           type="button"
           onClick={handleOpenSystemTerminal}
-          className="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-background/80 transition"
+          className="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-background/80 transition cursor-pointer"
           title="Open in System Terminal"
         >
           <span className="material-symbols-outlined text-[18px]">
             {openingTerminal ? "sync" : "terminal"}
           </span>
         </button>
-        <button onClick={onClose} className="text-text-muted hover:text-text-main">
+        <button onClick={onClose} className="text-text-muted hover:text-text-main cursor-pointer">
           <span className="material-symbols-outlined text-[18px]">close</span>
         </button>
       </div>
@@ -333,7 +426,7 @@ function ProjectSidebarComponent({
               key={t.id}
               onClick={() => setTab(t.id)}
               className={`
-                group relative flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all duration-200
+                group relative flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all duration-200 cursor-pointer
                 ${tab === t.id 
                   ? "bg-primary/10 text-primary shadow-sm ring-1 ring-primary/20" 
                   : "text-text-muted hover:bg-background/60 hover:text-foreground"
@@ -415,10 +508,197 @@ function ProjectSidebarComponent({
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {tab === "info" ? (
-            <div className="space-y-2 text-xs">
-              <p className="font-medium">Name</p><p className="text-text-muted">{data?.name || "(unnamed)"}</p>
-              <p className="font-medium">Package</p><p className="font-mono text-text-muted">{data?.packageName || "(none)"}</p>
-              <p className="font-medium">Files</p><p className="text-text-muted">{(data?.files || []).length} indexed</p>
+            <div className="space-y-4 text-xs">
+              {/* Project Metadata Card */}
+              <div className="rounded-xl border border-border bg-background/40 p-3 space-y-2">
+                <div className="flex items-center gap-1.5 text-text-muted font-semibold text-[11px] uppercase tracking-wider">
+                  <span className="material-symbols-outlined text-[15px] text-primary">folder</span>
+                  <span>Project Overview</span>
+                </div>
+                <div className="space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-muted">Name</span>
+                    <span className="font-semibold text-text-main">{data?.name || "(unnamed)"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-muted">Package</span>
+                    <span className="font-mono text-text-muted">{data?.packageName || "(none)"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-muted">Files</span>
+                    <span className="text-text-main">{(data?.files || []).length} indexed</span>
+                  </div>
+                  <div className="flex items-start justify-between gap-2 pt-1 border-t border-border/50">
+                    <span className="text-text-muted shrink-0">Path</span>
+                    <span className="font-mono text-[10px] text-text-muted break-all text-right">{workspacePath}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* CodeGraph Index & Reindex Card */}
+              <div className="rounded-xl border border-border bg-background/40 p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-text-muted font-semibold text-[11px] uppercase tracking-wider">
+                    <span className="material-symbols-outlined text-[15px] text-primary">schema</span>
+                    <span>CodeGraph Index</span>
+                  </div>
+                  {codeGraphLoading ? (
+                    <span className="text-[10px] text-text-muted">Checking...</span>
+                  ) : codeGraphStatus ? (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
+                        codeGraphStatus.isUpToDate
+                          ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
+                          : codeGraphStatus.initialized
+                          ? "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400"
+                          : "bg-sidebar border-border text-text-muted"
+                      }`}
+                    >
+                      <span
+                        className={`size-1.5 rounded-full ${
+                          codeGraphStatus.isUpToDate
+                            ? "bg-emerald-500"
+                            : codeGraphStatus.initialized
+                            ? "bg-amber-500"
+                            : "bg-text-muted"
+                        }`}
+                      />
+                      {codeGraphStatus.isUpToDate
+                        ? "Up to date"
+                        : codeGraphStatus.initialized
+                        ? "Pending sync"
+                        : "Not initialized"}
+                    </span>
+                  ) : null}
+                </div>
+
+                {/* CodeGraph Stats Grid */}
+                {codeGraphStatus?.initialized ? (
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="rounded-lg bg-black/20 dark:bg-black/40 border border-border/60 p-2">
+                      <p className="text-[10px] text-text-muted">Indexed Files</p>
+                      <p className="font-mono text-xs font-semibold text-text-main mt-0.5">
+                        {codeGraphStatus.files || "-"}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-black/20 dark:bg-black/40 border border-border/60 p-2">
+                      <p className="text-[10px] text-text-muted">Graph Nodes</p>
+                      <p className="font-mono text-xs font-semibold text-text-main mt-0.5">
+                        {codeGraphStatus.nodes || "-"}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-black/20 dark:bg-black/40 border border-border/60 p-2">
+                      <p className="text-[10px] text-text-muted">Call Edges</p>
+                      <p className="font-mono text-xs font-semibold text-text-main mt-0.5">
+                        {codeGraphStatus.edges || "-"}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-black/20 dark:bg-black/40 border border-border/60 p-2">
+                      <p className="text-[10px] text-text-muted">DB Size</p>
+                      <p className="font-mono text-xs font-semibold text-text-main mt-0.5">
+                        {codeGraphStatus.dbSize || "-"}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-text-muted">
+                    Code intelligence graph not yet initialized for this workspace. Click reindex to build the symbol graph.
+                  </p>
+                )}
+
+                {/* Reindex Button */}
+                <div className="space-y-1.5 pt-1">
+                  <button
+                    type="button"
+                    disabled={codeGraphSyncing}
+                    onClick={handleReindexCodeGraph}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/20 transition disabled:opacity-50 shadow-sm cursor-pointer"
+                    title="Sync CodeGraph index with codebase changes"
+                  >
+                    <span className={`material-symbols-outlined text-[16px] ${codeGraphSyncing ? "animate-spin" : ""}`}>
+                      sync
+                    </span>
+                    <span>{codeGraphSyncing ? "Syncing CodeGraph..." : "Reindex (codegraph sync)"}</span>
+                  </button>
+
+                  {codeGraphMsg && (
+                    <div
+                      className={`rounded-lg px-2.5 py-1.5 text-[11px] font-medium flex items-center gap-1.5 ${
+                        codeGraphMsg.type === "success"
+                          ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
+                          : "bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-500/20"
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[14px]">
+                        {codeGraphMsg.type === "success" ? "check_circle" : "error"}
+                      </span>
+                      <span className="truncate">{codeGraphMsg.text}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Active Session Context Card */}
+              <div className="rounded-xl border border-border bg-background/40 p-3 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-text-muted font-semibold text-[11px] uppercase tracking-wider">
+                    <span className="material-symbols-outlined text-[15px] text-primary">data_usage</span>
+                    <span>Session Context</span>
+                  </div>
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
+                      contextPct > 80
+                        ? "bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-400"
+                        : contextPct > 60
+                        ? "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400"
+                        : "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
+                    }`}
+                  >
+                    <span
+                      className={`size-1.5 rounded-full ${
+                        contextPct > 80 ? "bg-rose-500" : contextPct > 60 ? "bg-amber-500" : "bg-emerald-500"
+                      }`}
+                    />
+                    {contextPct > 80 ? "High Usage" : contextPct > 60 ? "Elevated" : "Healthy"}
+                  </span>
+                </div>
+
+                <div className="flex items-baseline justify-between">
+                  <span className="text-2xl font-bold font-mono text-text-main tabular-nums">
+                    {contextPct}%
+                  </span>
+                  <span className="text-[11px] text-text-muted tabular-nums">
+                    {contextTokens.toLocaleString()} / {contextWindow.toLocaleString()} tokens
+                  </span>
+                </div>
+
+                {/* Visual Progress Bar */}
+                <div className="h-2 w-full rounded-full bg-border/60 overflow-hidden">
+                  <div
+                    style={{ width: `${Math.min(100, Math.max(contextPct > 0 ? 2 : 0, contextPct))}%` }}
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      contextPct > 80
+                        ? "bg-rose-500"
+                        : contextPct > 60
+                        ? "bg-amber-500"
+                        : "bg-emerald-500"
+                    }`}
+                  />
+                </div>
+
+                <div className="space-y-1 text-[11px] pt-1 border-t border-border/50 text-text-muted">
+                  <div className="flex items-center justify-between">
+                    <span>Active Model</span>
+                    <span className="font-mono text-text-main truncate max-w-[150px]">{activeModel || "No model"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Free Capacity</span>
+                    <span className="font-mono text-text-main tabular-nums">
+                      {Math.max(0, contextWindow - contextTokens).toLocaleString()} tokens ({Math.max(0, 100 - contextPct)}%)
+                    </span>
+                  </div>
+                </div>
+              </div>
             </div>
           ) : tab === "terminal" ? (
             <ProjectTerminalView
@@ -467,7 +747,7 @@ function ProjectSidebarComponent({
                   <div className="flex items-center gap-1">
                     <button
                       onClick={loadProcesses}
-                      className="p-1 text-text-muted hover:text-foreground transition rounded hover:bg-background/60"
+                      className="p-1 text-text-muted hover:text-foreground transition rounded hover:bg-background/60 cursor-pointer"
                       title="Refresh processes"
                     >
                       <span className="material-symbols-outlined text-[14px]">refresh</span>
@@ -475,7 +755,7 @@ function ProjectSidebarComponent({
                     {processes.some((p) => p.status !== "running") ? (
                       <button
                         onClick={handleClearFinished}
-                        className="text-[10px] text-text-muted hover:text-red-400 transition"
+                        className="text-[10px] text-text-muted hover:text-red-400 transition cursor-pointer"
                         title="Clear completed/killed records"
                       >
                         Clear finished
@@ -567,7 +847,7 @@ function ProjectSidebarComponent({
                               <button
                                 type="button"
                                 onClick={() => setExpandedLogsId(isExpanded ? null : proc.id)}
-                                className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded transition ${
+                                className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded transition cursor-pointer ${
                                   isExpanded
                                     ? "bg-primary/20 text-primary font-medium"
                                     : "text-text-muted hover:bg-background/80 hover:text-foreground"
@@ -582,7 +862,7 @@ function ProjectSidebarComponent({
                                   type="button"
                                   disabled={killingId === proc.id}
                                   onClick={() => handleKillProcess(proc)}
-                                  className="flex items-center gap-1 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-400 hover:bg-red-500/20 transition disabled:opacity-50 shadow-sm"
+                                  className="flex items-center gap-1 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-400 hover:bg-red-500/20 transition disabled:opacity-50 shadow-sm cursor-pointer"
                                   title="Kill / Stop Process Tree"
                                 >
                                   <span className="material-symbols-outlined text-[13px]">
@@ -635,7 +915,7 @@ function ProjectSidebarComponent({
                   <button
                     type="submit"
                     disabled={startingCmd || !customCmd.trim()}
-                    className="flex shrink-0 items-center gap-1 rounded-lg bg-primary/20 border border-primary/30 px-2.5 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/30 transition disabled:opacity-50"
+                    className="flex shrink-0 items-center gap-1 rounded-lg bg-primary/20 border border-primary/30 px-2.5 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/30 transition disabled:opacity-50 cursor-pointer"
                   >
                     <span className="material-symbols-outlined text-[14px]">play_arrow</span>
                     <span>Run</span>
@@ -663,7 +943,7 @@ function ProjectSidebarComponent({
                           <button
                             type="button"
                             onClick={() => handleRunBackground(`npm run ${name}`)}
-                            className="flex items-center gap-0.5 rounded-lg border border-primary/30 bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/20 transition"
+                            className="flex items-center gap-0.5 rounded-lg border border-primary/30 bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/20 transition cursor-pointer"
                             title="Run in background"
                           >
                             <span className="material-symbols-outlined text-[13px]">play_arrow</span>
@@ -672,7 +952,7 @@ function ProjectSidebarComponent({
                           <button
                             type="button"
                             onClick={() => onRun(`npm run ${name}`)}
-                            className="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-background/80 transition"
+                            className="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-background/80 transition cursor-pointer"
                             title="Send to chat draft"
                           >
                             <span className="material-symbols-outlined text-[14px]">chat</span>

@@ -4,6 +4,12 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 function rowToSession(row) {
   if (!row) return null;
+  const latestUsage = parseJson(row.latestTokenUsage, null);
+  const promptTokens = latestUsage?.prompt_tokens ?? latestUsage?.input_tokens ?? latestUsage?.context_tokens ?? null;
+  const contextTokens = promptTokens != null
+    ? Number(promptTokens)
+    : (row.totalContentLength ? Math.round(Number(row.totalContentLength) / 4) : 0);
+
   return {
     id: row.id,
     title: row.title || "New chat",
@@ -17,6 +23,9 @@ function rowToSession(row) {
     tasks: parseJson(row.tasks, []),
     codebase: row.codebase || "",
     teamState: parseJson(row.teamState, { roster: [], tasks: [], messages: [] }),
+    contextTokens,
+    latestTokenUsage: latestUsage,
+    messageCount: row.messageCount != null ? Number(row.messageCount) : undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -70,15 +79,51 @@ export async function listChatSessions({ q = "", limit = 100, offset = 0 } = {})
   if (query) {
     const like = `%${query}%`;
     rows = db.all(
-      `SELECT * FROM chatSessions
-       WHERE title LIKE ? OR model LIKE ? OR systemPrompt LIKE ?
-       ORDER BY pinned DESC, updatedAt DESC
+      `SELECT s.*,
+        (
+          SELECT m.tokenUsage
+          FROM chatMessages m
+          WHERE m.sessionId = s.id AND m.tokenUsage IS NOT NULL
+          ORDER BY m.rowid DESC LIMIT 1
+        ) as latestTokenUsage,
+        (
+          SELECT SUM(LENGTH(m.content))
+          FROM chatMessages m
+          WHERE m.sessionId = s.id
+        ) as totalContentLength,
+        (
+          SELECT COUNT(*)
+          FROM chatMessages m
+          WHERE m.sessionId = s.id
+        ) as messageCount
+       FROM chatSessions s
+       WHERE s.title LIKE ? OR s.model LIKE ? OR s.systemPrompt LIKE ?
+       ORDER BY s.pinned DESC, s.updatedAt DESC
        LIMIT ? OFFSET ?`,
       [like, like, like, lim, off]
     );
   } else {
     rows = db.all(
-      `SELECT * FROM chatSessions ORDER BY pinned DESC, updatedAt DESC LIMIT ? OFFSET ?`,
+      `SELECT s.*,
+        (
+          SELECT m.tokenUsage
+          FROM chatMessages m
+          WHERE m.sessionId = s.id AND m.tokenUsage IS NOT NULL
+          ORDER BY m.rowid DESC LIMIT 1
+        ) as latestTokenUsage,
+        (
+          SELECT SUM(LENGTH(m.content))
+          FROM chatMessages m
+          WHERE m.sessionId = s.id
+        ) as totalContentLength,
+        (
+          SELECT COUNT(*)
+          FROM chatMessages m
+          WHERE m.sessionId = s.id
+        ) as messageCount
+       FROM chatSessions s
+       ORDER BY s.pinned DESC, s.updatedAt DESC
+       LIMIT ? OFFSET ?`,
       [lim, off]
     );
   }
@@ -87,7 +132,23 @@ export async function listChatSessions({ q = "", limit = 100, offset = 0 } = {})
 
 export async function getChatSession(id, { includeMessages = true, messageLimit } = {}) {
   const db = await getAdapter();
-  const row = db.get(`SELECT * FROM chatSessions WHERE id = ?`, [id]);
+  const row = db.get(
+    `SELECT s.*,
+      (
+        SELECT m.tokenUsage
+        FROM chatMessages m
+        WHERE m.sessionId = s.id AND m.tokenUsage IS NOT NULL
+        ORDER BY m.rowid DESC LIMIT 1
+      ) as latestTokenUsage,
+      (
+        SELECT SUM(LENGTH(m.content))
+        FROM chatMessages m
+        WHERE m.sessionId = s.id
+      ) as totalContentLength
+     FROM chatSessions s
+     WHERE s.id = ?`,
+    [id]
+  );
   if (!row) return null;
   const session = rowToSession(row);
   if (includeMessages) {
@@ -124,6 +185,19 @@ export async function getChatSession(id, { includeMessages = true, messageLimit 
       } catch {
         // quiet fallback
       }
+    }
+
+    const lastWithTokens = [...session.messages].reverse().find(
+      (m) => m.tokenUsage && (m.tokenUsage.prompt_tokens != null || m.tokenUsage.total_tokens != null)
+    );
+    if (lastWithTokens?.tokenUsage) {
+      session.latestTokenUsage = lastWithTokens.tokenUsage;
+      session.contextTokens = Number(
+        lastWithTokens.tokenUsage.prompt_tokens ??
+        lastWithTokens.tokenUsage.input_tokens ??
+        lastWithTokens.tokenUsage.total_tokens ??
+        0
+      );
     }
   }
   return session;
@@ -334,7 +408,7 @@ export async function compactSessionMessages(sessionId, keepLastN = 20) {
   
   // If we have fewer messages than we want to keep, nothing to do
   if (totalCount <= keepLastN) {
-    return { success: true, message: `Session has only ${totalCount} messages — no compaction needed (keeping last ${keepLastN})` };
+    return { success: true, message: `Session has only ${totalCount} messages (no compaction needed) (keeping last ${keepLastN})` };
   }
   
   // Delete all but the last N messages (most recent N via DESC + LIMIT)

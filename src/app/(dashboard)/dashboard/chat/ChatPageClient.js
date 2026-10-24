@@ -690,6 +690,7 @@ export default function ChatPageClient() {
     });
 
     if (activeSessionIdRef.current !== id) return data;
+    if (data.contextTokens != null) setCtxUsed(data.contextTokens);
     const msgs = data.messages || [];
     setMessages(msgs);
     setTasks(Array.isArray(data.tasks) ? data.tasks : []);
@@ -796,9 +797,12 @@ export default function ChatPageClient() {
                 ),
               });
             } else if (event.type === "usage") {
-              const used = Number(data.context_tokens || 0);
+              const used = Number(data.context_tokens || data.input_tokens || data.prompt_tokens || 0);
               const win = Number(data.context_window || 0);
-              if (used > 0) setCtxUsed(used);
+              if (used > 0) {
+                setCtxUsed(used);
+                setSessions((prev) => prev.map((item) => item.id === existingSessionId ? { ...item, contextTokens: used } : item));
+              }
               if (win > 0) setCtxWindow(win);
             } else if (event.type === "task_update") {
               patchChatRun(existingSessionId, { tasks: data.items || [] });
@@ -1285,9 +1289,12 @@ export default function ChatPageClient() {
                 setMessages(next);
               }
             } else if (event.type === "usage") {
-              const used = Number(eventData.context_tokens || 0);
+              const used = Number(eventData.context_tokens || eventData.input_tokens || eventData.prompt_tokens || 0);
               const win = Number(eventData.context_window || 0);
-              if (used > 0) setCtxUsed(used);
+              if (used > 0) {
+                setCtxUsed(used);
+                setSessions((prev) => prev.map((item) => item.id === sessionId ? { ...item, contextTokens: used } : item));
+              }
               if (win > 0) setCtxWindow(win);
             } else if (event.type === "task_update") {
               patchChatRun(sessionId, { tasks: eventData.items || [] });
@@ -1597,6 +1604,9 @@ export default function ChatPageClient() {
     setCodebase(targetPath);
     setCodebaseValue(targetPath);
     setError("");
+    if (targetSession?.contextTokens != null) {
+      setCtxUsed(targetSession.contextTokens);
+    }
 
     // Instant restoration from IndexedDB cache
     getCachedTranscript(id).then((cached) => {
@@ -2752,9 +2762,12 @@ export default function ChatPageClient() {
               : m);
             pushLive(updated, `Tool done: ${data.name}`);
           } else if (event.type === "usage") {
-            const used = Number(data.context_tokens || 0);
+            const used = Number(data.context_tokens || data.input_tokens || data.prompt_tokens || 0);
             const win = Number(data.context_window || 0);
-            if (used > 0) setCtxUsed(used);
+            if (used > 0) {
+              setCtxUsed(used);
+              setSessions((prev) => prev.map((item) => item.id === sessionId ? { ...item, contextTokens: used } : item));
+            }
             if (win > 0) setCtxWindow(win);
           } else if (event.type === "task_update") {
             patchChatRun(sessionId, { tasks: data.items || [] });

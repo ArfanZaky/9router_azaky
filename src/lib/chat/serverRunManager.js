@@ -668,6 +668,15 @@ async function runAgent(run) {
     },
     onEvent: async (type, data) => {
       if (type === "done") return;
+      if (type === "usage" && data) {
+        const inputTokens = data.input_tokens || data.context_tokens || data.prompt_tokens || 0;
+        const outputTokens = data.output_tokens || data.completion_tokens || 0;
+        run.tokenUsage = {
+          prompt_tokens: inputTokens,
+          completion_tokens: outputTokens,
+          total_tokens: inputTokens + outputTokens,
+        };
+      }
       if (type === "text") {
         run.assistantText = data.content || run.assistantText;
         patchAssistant(run, { content: run.assistantText, status: "streaming" });

@@ -1,7 +1,8 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { Button } from "@/shared/components";
+import { useModelCaps } from "@/shared/hooks/useModelCaps";
 
 function formatRelativeTime(value) {
   if (!value) return "";
@@ -29,7 +30,15 @@ const SessionRailItem = memo(function SessionRailItem({
   onRenameChange,
   onRenameSubmit,
   onRenameCancel,
+  getCaps,
 }) {
+  const caps = useMemo(() => (getCaps ? getCaps(session.model) : null), [getCaps, session.model]);
+  const contextWindow = caps?.contextWindow || 128000;
+  const contextTokens = session.contextTokens || 0;
+  const contextPct = contextWindow > 0 && contextTokens > 0
+    ? Math.min(100, Math.round((contextTokens / contextWindow) * 100))
+    : 0;
+
   return (
     <div
       className={`group rounded-xl border px-2.5 py-2 cursor-pointer transition ${
@@ -94,9 +103,37 @@ const SessionRailItem = memo(function SessionRailItem({
               ) : null}
             </div>
           )}
-          <p className="truncate text-[11px] text-text-muted mt-0.5">
-            {session.model || "No model"} · {formatRelativeTime(session.updatedAt)}
-          </p>
+          <div className="flex items-center justify-between gap-1.5 mt-0.5">
+            <p className="truncate text-[11px] text-text-muted min-w-0 flex-1">
+              {session.model || "No model"} · {formatRelativeTime(session.updatedAt)}
+            </p>
+            {contextTokens > 0 ? (
+              <span
+                className={`shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums border ${
+                  contextPct > 80
+                    ? "bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-400"
+                    : contextPct > 60
+                    ? "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-400"
+                    : "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
+                }`}
+                title={`Context: ${contextTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (${contextPct}%)`}
+              >
+                <span
+                  className={`size-1.5 rounded-full ${
+                    contextPct > 80 ? "bg-rose-500" : contextPct > 60 ? "bg-amber-500" : "bg-emerald-500"
+                  }`}
+                />
+                {contextPct < 1 ? "<1%" : `${contextPct}%`}
+              </span>
+            ) : (
+              <span
+                className="shrink-0 text-[10px] text-text-muted opacity-50 tabular-nums"
+                title="0 tokens used"
+              >
+                0%
+              </span>
+            )}
+          </div>
         </div>
         <div className={`flex flex-col gap-0.5 transition-opacity ${active ? "opacity-80 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"}`}>
           <button
@@ -160,6 +197,8 @@ function ChatSessionRail({
   onRenameCancel,
   listRef,
 }) {
+  const { getCaps } = useModelCaps();
+
   return (
     <aside className="hidden md:flex w-72 shrink-0 flex-col border-r border-border bg-sidebar/40">
       <div className="p-3 border-b border-border space-y-2">
@@ -194,6 +233,7 @@ function ChatSessionRail({
               onRenameChange={onRenameChange}
               onRenameSubmit={onRenameSubmit}
               onRenameCancel={onRenameCancel}
+              getCaps={getCaps}
             />
           ))
         )}
