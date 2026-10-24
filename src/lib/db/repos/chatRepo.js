@@ -408,19 +408,54 @@ export async function compactSessionMessages(sessionId, keepLastN = 20) {
   
   // If we have fewer messages than we want to keep, nothing to do
   if (totalCount <= keepLastN) {
-    return { success: true, message: `Session has only ${totalCount} messages (no compaction needed) (keeping last ${keepLastN})` };
+    return {
+      success: true,
+      deletedCount: 0,
+      keepLastN,
+      totalCount,
+      message: `Session has only ${totalCount} messages (no compaction needed, keeping last ${keepLastN})`,
+    };
   }
   
   // Delete all but the last N messages (most recent N via DESC + LIMIT)
   const deletedCount = db.run(
-    `DELETE FROM chatMessages WHERE sessionId = ? AND rowid IN (SELECT rowid FROM chatMessages WHERE sessionId = ? ORDER BY rowid DESC OFFSET ?)`,
-    [sessionId, sessionId, Math.max(0, totalCount - keepLastN)]
+    `DELETE FROM chatMessages WHERE sessionId = ? AND rowid NOT IN (SELECT rowid FROM chatMessages WHERE sessionId = ? ORDER BY rowid DESC LIMIT ?)`,
+    [sessionId, sessionId, keepLastN]
   ).changes;
+
+  // Recalculate estimated tokens from remaining messages and adjust latest tokenUsage
+  const remainingContent = db.get(
+    `SELECT SUM(LENGTH(content)) as len FROM chatMessages WHERE sessionId = ?`,
+    [sessionId]
+  );
+  const estimatedTokens = remainingContent?.len ? Math.round(Number(remainingContent.len) / 4) : 0;
+
+  const lastMsg = db.get(
+    `SELECT id, tokenUsage FROM chatMessages WHERE sessionId = ? AND tokenUsage IS NOT NULL ORDER BY rowid DESC LIMIT 1`,
+    [sessionId]
+  );
+  if (lastMsg) {
+    const usage = parseJson(lastMsg.tokenUsage, {});
+    usage.prompt_tokens = estimatedTokens;
+    usage.input_tokens = estimatedTokens;
+    usage.context_tokens = estimatedTokens;
+    db.run(
+      `UPDATE chatMessages SET tokenUsage = ? WHERE id = ?`,
+      [stringifyJson(usage), lastMsg.id]
+    );
+  }
   
   // Update session timestamp
   db.run(`UPDATE chatSessions SET updatedAt = ? WHERE id = ?`, [new Date().toISOString(), sessionId]);
   
-  return { success: true, deletedCount, keepLastN, totalCount, message: `Compacted: deleted ${deletedCount} messages, kept ${keepLastN}, total now: ${totalCount - deletedCount}` };
+  return {
+    success: true,
+    deletedCount,
+    keepLastN,
+    totalCount,
+    estimatedTokens,
+    message: `Compacted: deleted ${deletedCount} messages, kept ${keepLastN}, total now: ${totalCount - deletedCount}`,
+  };
 }
 
 export async function deleteChatMessage(id) {

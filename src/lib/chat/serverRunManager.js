@@ -1322,6 +1322,27 @@ export async function startServerChatRun(input) {
   const session = await getChatSession(input.sessionId, { includeMessages: false });
   if (!session) throw new Error("Session not found");
 
+  // Auto-compact guard: if session context usage is elevated (> 75% of context window) and has > 20 messages,
+  // automatically compact older messages in database and trim memory buffer to prevent context overflow.
+  try {
+    const { getCapabilitiesForModel } = await import("open-sse/providers/capabilities.js");
+    const caps = getCapabilitiesForModel(input.providerId, request.model);
+    const win = caps?.contextWindow || 128000;
+    const ctxTokens = session.contextTokens || 0;
+    if (ctxTokens > win * 0.75 && (session.messageCount || request.messages.length) > 20) {
+      const { compactSessionMessages } = await import("@/lib/db/repos/chatRepo.js");
+      const compactResult = await compactSessionMessages(input.sessionId, 20);
+      if (compactResult?.deletedCount > 0) {
+        request.messages = request.messages.slice(-20);
+        if (Array.isArray(input.persistedMessages)) {
+          input.persistedMessages = input.persistedMessages.slice(-20);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[startServerChatRun] Auto-compact check failed:", err?.message);
+  }
+
   // Clean up and abort any lingering runs for the same session to avoid race conditions
   for (const [existingId, existing] of liveRuns.entries()) {
     if (existing.sessionId === input.sessionId && !existing.abortController?.signal?.aborted) {

@@ -3831,6 +3831,12 @@ export default function ChatPageClient() {
             initialTab={projectTab}
             activeModel={activeSession?.model}
             onRun={(cmd) => { setDraft(`Run: ${cmd}`); }}
+            onCompact={async () => {
+              if (activeSessionId) {
+                await loadSessionDetail(activeSessionId);
+                await loadSessions(activeSessionId);
+              }
+            }}
             onClose={() => {
               setProjectOpen(false);
               try { globalThis.localStorage?.setItem("chat.projectOpen", "false"); } catch {}

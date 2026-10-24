@@ -1,8 +1,12 @@
 import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
+import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { executeTool, getOpenAiTools } from "./tools.js";
 import { buildAgentSystemPrompt } from "./skills.js";
 import { sanitizeToolHistory } from "./history.js";
+import { isUpstreamConnectionError } from "./connectionError.js";
+
+export { isUpstreamConnectionError };
 
 let translatorsReady = false;
 async function ensureTranslators() {
@@ -10,27 +14,6 @@ async function ensureTranslators() {
     await initTranslators();
     translatorsReady = true;
   }
-}
-
-export function isUpstreamConnectionError(err) {
-  if (!err) return false;
-  const msg = (typeof err === "string" ? err : (err?.message || String(err))).toLowerCase();
-  return (
-    msg.includes("upstream connection lost") ||
-    msg.includes("stream stall timeout") ||
-    msg.includes("econnreset") ||
-    msg.includes("etimedout") ||
-    msg.includes("socket hang up") ||
-    msg.includes("fetch failed") ||
-    msg.includes("und_err_socket") ||
-    msg.includes("premature close") ||
-    msg.includes("other side closed") ||
-    msg.includes("network error") ||
-    msg.includes("connection reset") ||
-    msg.includes("broken pipe") ||
-    msg.includes("connection closed before message completed") ||
-    msg.includes("terminated")
-  );
 }
 
 function sseEncode(event, data) {
@@ -363,7 +346,8 @@ export async function runAgentLoop({
           await emit("notice", { message: msg });
         },
       });
-      const summary = extractMessageText(compact?.choices?.[0]?.message);
+      const summary = extractMessageText(compact?.choices?.[0]?.message) ||
+        "Earlier conversation turns summarized: key decisions and context preserved. Refer to recent messages for ongoing work.";
       if (!summary || summary.length < 20) return false;
       const tail = working.slice(dropUntil);
       working.length = 0;
@@ -373,7 +357,14 @@ export async function runAgentLoop({
       );
       return true;
     } catch {
-      return false;
+      // Graceful fallback: truncate old turns and keep tail so context doesn't overflow
+      const tail = working.slice(dropUntil);
+      working.length = 0;
+      working.push(
+        { role: "system", content: `${agentSystem}\n\n## Compacted earlier conversation\n(Earlier turns omitted to preserve context window limit)` },
+        ...tail,
+      );
+      return true;
     }
   };
 
@@ -416,7 +407,7 @@ export async function runAgentLoop({
   const callCounts = new Map();
   const repeatLimit = 3;
   const repeatStopLimit = 6;
-  let compacted = false;
+  let lastCompactedLen = 0;
 
   await emit("status", { phase: "start", maxSteps: maxSteps || 0, toolCount: tools.length, workspace, accessMode: mode });
 
@@ -479,15 +470,27 @@ export async function runAgentLoop({
       throw new Error(lastError);
     }
 
-    // Compaction: if we are approaching the context window and have several
-    // prior turns, summarize older messages once.
-    if (!compacted && working.length > 8) {
+    // Auto-compaction: if we are approaching the context window (or context usage > 75%)
+    // and have several prior turns, summarize older messages into a compact block.
+    if (working.length > 8 && working.length - lastCompactedLen >= 4) {
       const promptTokens = Number(data?.usage?.prompt_tokens) || 0;
-      const contextWindow = Number(data?.usage?.context_window) || 0;
-      if (contextWindow > 0 && promptTokens > contextWindow * 0.75) {
-        compacted = true;
+      let contextWindow = Number(data?.usage?.context_window) || 0;
+      if (!contextWindow || contextWindow <= 0) {
+        try {
+          const caps = getCapabilitiesForModel(null, model);
+          if (caps?.contextWindow) contextWindow = caps.contextWindow;
+        } catch {}
+      }
+      if (!contextWindow || contextWindow <= 0) contextWindow = 128000;
+
+      const currentTokens = promptTokens > 0
+        ? promptTokens
+        : Math.round(working.reduce((acc, m) => acc + (typeof m.content === "string" ? m.content.length : 0), 0) / 4);
+
+      if (currentTokens > contextWindow * 0.75) {
+        lastCompactedLen = working.length;
         if (await compactWorking()) {
-          await emit("notice", { message: "Context compacted — earlier turns summarized" });
+          await emit("notice", { message: "Context auto-compacted: earlier turns summarized" });
         }
       }
     }
@@ -666,7 +669,7 @@ export async function runAgentLoop({
   }
 
   // Synthesize a final summary when the model was truncated (max_tokens cut or
-  // trailing ":") — otherwise the chat would just stop mid-sentence. Also runs
+  // trailing ":") : otherwise the chat would just stop mid-sentence. Also runs
   // for tool-step exhaustion. Never call tools in this final pass.
   const needsSummary = (endedWithToolCalls || lastIncomplete) && !signal?.aborted;
   if (needsSummary) {

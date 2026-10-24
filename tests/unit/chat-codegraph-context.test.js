@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import Database from "better-sqlite3";
 
 function cleanAnsi(str = "") {
   return String(str || "").replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
@@ -107,13 +108,65 @@ describe("Session Context Percentage Calculation & Thresholds", () => {
   });
 });
 
+describe("Session Context Compaction & SQLite Execution", () => {
+  it("compacts chat messages in SQLite keeping only the last N messages", () => {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE chatMessages (
+        id TEXT PRIMARY KEY,
+        sessionId TEXT,
+        role TEXT,
+        content TEXT,
+        tokenUsage TEXT
+      );
+    `);
+
+    const insert = db.prepare("INSERT INTO chatMessages (id, sessionId, role, content) VALUES (?, ?, ?, ?)");
+    for (let i = 1; i <= 30; i++) {
+      insert.run(`msg_${i}`, "session_1", i % 2 === 0 ? "assistant" : "user", `Content of message ${i}`);
+    }
+
+    const totalBefore = db.prepare("SELECT COUNT(*) as cnt FROM chatMessages WHERE sessionId = ?").get("session_1").cnt;
+    expect(totalBefore).toBe(30);
+
+    const keepLastN = 20;
+    const deletedCount = db.prepare(
+      "DELETE FROM chatMessages WHERE sessionId = ? AND rowid NOT IN (SELECT rowid FROM chatMessages WHERE sessionId = ? ORDER BY rowid DESC LIMIT ?)"
+    ).run("session_1", "session_1", keepLastN).changes;
+
+    expect(deletedCount).toBe(10);
+    const totalAfter = db.prepare("SELECT COUNT(*) as cnt FROM chatMessages WHERE sessionId = ?").get("session_1").cnt;
+    expect(totalAfter).toBe(20);
+
+    // Verify remaining are messages 11 through 30
+    const remaining = db.prepare("SELECT id FROM chatMessages WHERE sessionId = ? ORDER BY rowid ASC").all("session_1");
+    expect(remaining[0].id).toBe("msg_11");
+    expect(remaining[19].id).toBe("msg_30");
+  });
+
+  it("does not delete messages when total count is less than or equal to keepLastN", () => {
+    const db = new Database(":memory:");
+    db.exec("CREATE TABLE chatMessages (id TEXT, sessionId TEXT);");
+    const insert = db.prepare("INSERT INTO chatMessages VALUES (?, ?)");
+    for (let i = 1; i <= 5; i++) {
+      insert.run(`msg_${i}`, "session_small");
+    }
+
+    const keepLastN = 20;
+    const count = db.prepare("SELECT COUNT(*) as cnt FROM chatMessages WHERE sessionId = ?").get("session_small").cnt;
+    expect(count <= keepLastN).toBe(true);
+  });
+});
+
 describe("ProjectSidebar & ChatSessionRail Anti-Slop and Context Integration", () => {
-  it("verifies ProjectSidebar has Reindex button and Session Context card", () => {
+  it("verifies ProjectSidebar has Reindex button and Session Context card with Compact button", () => {
     const sidebarPath = path.resolve(__dirname, "../../src/app/(dashboard)/dashboard/chat/ProjectSidebar.js");
     const content = fs.readFileSync(sidebarPath, "utf8");
     expect(content).toContain("Reindex (codegraph sync)");
     expect(content).toContain("CodeGraph Index");
     expect(content).toContain("Session Context");
+    expect(content).toContain("handleCompactSession");
+    expect(content).toContain("Compact Context (keep 20)");
     expect(content).toContain("useModelCaps");
     expect(content).not.toContain("\u2014"); // Anti-Slop R-02: FORBIDDEN em dash
   });
@@ -127,12 +180,29 @@ describe("ProjectSidebar & ChatSessionRail Anti-Slop and Context Integration", (
     expect(content).not.toContain("\u2014"); // Anti-Slop R-02: FORBIDDEN em dash
   });
 
-  it("verifies chatRepo returns contextTokens and latestTokenUsage", () => {
+  it("verifies chatRepo returns contextTokens, latestTokenUsage, and compactSessionMessages works", () => {
     const repoPath = path.resolve(__dirname, "../../src/lib/db/repos/chatRepo.js");
     const content = fs.readFileSync(repoPath, "utf8");
     expect(content).toContain("latestTokenUsage");
     expect(content).toContain("contextTokens");
     expect(content).toContain("totalContentLength");
+    expect(content).toContain("compactSessionMessages");
+    expect(content).toContain("rowid NOT IN (SELECT rowid FROM chatMessages");
     expect(content).not.toContain("\u2014"); // Anti-Slop R-02
+  });
+
+  it("verifies auto-compact mechanisms in agent loop and serverRunManager", () => {
+    const loopPath = path.resolve(__dirname, "../../src/lib/agent/loop.js");
+    const loopContent = fs.readFileSync(loopPath, "utf8");
+    expect(loopContent).toContain("compactWorking");
+    expect(loopContent).toContain("getCapabilitiesForModel");
+    expect(loopContent).toContain("currentTokens > contextWindow * 0.75");
+    expect(loopContent).not.toContain("\u2014"); // Anti-Slop R-02
+
+    const serverRunPath = path.resolve(__dirname, "../../src/lib/chat/serverRunManager.js");
+    const serverRunContent = fs.readFileSync(serverRunPath, "utf8");
+    expect(serverRunContent).toContain("compactSessionMessages");
+    expect(serverRunContent).toContain("ctxTokens > win * 0.75");
+    expect(serverRunContent).not.toContain("\u2014"); // Anti-Slop R-02
   });
 });

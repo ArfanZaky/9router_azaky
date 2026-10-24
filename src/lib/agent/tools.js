@@ -995,7 +995,7 @@ export async function executeTool(name, args = {}, ctx = {}) {
         const ext = path.extname(p).toLowerCase();
         let content;
         if (ext === ".pdf") {
-          content = `PDF document (${path.basename(p)}) — binary; read visually if needed.`;
+          content = `PDF document (${path.basename(p)}): binary; read visually if needed.`;
         } else {
           content = fs.readFileSync(p, "utf8");
         }
@@ -1094,11 +1094,16 @@ export async function executeTool(name, args = {}, ctx = {}) {
         return JSON.stringify({ ok: false, error: `Unsupported manage_skill action "${action}"` });
       }
       case "compact_session": {
-        // DB-level compaction: delete old messages, keep N recent verbatim.
+        const keepLastN = Math.max(2, Number(args.keepLastN) || 20);
+        if (ctx.sessionId) {
+          const { compactSessionMessages } = await import("../db/repos/chatRepo.js");
+          const res = await compactSessionMessages(ctx.sessionId, keepLastN);
+          return JSON.stringify({ ok: true, ...res });
+        }
         return JSON.stringify({
           ok: true,
-          message: `Session compacted with last ${Number(args.keepLastN) || 20} messages preserved verbatim.`,
-          keepLastN: Number(args.keepLastN) || 20,
+          message: `Session compacted with last ${keepLastN} messages preserved verbatim.`,
+          keepLastN,
         });
       }
       default:

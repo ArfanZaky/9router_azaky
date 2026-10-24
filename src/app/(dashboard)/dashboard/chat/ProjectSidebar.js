@@ -50,6 +50,7 @@ function ProjectSidebarComponent({
   activeModel,
   onRun,
   onClose,
+  onCompact,
   initialTab = "info",
 }) {
   const [tab, setTab] = useState(initialTab || "info");
@@ -71,6 +72,10 @@ function ProjectSidebarComponent({
   const [codeGraphLoading, setCodeGraphLoading] = useState(false);
   const [codeGraphSyncing, setCodeGraphSyncing] = useState(false);
   const [codeGraphMsg, setCodeGraphMsg] = useState(null);
+
+  // Compact state
+  const [compacting, setCompacting] = useState(false);
+  const [compactMsg, setCompactMsg] = useState(null);
 
   // Model capabilities for context window
   const { getCaps } = useModelCaps();
@@ -187,6 +192,43 @@ function ProjectSidebarComponent({
       setCodeGraphMsg({ type: "error", text: err?.message || "Failed to trigger reindex" });
     } finally {
       setCodeGraphSyncing(false);
+    }
+  };
+
+  // Compact Session Context handler
+  const handleCompactSession = async () => {
+    if (!sessionId || compacting) return;
+    setCompacting(true);
+    setCompactMsg(null);
+    try {
+      const res = await fetch(`/api/chat/sessions/${sessionId}/compact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keepLastN: 20 }),
+      });
+      const d = await res.json().catch(() => null);
+      if (res.ok && d?.success) {
+        if (d.deletedCount > 0) {
+          setCompactMsg({
+            type: "success",
+            text: `Compacted: deleted ${d.deletedCount} old messages, kept ${d.keepLastN} recent`,
+          });
+        } else {
+          setCompactMsg({
+            type: "success",
+            text: `Transcript already compact (${d.totalCount} messages)`,
+          });
+        }
+        if (onCompact) {
+          await onCompact(d);
+        }
+      } else {
+        setCompactMsg({ type: "error", text: d?.error || "Compaction failed" });
+      }
+    } catch (err) {
+      setCompactMsg({ type: "error", text: err?.message || "Failed to compact session" });
+    } finally {
+      setCompacting(false);
     }
   };
 
@@ -697,6 +739,37 @@ function ProjectSidebarComponent({
                       {Math.max(0, contextWindow - contextTokens).toLocaleString()} tokens ({Math.max(0, 100 - contextPct)}%)
                     </span>
                   </div>
+                </div>
+
+                {/* Compact Context Button */}
+                <div className="space-y-1.5 pt-2 border-t border-border/50">
+                  <button
+                    type="button"
+                    disabled={compacting || !sessionId}
+                    onClick={handleCompactSession}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/20 transition disabled:opacity-50 shadow-sm cursor-pointer"
+                    title="Compact transcript: keep 20 recent messages and delete older turns"
+                  >
+                    <span className={`material-symbols-outlined text-[16px] ${compacting ? "animate-spin" : ""}`}>
+                      {compacting ? "sync" : "compress"}
+                    </span>
+                    <span>{compacting ? "Compacting..." : "Compact Context (keep 20)"}</span>
+                  </button>
+
+                  {compactMsg && (
+                    <div
+                      className={`rounded-lg px-2.5 py-1.5 text-[11px] font-medium flex items-center gap-1.5 ${
+                        compactMsg.type === "success"
+                          ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
+                          : "bg-rose-500/10 text-rose-700 dark:text-rose-400 border border-rose-500/20"
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[14px]">
+                        {compactMsg.type === "success" ? "check_circle" : "error"}
+                      </span>
+                      <span className="truncate">{compactMsg.text}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isUpstreamConnectionError } from "../../src/lib/agent/loop.js";
+import { isUpstreamConnectionError } from "../../src/lib/agent/connectionError.js";
 import fs from "node:fs";
 import path from "node:path";
 
