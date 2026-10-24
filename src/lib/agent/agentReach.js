@@ -7,6 +7,32 @@ const TIMEOUT_MS = 30_000;
 const CHANNELS = new Set(["web"]);
 let activeCalls = 0;
 const MAX_CONCURRENT = 3;
+const BLOCKED_HOSTS = new Set([
+  "home.arpa", "instance-data", "internal", "ip6-localhost", "ip6-loopback",
+  "lan", "local", "localdomain", "localhost", "metadata.google.internal",
+]);
+const BLOCKED_SUFFIXES = [".home.arpa", ".internal", ".lan", ".local", ".localdomain", ".localhost"];
+
+function isBlockedAddress(host) {
+  const type = isIP(host);
+  if (type === 4) {
+    const [a, b] = host.split(".").map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && (b === 168 || b === 0)) ||
+      (a === 198 && (b === 18 || b === 19 || b === 51)) ||
+      (a === 203 && b === 0);
+  }
+  if (type === 6) {
+    const address = host.toLowerCase();
+    return address === "::" || address === "::1" || address.startsWith("fc") ||
+      address.startsWith("fd") || /^fe[89ab]/.test(address) || address.startsWith("ff") ||
+      address.startsWith("2001:db8:") || address.startsWith("::ffff:");
+  }
+  return false;
+}
 
 export function buildAgentReachArgs({ action, query, url }) {
   if (action === "search") {
@@ -16,15 +42,15 @@ export function buildAgentReachArgs({ action, query, url }) {
     return ["web", "search", query.trim(), "--limit", "5", "--backend", "exa", "--timeout", "25"];
   }
   if (action === "read") {
-    if (typeof url !== "string" || url.length > 2048) throw new Error("public HTTP URL required");
+    if (typeof url !== "string" || url.length > 2048 || /[\\\s\x00-\x1f\x7f]/.test(url)) {
+      throw new Error("public HTTP URL required");
+    }
     let parsed;
     try { parsed = new URL(url); } catch { throw new Error("public HTTP URL required"); }
     const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
-    const addressType = isIP(host);
-    const privateV4 = addressType === 4 && /^(10\.|127\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(host);
-    const privateV6 = addressType === 6 && (host === "::1" || host === "::" || /^(fc|fd|fe8|fe9|fea|feb)/i.test(host));
-    const privateName = host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal");
-    if (!new Set(["http:", "https:"]).has(parsed.protocol) || parsed.username || parsed.password || privateV4 || privateV6 || privateName) {
+    const privateName = BLOCKED_HOSTS.has(host) || BLOCKED_SUFFIXES.some((suffix) => host.endsWith(suffix));
+    if (!new Set(["http:", "https:"]).has(parsed.protocol) || parsed.username || parsed.password ||
+        host.includes("%") || (host.indexOf(".") < 0 && !isIP(host)) || privateName || isBlockedAddress(host)) {
       throw new Error("public HTTP URL required");
     }
     return ["read", parsed.href, "--backend", "jina", "--timeout", "25"];
@@ -86,8 +112,7 @@ export async function runAgentReach(args, { signal } = {}) {
     });
     child.stderr.on("data", () => {});
     child.on("error", (error) => finish({ ok: false, error: error.code === "ENOENT" ? "Agent Reach not installed. Install Agent Reach CLI and set AGENT_REACH_BIN if needed." : "Agent Reach failed to start" }));
-    child.on("close", (code) => {
-      if (code !== 0) return finish({ ok: false, error: "Agent Reach request failed" });
+    child.on("close", () => {
       try {
         const result = JSON.parse(stdout);
         if (!result || typeof result !== "object" || typeof result.ok !== "boolean") throw new Error("invalid result");

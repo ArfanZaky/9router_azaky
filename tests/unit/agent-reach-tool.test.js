@@ -14,6 +14,20 @@ describe("Agent Reach chat tool", () => {
     ]);
   });
 
+  it("matches Agent Reach public-read policy and CLI argv", () => {
+    expect(buildAgentReachArgs({ action: "read", url: "https://example.com/page" })).toEqual([
+      "read", "https://example.com/page", "--backend", "jina", "--timeout", "25",
+    ]);
+    for (const url of [
+      "http://2130706433/", "http://0x7f000001/", "http://0177.0.0.1/",
+      "http://100.64.0.1/", "http://192.168.1.1/", "http://169.254.169.254/",
+      "http://[fc00::1]/", "http://[fe80::1]/", "http://localhost/",
+      "http://host.local/", "http://foo\\bar/", "http://example.com/path with spaces",
+    ]) {
+      expect(() => buildAgentReachArgs({ action: "read", url })).toThrow("public HTTP URL");
+    }
+  });
+
   it("rejects unapproved actions, oversize input, and URL credentials", () => {
     expect(() => buildAgentReachArgs({ action: "login", query: "x" })).toThrow("action must be search or read");
     expect(() => buildAgentReachArgs({ action: "search", query: "x".repeat(501) })).toThrow("maximum 500");
