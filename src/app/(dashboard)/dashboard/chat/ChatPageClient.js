@@ -48,6 +48,13 @@ const AGENT_ROLES = [
     prompt: "Act as the lead orchestrator. For multi-step work, publish a todo_update checklist or use team_post_task, update task status as each step progresses and completes, delegate focused read-only research or review with delegate_task, integrate the results, execute the remaining work, verify it, then report one coherent outcome. Enforce the Anti-Slop standard (https://github.com/miqdadbadjuber/anti-slop): no dead controls, real data/states, no em dashes, and rigorous verification. Do not delegate trivial work.",
   },
   {
+    id: "hermes",
+    label: "Hermes Agent",
+    icon: "psychology",
+    description: "Autonomous local agent with deep tool execution",
+    prompt: "Act as Hermes Agent, an autonomous problem-solving agent with deep terminal and tool-calling execution.",
+  },
+  {
     id: "team",
     label: "Agent Team",
     icon: "groups",
@@ -2628,6 +2635,7 @@ export default function ChatPageClient() {
         body: JSON.stringify({
           sessionId,
           mode: "agent",
+          agentRole: targetRole,
           providerId: sessionMeta.providerId,
           assistantId,
           titleSeed,

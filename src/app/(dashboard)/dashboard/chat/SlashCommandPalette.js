@@ -11,7 +11,7 @@ export const CHAT_COMMANDS = [
   { name: "fork", args: "[title]", summary: "Fork this conversation" },
   { name: "rename", args: "<title>", summary: "Rename this conversation" },
   { name: "model", summary: "Open the model picker" },
-  { name: "agent", args: "orchestrator|team|coder|researcher|reviewer|planner", summary: "Switch agent role" },
+  { name: "agent", args: "orchestrator|hermes|team|coder|researcher|reviewer|planner", summary: "Switch agent role" },
   { name: "agent-teams", args: "<goal>", summary: "DSH AgentTeams: multi-agent team execution with DAG task scheduler" },
   { name: "retry", summary: "Regenerate the latest answer" },
   { name: "stop", summary: "Stop the active run" },

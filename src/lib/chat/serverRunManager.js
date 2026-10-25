@@ -24,6 +24,7 @@ import { listTools as listMcpTools, callTool as callMcpTool } from "./mcpClient.
 import { buildMcpToolRegistry, resolveMcpRegistryCall } from "./mcpToolRegistry.js";
 import { createMcpStdioSession } from "./mcpStdioSession.js";
 import { reflectionSkipReason } from "./reflectionEligibility.js";
+import { runHermesAgentLoop } from "@/lib/agent/hermesBridge.js";
 
 const liveRuns = globalThis.__chatServerRuns || new Map();
 globalThis.__chatServerRuns = liveRuns;
@@ -361,6 +362,7 @@ function sanitizeRequest(body = {}) {
     params: body.params || {},
     verify: body.verify === true,
     autoApprove: body.autoApprove === true,
+    agentRole: body.agentRole || "orchestrator",
     // 0 (or absent) = unlimited; otherwise clamp to a sane ceiling.
     maxSteps: (() => {
       const raw = Number(body.maxSteps);
@@ -1097,7 +1099,13 @@ async function execute(run) {
   }
 
   try {
-    if (run.mode === "agent") await runAgent(run); else await runPlainChat(run);
+    if (run.agentRole === "hermes") {
+      await runHermesAgentLoop(run, { emit, checkpoint, patchAssistant, appendAssistantSegment });
+    } else if (run.mode === "agent") {
+      await runAgent(run);
+    } else {
+      await runPlainChat(run);
+    }
     const stopped = run.abortController.signal.aborted;
     let content = stoppedSummary(run.messages, run.assistantText, stopped);
     if (!stopped && run.request.verify && content.trim()) {
@@ -1414,6 +1422,7 @@ export async function startServerChatRun(input) {
     id,
     sessionId: input.sessionId,
     mode: input.mode === "agent" ? "agent" : "plain",
+    agentRole: input.agentRole || session.projectMeta?.agentRole || "orchestrator",
     providerId: input.providerId || "",
     request,
     assistantId,
