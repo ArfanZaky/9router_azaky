@@ -5,19 +5,166 @@ import path from "node:path";
 import readline from "node:readline";
 import { updateChatSession, getChatSession } from "../localDb.js";
 
-const DEFAULT_HERMES_BIN = "F:\\tools\\hermes\\hermes-agent\\.venv\\Scripts\\hermes.exe";
+const IS_WIN = process.platform === "win32";
+
+/**
+ * Ordered candidate locations for the Hermes CLI: explicit env override, then
+ * PATH, then common venv/pipx install spots. Windows-only paths stay last so a
+ * Linux/macOS server never depends on them.
+ */
+export function hermesBinCandidates() {
+  const home = os.homedir();
+  const out = [];
+  if (process.env.HERMES_BIN) out.push(process.env.HERMES_BIN);
+
+  const names = IS_WIN ? ["hermes.exe", "hermes.cmd", "hermes.bat", "hermes"] : ["hermes"];
+  for (const dir of String(process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const name of names) out.push(path.join(dir, name));
+  }
+
+  out.push(
+    path.join(home, ".local", "bin", "hermes"),
+    path.join(home, "hermes-agent", ".venv", "bin", "hermes"),
+    path.join(home, ".local", "pipx", "venvs", "hermes-agent", "bin", "hermes"),
+    "/opt/hermes-agent/.venv/bin/hermes",
+    path.join(home, ".hermes", "venv", "bin", "hermes")
+  );
+
+  if (IS_WIN) {
+    out.push(
+      path.join(home, "hermes-agent", ".venv", "Scripts", "hermes.exe"),
+      "F:\\tools\\hermes\\hermes-agent\\.venv\\Scripts\\hermes.exe"
+    );
+  }
+
+  return [...new Set(out)];
+}
 
 /**
  * Check if local Hermes CLI is accessible.
  */
 export async function isHermesAvailable() {
-  const bin = process.env.HERMES_BIN || DEFAULT_HERMES_BIN;
-  try {
-    await fs.access(bin);
-    return { available: true, path: bin };
-  } catch {
-    return { available: false, path: bin };
+  const candidates = hermesBinCandidates();
+  for (const bin of candidates) {
+    try {
+      await fs.access(bin, IS_WIN ? fs.constants.F_OK : fs.constants.X_OK);
+      return { available: true, path: bin };
+    } catch {
+      // try next candidate
+    }
   }
+  return {
+    available: false,
+    path: candidates[0] || "hermes",
+    searched: candidates,
+  };
+}
+
+/**
+ * Extract clean string content from various message content representations.
+ */
+export function extractMessageText(msg) {
+  if (!msg) return "";
+  const content = msg.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part?.text) return part.text;
+        if (part?.type === "text" && part.text) return part.text;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object") {
+    if (typeof content.text === "string") return content.text;
+    if (typeof content.content === "string") return content.content;
+    if (typeof content.message === "string") return content.message;
+  }
+  return String(content || "");
+}
+
+/**
+ * Format prior conversation turns so Hermes has full context on agent role switches
+ * and subsequent turns without relying on an isolated CLI transcript.
+ */
+export function buildHermesPrompt({ messages = [], systemPrompt = "", maxTurns = 30, maxChars = 80000 }) {
+  let lastUserIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") {
+      lastUserIndex = i;
+      break;
+    }
+  }
+
+  const lastUserMsg = lastUserIndex >= 0 ? messages[lastUserIndex] : null;
+  const currentQueryText = extractMessageText(lastUserMsg).trim();
+
+  // Check for image attachments in last user message
+  let imageAttachment = null;
+  if (Array.isArray(lastUserMsg?.content)) {
+    for (const part of lastUserMsg.content) {
+      if (part?.type === "image_url" && part.image_url?.url) {
+        imageAttachment = part.image_url.url;
+        break;
+      }
+    }
+  }
+
+  const priorMessages = lastUserIndex > 0 ? messages.slice(0, lastUserIndex) : [];
+  const turns = [];
+
+  for (const m of priorMessages) {
+    if (!m?.role) continue;
+    const txt = extractMessageText(m).trim();
+
+    if (m.role === "user") {
+      if (txt) turns.push({ role: "User", text: txt });
+    } else if (m.role === "assistant") {
+      if (txt) turns.push({ role: "Assistant", text: txt });
+    } else if (m.role === "tool") {
+      const toolName = m.name || m.tool_call_id || "tool";
+      const snippet = txt.length > 500 ? `${txt.slice(0, 500)}… [truncated]` : txt;
+      if (snippet) turns.push({ role: `Tool (${toolName})`, text: snippet });
+    }
+  }
+
+  // Cap recent turns to keep prompt bounded
+  const recent = turns.slice(-maxTurns);
+  const kept = [];
+  let charCount = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const item = recent[i];
+    const itemLen = item.text.length + item.role.length + 10;
+    if (charCount + itemLen > maxChars && kept.length > 0) {
+      kept.unshift({ role: "Note", text: "[Earlier conversation omitted to preserve context budget]" });
+      break;
+    }
+    kept.unshift(item);
+    charCount += itemLen;
+  }
+
+  let prompt = "";
+  const cleanSystem = systemPrompt?.trim();
+  if (cleanSystem && !cleanSystem.startsWith("Act as Hermes Agent")) {
+    prompt += `[System Instructions / Constraints]\n${cleanSystem}\n\n`;
+  }
+
+  if (kept.length > 0) {
+    const contextBody = kept.map((t) => `[${t.role}]\n${t.text}`).join("\n\n");
+    prompt += `[Previous Conversation Context]\nThe following conversation occurred earlier in this session. Use this context to understand previous decisions, background, and requests:\n\n${contextBody}\n\n[End of Previous Context]\n\n`;
+  }
+
+  prompt += currentQueryText;
+
+  return {
+    queryText: currentQueryText,
+    promptText: prompt,
+    imageAttachment,
+  };
 }
 
 /**
@@ -32,40 +179,44 @@ export async function runHermesAgentLoop(run, helpers = {}) {
 
   const hermesCheck = await isHermesAvailable();
   if (!hermesCheck.available) {
+    const hint = IS_WIN
+      ? "pip install hermes-agent, or set HERMES_BIN in .env to the hermes.exe path"
+      : "pipx install hermes-agent (or pip install), ensure `hermes` is on PATH, or set HERMES_BIN in .env to the binary path";
     throw new Error(
-      `Hermes binary not found at ${hermesCheck.path}. Set HERMES_BIN in .env or ensure Hermes Agent is installed at F:\\tools\\hermes\\hermes-agent.`
+      `Hermes binary not found (tried ${hermesCheck.searched.length} locations, e.g. ${hermesCheck.searched.slice(0, 3).join(", ")}). ${hint}.`
     );
   }
 
-  // Extract latest user message query
+  // Extract latest user message query with full conversation context
   const messages = run.request?.messages || run.messages || [];
-  const lastUserMsg = [...messages].reverse().find((m) => m?.role === "user");
-  const queryText = typeof lastUserMsg?.content === "string"
-    ? lastUserMsg.content
-    : Array.isArray(lastUserMsg?.content)
-      ? lastUserMsg.content.map((p) => p.text || "").join("\n")
-      : String(lastUserMsg?.content || "");
+  const { queryText, promptText, imageAttachment } = buildHermesPrompt({
+    messages,
+    systemPrompt: run.request?.systemPrompt || "",
+  });
 
   if (!queryText.trim()) {
     throw new Error("No user message content found for Hermes Agent execution");
   }
 
-  // Write query to secure temporary file to bypass Windows command line escaping/length limits
+  // Write query (including prior conversation context) to temporary file to bypass Windows command line limits
   const tmpQueryFile = path.join(os.tmpdir(), `hermes-q-${run.id}-${Date.now()}.txt`);
-  await fs.writeFile(tmpQueryFile, queryText, "utf8");
+  await fs.writeFile(tmpQueryFile, promptText, "utf8");
 
-  // Determine resume session ID if already tracked in projectMeta
-  let sessionMeta = run.projectMeta;
-  if (!sessionMeta) {
-    try {
-      const sess = await getChatSession(run.sessionId, { includeMessages: false });
-      sessionMeta = sess?.projectMeta || {};
-    } catch {
-      sessionMeta = {};
+  // Handle optional image attachment
+  let tmpImageFile = null;
+  if (imageAttachment) {
+    if (imageAttachment.startsWith("data:image/")) {
+      const match = imageAttachment.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+      if (match) {
+        const ext = match[1] === "jpeg" ? "jpg" : match[1];
+        tmpImageFile = path.join(os.tmpdir(), `hermes-img-${run.id}-${Date.now()}.${ext}`);
+        await fs.writeFile(tmpImageFile, Buffer.from(match[2], "base64"));
+      }
+    } else if (imageAttachment.startsWith("/") || /^[a-zA-Z]:[/\\]/.test(imageAttachment)) {
+      tmpImageFile = imageAttachment;
     }
   }
 
-  const existingHermesSessionId = sessionMeta?.hermesSessionId;
   const workspaceCwd = run.workspace || process.cwd();
 
   const args = [
@@ -73,11 +224,12 @@ export async function runHermesAgentLoop(run, helpers = {}) {
     "--query-file", tmpQueryFile,
     "--format", "stream-json",
     "--yolo",
+    "--source", "9router",
     "--in", workspaceCwd,
   ];
 
-  if (existingHermesSessionId) {
-    args.push("--resume", existingHermesSessionId);
+  if (tmpImageFile) {
+    args.push("--image", tmpImageFile);
   }
 
   // If a model is explicitly specified in 9Router session, pass it to Hermes
@@ -136,11 +288,9 @@ export async function runHermesAgentLoop(run, helpers = {}) {
           void handleHermesJsonEvent(run, ev, {
             onSessionId: (sid) => {
               // Persist hermesSessionId in 9Router session projectMeta
+              run.projectMeta = { ...(run.projectMeta || {}), hermesSessionId: sid };
               updateChatSession(run.sessionId, {
-                projectMeta: {
-                  ...(run.projectMeta || {}),
-                  hermesSessionId: sid,
-                },
+                projectMeta: run.projectMeta,
               }).catch(() => {});
             },
             activeToolCalls,
@@ -180,10 +330,15 @@ export async function runHermesAgentLoop(run, helpers = {}) {
       });
     });
   } finally {
-    // Clean up temporary query file
+    // Clean up temporary files
     try {
       await fs.unlink(tmpQueryFile);
     } catch {}
+    if (tmpImageFile && tmpImageFile.includes(os.tmpdir())) {
+      try {
+        await fs.unlink(tmpImageFile);
+      } catch {}
+    }
   }
 }
 
