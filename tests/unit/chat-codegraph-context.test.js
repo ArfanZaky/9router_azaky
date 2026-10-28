@@ -187,7 +187,10 @@ describe("ProjectSidebar & ChatSessionRail Anti-Slop and Context Integration", (
     expect(content).toContain("contextTokens");
     expect(content).toContain("totalContentLength");
     expect(content).toContain("compactSessionMessages");
-    expect(content).toContain("rowid NOT IN (SELECT rowid FROM chatMessages");
+    expect(content).toContain("compactStartIndex");
+    expect(content).toContain("DELETE FROM chatMessages WHERE sessionId = ? AND rowid < ?");
+    expect(content).toContain("compactedAt");
+    expect(content).toContain("compactSummary");
     expect(content).not.toContain("\u2014"); // Anti-Slop R-02
   });
 

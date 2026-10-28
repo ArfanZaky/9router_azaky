@@ -1,6 +1,7 @@
 "use client";
 
 import { memo } from "react";
+import { Spinner } from "@/shared/components";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatToolCard from "./ChatToolCard";
 
@@ -269,6 +270,7 @@ function MessageList({
   onEditMessage,
   onRegenerate,
   onImageClick,
+  isLoading = false,
 }) {
   return (
     <div className="relative flex-1 min-h-0 flex flex-col">
@@ -277,7 +279,12 @@ function MessageList({
         onScroll={onTranscriptScroll}
         className="flex-1 overflow-y-auto custom-scrollbar px-3 py-4 lg:px-6"
       >
-        {messages.length === 0 ? (
+        {isLoading ? (
+          <div className="flex min-h-[50vh] flex-col items-center justify-center text-center gap-3">
+            <Spinner size="lg" />
+            <span className="text-xs text-text-muted font-medium">Loading chat…</span>
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex min-h-[50vh] flex-col items-center justify-center text-center gap-4">
             <div className="size-14 rounded-2xl border border-border bg-sidebar flex items-center justify-center">
               <span className="material-symbols-outlined text-[28px] text-primary">chat</span>
@@ -327,7 +334,7 @@ function MessageList({
         )}
       </div>
 
-      {showScrollBottomBtn && (
+      {showScrollBottomBtn && !isLoading && (
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
           <button
             type="button"

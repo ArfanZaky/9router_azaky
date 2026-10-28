@@ -228,6 +228,12 @@ export default function ChatPageClient() {
   const [paramsOpen, setParamsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [isSessionLoading, setIsSessionLoading] = useState(false);
+  // ponytail: ref keeps handleSelectSession identity stable; a state dep here re-fires the URL-sync effect with a stale sessionId and yanks the user back to the previous session.
+  const isSessionLoadingRef = useRef(false);
+  useEffect(() => {
+    isSessionLoadingRef.current = isSessionLoading;
+  }, [isSessionLoading]);
   const [isSending, setIsSending] = useState(false);
   const isSendingRef = useRef(false);
   useEffect(() => {
@@ -447,6 +453,7 @@ export default function ChatPageClient() {
   const abortRef = useRef(null);
   const mountedRef = useRef(true);
   const activeSessionIdRef = useRef(activeSessionId);
+  const lastLoadedSessionIdRef = useRef("");
   const fileInputRef = useRef(null);
   const bottomRef = useRef(null);
   const transcriptScrollRef = useRef(null);
@@ -589,6 +596,7 @@ export default function ChatPageClient() {
 
   const params = { ...DEFAULT_PARAMS, ...(activeSession?.params || {}) };
   const canSend =
+    !isSessionLoading &&
     !!activeSession?.model &&
     !!apiKey &&
     (draft.trim().length > 0 || attachments.length > 0);
@@ -984,6 +992,7 @@ export default function ChatPageClient() {
         fetch("/api/chat/shortcodes").then((r) => r.json()).then((d) => { if (!cancelled && d.shortcodes) setShortcodes(d.shortcodes); }).catch(() => {});
         if (!cancelled && bootId) {
           activeSessionIdRef.current = bootId;
+          lastLoadedSessionIdRef.current = bootId;
           setActiveSessionId(bootId);
           try {
             globalThis.localStorage?.setItem("chat.activeSessionId", bootId);
@@ -1398,6 +1407,8 @@ export default function ChatPageClient() {
 
   useEffect(() => {
     if (!activeSessionId) return;
+    if (lastLoadedSessionIdRef.current === activeSessionId) return;
+    lastLoadedSessionIdRef.current = activeSessionId;
     activeSessionIdRef.current = activeSessionId;
     try {
       globalThis.localStorage?.setItem("chat.activeSessionId", activeSessionId);
@@ -1415,13 +1426,29 @@ export default function ChatPageClient() {
       if (Array.isArray(run.teamTasks) && run.teamTasks.length > 0) setTeamTasks(run.teamTasks);
       if (Array.isArray(run.teamMessages) && run.teamMessages.length > 0) setTeamMessages(run.teamMessages);
       setSubAgents((prev) => prev.filter((a) => a.sessionId === activeSessionId));
+      setIsSessionLoading(false);
       return;
     }
     setIsSending(false);
     setAgentStatus("");
+    setIsSessionLoading(true);
+    setMessages([]);
     loadSessionDetail(activeSessionId)
-      .then(() => syncActiveSessionRunState(activeSessionId))
-      .catch((e) => setError(textValue(e.message)));
+      .then(() => {
+        if (activeSessionIdRef.current === activeSessionId) {
+          syncActiveSessionRunState(activeSessionId);
+        }
+      })
+      .catch((e) => {
+        if (activeSessionIdRef.current === activeSessionId) {
+          setError(textValue(e.message));
+        }
+      })
+      .finally(() => {
+        if (activeSessionIdRef.current === activeSessionId) {
+          setIsSessionLoading(false);
+        }
+      });
   }, [activeSessionId, loadSessionDetail, syncActiveSessionRunState]);
 
   useEffect(() => {
@@ -1540,6 +1567,9 @@ export default function ChatPageClient() {
         if (!res.ok) throw new Error(data.error || "Failed to create session");
         setSessions((prev) => [data, ...prev]);
         setActiveSessionId(data.id);
+        activeSessionIdRef.current = data.id;
+        lastLoadedSessionIdRef.current = data.id;
+        setIsSessionLoading(false);
         setCodebase(workspacePath || url);
         setCodebaseValue(workspacePath || url);
         setMessages([]);
@@ -1576,6 +1606,9 @@ export default function ChatPageClient() {
       if (!res.ok) throw new Error(data.error || "Failed to create session");
       setSessions((prev) => [data, ...prev]);
       setActiveSessionId(data.id);
+      activeSessionIdRef.current = data.id;
+      lastLoadedSessionIdRef.current = data.id;
+      setIsSessionLoading(false);
       setCodebase("");
       setCodebaseValue("");
       setMessages([]);
@@ -1590,12 +1623,18 @@ export default function ChatPageClient() {
     }
   };
 
-  const handleSelectSession = useCallback((id) => {
+  // ponytail: in-memory isSessionLoading flag covers instant transitions; add abort controller cancellation if session payload exceeds 5MB.
+  const handleSelectSession = useCallback((id, force = false) => {
     if (!id) return;
+    if (!force && id === activeSessionIdRef.current && !isSessionLoadingRef.current) return;
     isAtBottomRef.current = true;
     setShowScrollBottomBtn(false);
     activeSessionIdRef.current = id;
+    lastLoadedSessionIdRef.current = id;
     setActiveSessionId(id);
+    setIsSessionLoading(true);
+    setMessages([]);
+
     try {
       globalThis.localStorage?.setItem("chat.activeSessionId", id);
       if (typeof window !== "undefined") {
@@ -1614,17 +1653,6 @@ export default function ChatPageClient() {
     if (targetSession?.contextTokens != null) {
       setCtxUsed(targetSession.contextTokens);
     }
-
-    // Instant restoration from IndexedDB cache
-    getCachedTranscript(id).then((cached) => {
-      if (activeSessionIdRef.current === id && cached?.messages?.length) {
-        setMessages(cached.messages);
-        if (cached.tasks) setTasks(cached.tasks);
-        if (cached.teamState?.roster) setTeamRoster(cached.teamState.roster);
-        if (cached.teamState?.tasks) setTeamTasks(cached.teamState.tasks);
-        if (cached.teamState?.messages) setTeamMessages(cached.teamState.messages);
-      }
-    }).catch(() => {});
 
     getCachedDraft(id).then((cachedDraft) => {
       if (activeSessionIdRef.current === id) {
@@ -1655,25 +1683,60 @@ export default function ChatPageClient() {
       if (Array.isArray(run.teamTasks) && run.teamTasks.length > 0) setTeamTasks(run.teamTasks);
       if (Array.isArray(run.teamMessages) && run.teamMessages.length > 0) setTeamMessages(run.teamMessages);
       setSubAgents((prev) => prev.filter((a) => a.sessionId === id));
+      setIsSessionLoading(false);
     } else {
       setIsSending(false);
       setAgentStatus("");
       loadSessionDetail(id)
-        .then(() => syncActiveSessionRunState(id))
-        .catch(() => {});
+        .then(() => {
+          if (activeSessionIdRef.current === id) {
+            syncActiveSessionRunState(id);
+          }
+        })
+        .catch(async (e) => {
+          if (activeSessionIdRef.current === id) {
+            try {
+              const cached = await getCachedTranscript(id);
+              if (activeSessionIdRef.current === id && cached?.messages?.length) {
+                setMessages(cached.messages);
+                if (cached.tasks) setTasks(cached.tasks);
+                if (cached.teamState?.roster) setTeamRoster(cached.teamState.roster);
+                if (cached.teamState?.tasks) setTeamTasks(cached.teamState.tasks);
+                if (cached.teamState?.messages) setTeamMessages(cached.teamState.messages);
+              }
+            } catch {}
+            setError(textValue(e.message));
+          }
+        })
+        .finally(() => {
+          if (activeSessionIdRef.current === id) {
+            setIsSessionLoading(false);
+          }
+        });
     }
   }, [loadSessionDetail, syncActiveSessionRunState]);
 
   useEffect(() => {
-    if (!urlSessionId) return;
-    if (urlSessionId === activeSessionIdRef.current) return;
+    // useSearchParams does not follow our history.replaceState, so urlSessionId can be stale after a switch.
+    // Read the live location first; fall back to the hook value only when it is empty.
+    const liveSessionId = (() => {
+      try {
+        const params = new URLSearchParams(globalThis.window?.location?.search || "");
+        return params.get("sessionId") || params.get("session") || "";
+      } catch {
+        return "";
+      }
+    })();
+    const targetId = liveSessionId || urlSessionId;
+    if (!targetId) return;
+    if (targetId === activeSessionIdRef.current) return;
 
     let cancelled = false;
     const selectTarget = async () => {
-      let target = sessionsRef.current.find((s) => s.id === urlSessionId);
+      let target = sessionsRef.current.find((s) => s.id === targetId);
       if (!target) {
         try {
-          const res = await fetch(`/api/chat/sessions/${urlSessionId}`);
+          const res = await fetch(`/api/chat/sessions/${targetId}`);
           if (res.ok) {
             const data = await res.json().catch(() => null);
             if (data?.id && !cancelled) {
@@ -1684,7 +1747,7 @@ export default function ChatPageClient() {
         } catch {}
       }
       if (!cancelled) {
-        handleSelectSession(target?.id || urlSessionId);
+        handleSelectSession(target?.id || targetId);
       }
     };
 
@@ -1752,23 +1815,21 @@ export default function ChatPageClient() {
         const next = prev.filter((s) => s.id !== id);
         if (activeSessionIdRef.current === id) {
           const fallback = next[0]?.id || "";
-          setActiveSessionId(fallback);
           if (fallback) {
-            try {
-              if (typeof window !== "undefined") {
-                const url = new URL(window.location.href);
-                url.searchParams.set("sessionId", fallback);
-                url.searchParams.delete("session");
-                window.history.replaceState(null, "", url.toString());
-              }
-            } catch {}
+            setTimeout(() => {
+              handleSelectSession(fallback, true);
+            }, 0);
           } else {
+            setActiveSessionId("");
+            activeSessionIdRef.current = "";
+            lastLoadedSessionIdRef.current = "";
             setMessages([]);
             setTasks([]);
             setSubAgents([]);
             setTeamRoster([]);
             setTeamTasks([]);
             setTeamMessages([]);
+            setIsSessionLoading(false);
             try {
               if (typeof window !== "undefined") {
                 const url = new URL(window.location.href);
@@ -1787,7 +1848,7 @@ export default function ChatPageClient() {
     } finally {
       setIsDeletingSession(false);
     }
-  }, [deleteConfirmSession]);
+  }, [deleteConfirmSession, handleSelectSession]);
 
   const handleCopySession = useCallback(async (session) => {
     if (!session) return;
@@ -1818,6 +1879,8 @@ export default function ChatPageClient() {
       setSessions((prev) => [data, ...prev]);
       setActiveSessionId(data.id);
       activeSessionIdRef.current = data.id;
+      lastLoadedSessionIdRef.current = data.id;
+      setIsSessionLoading(false);
       try {
         globalThis.localStorage?.setItem("chat.activeSessionId", data.id);
         if (typeof window !== "undefined") {
@@ -3022,6 +3085,9 @@ export default function ChatPageClient() {
     if (action === "fork") {
       setSessions((prev) => [data, ...prev]);
       setActiveSessionId(data.id);
+      activeSessionIdRef.current = data.id;
+      lastLoadedSessionIdRef.current = data.id;
+      setIsSessionLoading(false);
     }
     setMessages(data.messages || []);
     return data;
@@ -3249,7 +3315,7 @@ export default function ChatPageClient() {
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || "Failed to compact session");
           await loadSessionDetail(activeSessionId);
-          setError(`Session compacted: deleted ${data.deletedCount || 0} old messages, kept ${data.keepLastN} recent (${data.totalCount} → ${data.totalCount - data.deletedCount})`);
+          setError(`Session compacted: ${data.summarizedCount ?? data.deletedCount ?? 0} messages summarized into ${data.summaryChars ?? 0} chars, ${data.keptCount ?? keepLastN} kept verbatim`);
         } catch (e) {
           setError(textValue(e.message));
         }
@@ -3500,6 +3566,7 @@ export default function ChatPageClient() {
           onEditMessage={handleEditMessage}
           onRegenerate={handleRegenerate}
           onImageClick={handleImageClick}
+          isLoading={isSessionLoading}
         />
 
         {/* Docked Terminal Panel */}
@@ -3666,12 +3733,15 @@ export default function ChatPageClient() {
               onKeyDown={handleKeyDown}
               onPaste={handleComposerPaste}
               rows={1}
+              disabled={isSessionLoading}
               placeholder={
-                activeSession?.model
+                isSessionLoading
+                  ? "Loading chat…"
+                  : activeSession?.model
                   ? "Message… (paste or drop images/files)"
                   : "Select a model first"
               }
-              className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none max-h-[25vh] custom-scrollbar"
+              className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none max-h-[25vh] custom-scrollbar disabled:opacity-50"
             />
             <div className="flex items-center justify-between gap-2 px-1">
               <div className="flex min-w-0 items-center gap-1">
@@ -3817,7 +3887,7 @@ export default function ChatPageClient() {
                     Stop
                   </Button>
                 ) : null}
-                <Button size="sm" icon={isSending ? "queue" : "send"} onClick={() => draft.trim().startsWith("/") ? runCommand(draft) : sendMessage()} disabled={!draft.trim().startsWith("/") && !canSend}>
+                <Button size="sm" icon={isSending ? "queue" : "send"} onClick={() => draft.trim().startsWith("/") ? runCommand(draft) : sendMessage()} disabled={isSessionLoading || (!draft.trim().startsWith("/") && !canSend)}>
                   {isSending ? "Queue" : "Send"}
                 </Button>
               </div>

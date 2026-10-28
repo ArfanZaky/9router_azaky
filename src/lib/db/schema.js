@@ -132,6 +132,8 @@ export const TABLES = {
       codebase: "TEXT",
       knowledgeBaseIds: "TEXT",
       teamState: "TEXT",
+      compactSummary: "TEXT",
+      compactedAt: "TEXT",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",
     },

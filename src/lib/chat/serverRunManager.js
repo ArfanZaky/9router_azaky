@@ -1332,23 +1332,36 @@ export async function startServerChatRun(input) {
 
   // Auto-compact guard: if session context usage is elevated (> 75% of context window) and has > 20 messages,
   // automatically compact older messages in database and trim memory buffer to prevent context overflow.
+  let compactSummary = String(session.compactSummary || "").trim();
   try {
     const { getCapabilitiesForModel } = await import("open-sse/providers/capabilities.js");
     const caps = getCapabilitiesForModel(input.providerId, request.model);
     const win = caps?.contextWindow || 128000;
     const ctxTokens = session.contextTokens || 0;
     if (ctxTokens > win * 0.75 && (session.messageCount || request.messages.length) > 20) {
-      const { compactSessionMessages } = await import("@/lib/db/repos/chatRepo.js");
+      const { compactSessionMessages, compactStartIndex } = await import("@/lib/db/repos/chatRepo.js");
       const compactResult = await compactSessionMessages(input.sessionId, 20);
       if (compactResult?.deletedCount > 0) {
-        request.messages = request.messages.slice(-20);
+        // Trim the in-memory buffers on the same tool-pair-safe boundary the DB used
+        request.messages = request.messages.slice(compactStartIndex(request.messages, 20));
         if (Array.isArray(input.persistedMessages)) {
-          input.persistedMessages = input.persistedMessages.slice(-20);
+          input.persistedMessages = input.persistedMessages.slice(compactStartIndex(input.persistedMessages, 20));
         }
+        compactSummary = String(compactResult.summary || compactSummary).trim();
       }
     }
   } catch (err) {
     console.warn("[startServerChatRun] Auto-compact check failed:", err?.message);
+  }
+
+  if (compactSummary) {
+    request.systemPrompt = [
+      "## Compacted earlier context\nOlder transcript turns were condensed into this digest. Treat it as background facts; ask the user only if a needed detail is missing.",
+      compactSummary,
+      request.systemPrompt,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   // Clean up and abort any lingering runs for the same session to avoid race conditions

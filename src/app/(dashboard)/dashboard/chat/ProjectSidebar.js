@@ -211,7 +211,7 @@ function ProjectSidebarComponent({
         if (d.deletedCount > 0) {
           setCompactMsg({
             type: "success",
-            text: `Compacted: deleted ${d.deletedCount} old messages, kept ${d.keepLastN} recent`,
+            text: `Compacted: ${d.summarizedCount ?? d.deletedCount} messages summarized (${d.summaryChars ?? 0} chars kept as context), ${d.keptCount ?? d.keepLastN} kept verbatim`,
           });
         } else {
           setCompactMsg({

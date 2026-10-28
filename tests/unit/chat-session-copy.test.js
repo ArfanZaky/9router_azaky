@@ -51,17 +51,21 @@ describe("chat session copy and duplicate semantics", () => {
     expect(payload.projectMeta.queuedMessages).toBeUndefined();
   });
 
-  it("ChatPageClient includes onCopy handler, header Duplicate button, modal Duplicate button, and /duplicate command", () => {
+  it("ChatPageClient and components include onCopy handler, header Duplicate button, modal Duplicate button, and /duplicate command", () => {
     const clientPath = path.resolve(__dirname, "../../src/app/(dashboard)/dashboard/chat/ChatPageClient.js");
+    const railPath = path.resolve(__dirname, "../../src/app/(dashboard)/dashboard/chat/ChatSessionRail.jsx");
+    const headerPath = path.resolve(__dirname, "../../src/app/(dashboard)/dashboard/chat/ChatHeader.jsx");
     const content = fs.readFileSync(clientPath, "utf8");
+    const railContent = fs.readFileSync(railPath, "utf8");
+    const headerContent = fs.readFileSync(headerPath, "utf8");
 
     // SessionRailItem prop & button
-    expect(content).toContain("onCopy,");
-    expect(content).toContain('title="Duplicate session (new session with same name and path)"');
-    expect(content).toContain("content_copy");
+    expect(railContent).toContain("onCopy,");
+    expect(railContent).toContain('title="Duplicate session (new session with same name and path)"');
+    expect(railContent).toContain("content_copy");
 
     // Header Duplicate button
-    expect(content).toMatch(/>\s*Duplicate\s*<\/Button>/);
+    expect(headerContent).toMatch(/>\s*Duplicate\s*<\/Button>/);
 
     // Modal Duplicate button
     expect(content).toContain('sessionModalMode === "edit"');
@@ -69,7 +73,7 @@ describe("chat session copy and duplicate semantics", () => {
     // Copy handler and /copy or /duplicate command
     expect(content).toContain("const handleCopySession = useCallback");
     expect(content).toContain('name === "copy" || name === "duplicate"');
-    expect(content).toContain("onCopy={handleCopySession}");
+    expect(content).toContain("onCopySession={handleCopySession}");
 
     // Anti-slop R-02 check in new strings
     expect(content).not.toContain("Duplicate session \u2014");

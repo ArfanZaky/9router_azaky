@@ -23,6 +23,8 @@ function rowToSession(row) {
     tasks: parseJson(row.tasks, []),
     codebase: row.codebase || "",
     teamState: parseJson(row.teamState, { roster: [], tasks: [], messages: [] }),
+    compactSummary: row.compactSummary || "",
+    compactedAt: row.compactedAt || "",
     contextTokens,
     latestTokenUsage: latestUsage,
     messageCount: row.messageCount != null ? Number(row.messageCount) : undefined,
@@ -168,10 +170,16 @@ export async function getChatSession(id, { includeMessages = true, messageLimit 
     if (!hasAssistantContent) {
       try {
         const completedRun = db.get(
-          `SELECT result FROM chatRuns WHERE sessionId = ? AND status = 'completed' AND result IS NOT NULL ORDER BY createdAt DESC LIMIT 1`,
+          `SELECT result, createdAt FROM chatRuns WHERE sessionId = ? AND status = 'completed' AND result IS NOT NULL ORDER BY createdAt DESC LIMIT 1`,
           [id]
         );
-        if (completedRun?.result) {
+        // Never resurrect a run snapshot that predates the last compaction: it still holds
+        // the messages compaction dropped and would silently refill the context window.
+        const snapshotIsStale =
+          !!session.compactedAt &&
+          !!completedRun?.createdAt &&
+          String(completedRun.createdAt) <= String(session.compactedAt);
+        if (completedRun?.result && !snapshotIsStale) {
           const runRes = parseJson(completedRun.result, null);
           if (Array.isArray(runRes?.messages) && runRes.messages.length > 0) {
             await replaceChatMessages(id, runRes.messages);
@@ -396,65 +404,121 @@ export async function updateChatMessage(id, data = {}) {
   return result;
 }
 
-/** Compact transcript by deleting old messages, keeping last N verbatim. */
+const COMPACT_SUMMARY_MAX_CHARS = 6000;
+
+/**
+ * Index where the kept transcript window starts. Widened backwards so the window never
+ * begins on an orphan `tool` result whose `assistant` tool_call parent was dropped.
+ */
+export function compactStartIndex(messages = [], keepLastN = 20) {
+  const keep = Math.max(1, Number(keepLastN) || 1);
+  let idx = Math.max(0, messages.length - keep);
+  while (idx > 0 && messages[idx]?.role === "tool") idx--;
+  return idx;
+}
+
+/**
+ * Deterministic digest of dropped messages: user asks plus assistant conclusions and tools used.
+ * ponytail: no LLM summarization pass, just truncated turn lines. Add an LLM rewrite when the
+ * digest proves too lossy for long research sessions.
+ */
+function digestMessages(rows = []) {
+  const lines = [];
+  for (const row of rows) {
+    const text = String(row.content ?? "").replace(/\s+/g, " ").trim();
+    if (row.role === "user") {
+      if (text) lines.push(`- User: ${text.slice(0, 400)}`);
+    } else if (row.role === "assistant") {
+      if (text) {
+        lines.push(`- Assistant: ${text.slice(0, 400)}`);
+      } else {
+        const names = (parseJson(row.toolCalls, []) || [])
+          .map((call) => call?.function?.name)
+          .filter(Boolean);
+        if (names.length) lines.push(`- Assistant ran tools: ${[...new Set(names)].join(", ")}`);
+      }
+    }
+  }
+  return lines;
+}
+
+function tailWithin(text, max) {
+  return text.length <= max ? text : text.slice(text.length - max);
+}
+
+/** Compact transcript: older messages become a text summary, last N kept verbatim. */
 export async function compactSessionMessages(sessionId, keepLastN = 20) {
   const db = await getAdapter();
-  const session = db.get(`SELECT id FROM chatSessions WHERE id = ?`, [sessionId]);
-  if (!session) return null;
-  
-  // Get total message count
-  const countResult = db.get(`SELECT COUNT(*) as cnt FROM chatMessages WHERE sessionId = ?`, [sessionId]);
-  const totalCount = countResult?.cnt || 0;
-  
-  // If we have fewer messages than we want to keep, nothing to do
+  const sessionRow = db.get(`SELECT id, compactSummary FROM chatSessions WHERE id = ?`, [sessionId]);
+  if (!sessionRow) return null;
+
+  const all = db.all(
+    `SELECT rowid, role, content, toolCalls FROM chatMessages WHERE sessionId = ? ORDER BY rowid ASC`,
+    [sessionId]
+  );
+  const totalCount = all.length;
   if (totalCount <= keepLastN) {
     return {
       success: true,
       deletedCount: 0,
       keepLastN,
       totalCount,
+      summary: sessionRow.compactSummary || "",
       message: `Session has only ${totalCount} messages (no compaction needed, keeping last ${keepLastN})`,
     };
   }
-  
-  // Delete all but the last N messages (most recent N via DESC + LIMIT)
-  const deletedCount = db.run(
-    `DELETE FROM chatMessages WHERE sessionId = ? AND rowid NOT IN (SELECT rowid FROM chatMessages WHERE sessionId = ? ORDER BY rowid DESC LIMIT ?)`,
-    [sessionId, sessionId, keepLastN]
-  ).changes;
 
-  // Recalculate estimated tokens from remaining messages and adjust latest tokenUsage
+  const keepFrom = compactStartIndex(all, keepLastN);
+  const dropped = all.slice(0, keepFrom);
+  const digest = digestMessages(dropped);
+  const summary = tailWithin(
+    [sessionRow.compactSummary, ...digest].filter(Boolean).join("\n"),
+    COMPACT_SUMMARY_MAX_CHARS
+  );
+
+  const now = new Date().toISOString();
+  let deletedCount = 0;
+  db.transaction(() => {
+    deletedCount = db.run(`DELETE FROM chatMessages WHERE sessionId = ? AND rowid < ?`, [
+      sessionId,
+      all[keepFrom].rowid,
+    ]).changes;
+    db.run(
+      `UPDATE chatSessions SET compactSummary = ?, compactedAt = ?, updatedAt = ? WHERE id = ?`,
+      [summary, now, now, sessionId]
+    );
+  });
+
+  // Token estimate covers the kept messages plus the injected summary text
   const remainingContent = db.get(
     `SELECT SUM(LENGTH(content)) as len FROM chatMessages WHERE sessionId = ?`,
     [sessionId]
   );
-  const estimatedTokens = remainingContent?.len ? Math.round(Number(remainingContent.len) / 4) : 0;
+  const estimatedTokens = Math.round(((Number(remainingContent?.len) || 0) + summary.length) / 4);
 
-  const lastMsg = db.get(
-    `SELECT id, tokenUsage FROM chatMessages WHERE sessionId = ? AND tokenUsage IS NOT NULL ORDER BY rowid DESC LIMIT 1`,
+  const latestMsg = db.get(
+    `SELECT id, tokenUsage FROM chatMessages WHERE sessionId = ? ORDER BY rowid DESC LIMIT 1`,
     [sessionId]
   );
-  if (lastMsg) {
-    const usage = parseJson(lastMsg.tokenUsage, {});
+  if (latestMsg) {
+    const usage = parseJson(latestMsg.tokenUsage, {}) || {};
     usage.prompt_tokens = estimatedTokens;
     usage.input_tokens = estimatedTokens;
     usage.context_tokens = estimatedTokens;
-    db.run(
-      `UPDATE chatMessages SET tokenUsage = ? WHERE id = ?`,
-      [stringifyJson(usage), lastMsg.id]
-    );
+    db.run(`UPDATE chatMessages SET tokenUsage = ? WHERE id = ?`, [stringifyJson(usage), latestMsg.id]);
   }
-  
-  // Update session timestamp
-  db.run(`UPDATE chatSessions SET updatedAt = ? WHERE id = ?`, [new Date().toISOString(), sessionId]);
-  
+
   return {
     success: true,
     deletedCount,
+    keptCount: totalCount - deletedCount,
     keepLastN,
     totalCount,
+    summarizedCount: dropped.length,
+    summaryChars: summary.length,
     estimatedTokens,
-    message: `Compacted: deleted ${deletedCount} messages, kept ${keepLastN}, total now: ${totalCount - deletedCount}`,
+    summary,
+    message: `Compacted: summarized ${dropped.length} messages, kept ${totalCount - deletedCount} verbatim, summary ${summary.length} chars`,
   };
 }
 
