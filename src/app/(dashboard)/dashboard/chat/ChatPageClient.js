@@ -3854,7 +3854,7 @@ export default function ChatPageClient() {
                   {effortMenuOpen ? (
                     <div className="absolute bottom-full left-0 z-40 mb-3 w-56 rounded-xl border border-primary/35 bg-surface p-1.5 shadow-[0_20px_55px_rgba(0,0,0,0.65)] ring-1 ring-black/30">
                       <p className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Reasoning effort</p>
-                      {[{ value: "", label: "Default", hint: "Use the configured default" }, { value: "none", label: "Off", hint: "No reasoning" }, { value: "low", label: "Low", hint: "Brief reasoning" }, { value: "medium", label: "Medium", hint: "Balanced reasoning" }, { value: "high", label: "High", hint: "Deep reasoning" }].map((option) => (
+                      {[{ value: "", label: "Default", hint: "Use the configured default" }, { value: "none", label: "Off", hint: "No reasoning" }, { value: "low", label: "Low", hint: "Brief reasoning" }, { value: "medium", label: "Medium", hint: "Balanced reasoning" }, { value: "high", label: "High", hint: "Deep reasoning" }, { value: "max", label: "Max", hint: "Maximum reasoning depth" }].map((option) => (
                         <button
                           key={option.value || "default"}
                           type="button"
