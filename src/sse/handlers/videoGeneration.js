@@ -9,6 +9,7 @@ import { getSettings, getProviderConnectionById } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
 import { handleVideoProxyCore, getVideoConfig, sanitizeSecrets } from "open-sse/handlers/videoCore.js";
+import { isFlowJobId } from "@/lib/flow/bridge.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -17,6 +18,14 @@ import * as log from "../utils/logger.js";
 // Video generation is xAI-only today; requests without a provider prefix
 // (bare model id, or multipart bodies we deliberately don't parse) land here.
 const DEFAULT_VIDEO_PROVIDER = "xai";
+
+/**
+ * Local-session providers (Flow) have no connection row: their credentials are
+ * the browser profile, so there is nothing to look up or rotate.
+ */
+function isNoAuthVideoProvider(provider) {
+  return getVideoConfig(provider)?.noAuth === true;
+}
 
 /**
  * Poll requests carry no model, so the provider comes from the pinned
@@ -135,6 +144,22 @@ export async function handleVideoCreate(request, action) {
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const idempotencyKey = request.headers.get("idempotency-key") || null;
 
+  // Browser-driven provider: one owner, no account rotation, no connection row.
+  if (isNoAuthVideoProvider(provider)) {
+    const local = await handleVideoProxyCore({
+      provider,
+      action,
+      rawBody: forwardBody,
+      contentType: bodyInfo.contentType || null,
+      idempotencyKey,
+      credentials: {},
+      signal: request.signal,
+      log,
+    });
+    if (local.success) log.info("VIDEO", `${provider.toUpperCase()} | ${action} accepted (local session)`);
+    return local.response;
+  }
+
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
@@ -209,7 +234,16 @@ export async function handleVideoGet(request, requestId) {
   if (!requestId) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing video request id");
 
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
-  const provider = await resolveGetProvider(request, preferredConnectionId);
+  let provider = await resolveGetProvider(request, preferredConnectionId);
+
+  // Flow jobs live in our own queue and clients only echo `request_id` back, so
+  // the id is enough to route the poll — no `?provider=` required.
+  if (provider === DEFAULT_VIDEO_PROVIDER && await isFlowJobId(requestId)) provider = "flow";
+
+  if (isNoAuthVideoProvider(provider)) {
+    const local = await handleVideoProxyCore({ provider, requestId, credentials: {}, signal: request.signal, log });
+    return local.response;
+  }
 
   const credentials = await getProviderCredentials(provider, null, null, { preferredConnectionId });
   if (!credentials || credentials.allRateLimited) {

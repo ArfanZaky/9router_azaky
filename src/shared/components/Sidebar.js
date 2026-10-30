@@ -24,6 +24,7 @@ const navItems = [
   { href: "/dashboard/redmine", label: "Redmine Tasks", icon: "task_alt" },
   { href: "/dashboard/image-gen", label: "Image Gen", icon: "image" },
   { href: "/dashboard/video-prompt", label: "Video Prompts", icon: "movie_edit" },
+  { href: "/dashboard/flow", label: "Google Flow", icon: "movie" },
   { href: "/dashboard/combos", label: "Combo & Vision Adapter", icon: "layers" },
   { href: "/dashboard/usage", label: "Usage", icon: "bar_chart" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },

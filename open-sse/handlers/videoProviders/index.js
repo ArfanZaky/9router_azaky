@@ -6,8 +6,9 @@
 import openrouter from "./openrouter.js";
 import vertex from "./vertex.js";
 import codebuddy from "./codebuddy.js";
+import flow from "./flow.js";
 
-const ADAPTERS = { openrouter, vertex, codebuddy };
+const ADAPTERS = { openrouter, vertex, codebuddy, flow };
 
 export function getVideoAdapter(provider) {
   return ADAPTERS[provider] || null;

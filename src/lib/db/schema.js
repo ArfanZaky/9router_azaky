@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -331,6 +331,44 @@ export const TABLES = {
       createdAt: "TEXT NOT NULL",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_kc_kb ON knowledgeChunks(kbId)", "CREATE INDEX IF NOT EXISTS idx_kc_doc ON knowledgeChunks(docId)", "CREATE INDEX IF NOT EXISTS idx_kc_kb_idx ON knowledgeChunks(kbId, chunkIndex)"],
+  },
+  // Google Flow jobs (src/lib/flow/bridge.js). Rows survive restarts so a poll
+  // on GET /v1/videos/{id} still answers after the browser or server restarted.
+  flowJobs: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      projectId: "TEXT",
+      mode: "TEXT NOT NULL",
+      model: "TEXT NOT NULL",
+      prompt: "TEXT NOT NULL",
+      imagePath: "TEXT",
+      duration: "INTEGER",
+      aspect: "TEXT",
+      resolution: "TEXT",
+      creditCost: "INTEGER DEFAULT 0",
+      status: "TEXT NOT NULL",
+      step: "TEXT",
+      error: "TEXT",
+      mediaPath: "TEXT",
+      sourceUrl: "TEXT",
+      dryRun: "INTEGER DEFAULT 0",
+      createdAt: "TEXT NOT NULL",
+      startedAt: "TEXT",
+      finishedAt: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_fj_created ON flowJobs(createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_fj_status ON flowJobs(status)",
+    ],
+  },
+  flowCreditSnapshots: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      balance: "INTEGER NOT NULL",
+      source: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_fcs_created ON flowCreditSnapshots(createdAt DESC)"],
   },
 };
 

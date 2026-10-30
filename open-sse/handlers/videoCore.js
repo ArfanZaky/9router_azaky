@@ -122,6 +122,11 @@ export async function handleVideoProxyCore({
         })
       : defaultPlan();
     if (plan.error) return { planError: plan.error };
+    // In-process providers (no reachable upstream, e.g. a browser-driven local
+    // bridge) answer with a Response directly instead of a URL to fetch.
+    if (typeof plan.handle === "function") {
+      return { response: await plan.handle({ signal: fetchSignal }) };
+    }
     return {
       response: await fetch(plan.url, {
         method: plan.method,

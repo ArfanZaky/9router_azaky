@@ -142,6 +142,7 @@ import p137 from "./bedrock-xai.js";
 import pCustomAutoclaw from "./autoclaw.js";
 import pCustomCodebuddy from "./codebuddy.js";
 import pCustomFreebuff from "./freebuff.js";
+import pCustomFlow from "./flow.js";
 import pCustomFreebuff2api from "./freebuff2api.js";
 import pCustomGlm2api from "./glm2api.js";
 
@@ -287,6 +288,7 @@ export default [
   pCustomCodebuddy,
   pCustomFreebuff,
   pCustomFreebuff2api,
+  pCustomFlow,
   pCustomGlm2api,
 ];
 
