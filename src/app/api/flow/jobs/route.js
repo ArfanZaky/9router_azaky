@@ -4,6 +4,8 @@ import fs from "node:fs";
 import { v4 as uuidv4 } from "uuid";
 import { enqueueFlowJob, FlowRequestError } from "@/lib/flow/bridge";
 import { listFlowJobs } from "@/lib/db/repos/flowRepo";
+import { getFlowImage } from "@/lib/db/repos/flowImagesRepo.js";
+import { resolveImageAssetPath } from "@/lib/media/imageStore.js";
 import { DATA_DIR } from "@/lib/dataDir";
 
 export const dynamic = "force-dynamic";
@@ -45,6 +47,15 @@ export async function POST(request) {
       if (file && typeof file !== "string") body.imagePath = await saveUpload(file);
     } else {
       body = await request.json().catch(() => ({}));
+    }
+
+    // The driver wants an absolute path; the library stores one row per image.
+    if (body.imageAssetId) {
+      const asset = await getFlowImage(body.imageAssetId);
+      if (!asset) throw new FlowRequestError(`imageAssetId '${body.imageAssetId}' is not in the Flow library`);
+      const abs = resolveImageAssetPath(asset.path);
+      if (!fs.existsSync(abs)) throw new FlowRequestError(`library image '${asset.name || asset.id}' is missing from disk`);
+      body.imagePath = abs;
     }
 
     const job = await enqueueFlowJob(body);

@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -369,6 +369,42 @@ export const TABLES = {
       createdAt: "TEXT NOT NULL",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_fcs_created ON flowCreditSnapshots(createdAt DESC)"],
+  },
+  // Reusable Flow image library. Separate from imageAssets because that table's
+  // jobId is NOT NULL and SQLite cannot drop it without a table rebuild; these
+  // rows stand alone and can belong to a character (characterId + view).
+  flowImages: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT",
+      path: "TEXT NOT NULL",
+      mime: "TEXT",
+      width: "INTEGER",
+      height: "INTEGER",
+      origin: "TEXT",
+      characterId: "TEXT",
+      view: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_fi_created ON flowImages(createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_fi_character ON flowImages(characterId)",
+    ],
+  },
+  flowCharacters: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT NOT NULL",
+      description: "TEXT",
+      style: "TEXT",
+      imageModel: "TEXT",
+      refAssetId: "TEXT",
+      status: "TEXT",
+      error: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_fc_updated ON flowCharacters(updatedAt DESC)"],
   },
 };
 
