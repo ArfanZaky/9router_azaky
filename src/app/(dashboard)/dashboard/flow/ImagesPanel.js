@@ -27,6 +27,20 @@ export default function ImagesPanel({ onUseForVideo }) {
     return () => clearTimeout(timer);
   }, [q, load]);
 
+  useEffect(() => {
+    const onPaste = (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const item = items.find((it) => it.kind === "file" && it.type.startsWith("image/"));
+      if (!item) return;
+      const file = item.getAsFile();
+      if (!file) return;
+      e.preventDefault();
+      upload(file);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, []);
+
   async function upload(file) {
     if (!file) return;
     setError("");
@@ -69,7 +83,7 @@ export default function ImagesPanel({ onUseForVideo }) {
 
   return (
     <div className="space-y-4">
-      <Card title="Upload gambar" subtitle="PNG, JPG, WebP atau GIF. Maksimal 10MB.">
+      <Card title="Upload gambar" subtitle="PNG, JPG, WebP atau GIF. Maksimal 10MB. Bisa juga Ctrl+V untuk paste gambar dari clipboard.">
         <div
           onDragOver={(e) => {
             e.preventDefault();
@@ -85,7 +99,7 @@ export default function ImagesPanel({ onUseForVideo }) {
             dragging ? "border-brand-500 bg-brand-500/5" : "border-border-subtle bg-surface-2"
           }`}
         >
-          <p className="text-sm text-text-main">Tarik file ke sini, atau</p>
+          <p className="text-sm text-text-main">Tarik file ke sini, pilih file, atau tekan Ctrl+V untuk paste gambar.</p>
           <div className="mt-3 flex flex-col items-center gap-2 sm:flex-row sm:justify-center">
             <input
               ref={fileRef}

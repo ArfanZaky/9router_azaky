@@ -1,7 +1,11 @@
 import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { extractRenderResult, parseCliJson, renderFlowJob } from "../../src/lib/flow/driver.js";
+
+const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 describe("gflow output parsing", () => {
   it("parses a clean json body", () => {
@@ -37,20 +41,43 @@ describe("gflow output parsing", () => {
   });
 });
 
-describe("flow driver refuses what it cannot do", () => {
-  // i2v now runs on the real composer, but it must still fail before the browser
-  // opens whenever the target project is unknown: a submit into the wrong project
-  // spends credits and lands the clip somewhere nobody looks.
-  it("rejects i2v without a project, before any browser work", async () => {
-    const { renderFlowInComposer } = await import("../../src/lib/flow/composer.js");
+describe("flow composer project resolution", () => {
+  // i2v used to refuse without FLOW_PROJECT_ID, which made the dashboard's
+  // "upload image" path dead on arrival. A project is only a container, so the
+  // newest one on the account is used when the caller names none.
+  const stubPage = (id) => ({
+    goto: async () => {},
+    waitForTimeout: async () => {},
+    evaluate: async () => id,
+  });
+
+  it("falls back to the newest project listed on the Flow homepage", async () => {
+    const { resolveProjectId } = await import("../../src/lib/flow/composer.js");
     const previous = process.env.FLOW_PROJECT_ID;
     delete process.env.FLOW_PROJECT_ID;
     try {
-      await expect(
-        renderFlowInComposer({ id: "probe", mode: "i2v", model: "omni-flash", prompt: "x", duration: 4, aspect: "16:9", imagePath: "x.png" })
-      ).rejects.toThrow(/needs a Flow project/);
+      expect(await resolveProjectId(stubPage("88062475-d441-46b7-b56e-e1590c5f9f7a"), null)).toBe(
+        "88062475-d441-46b7-b56e-e1590c5f9f7a"
+      );
+      // An explicit hint wins without touching the page.
+      expect(await resolveProjectId({ goto: () => { throw new Error("must not navigate"); } }, "hint-id")).toBe("hint-id");
     } finally {
       if (previous !== undefined) process.env.FLOW_PROJECT_ID = previous;
+    }
+  });
+
+  it("stops with a clear message when the account has no project", async () => {
+    const { resolveProjectId } = await import("../../src/lib/flow/composer.js");
+    const previous = process.env.FLOW_PROJECT_ID;
+    const previousBudget = process.env.FLOW_PROJECT_RESOLVE_MS;
+    delete process.env.FLOW_PROJECT_ID;
+    process.env.FLOW_PROJECT_RESOLVE_MS = "0";
+    try {
+      await expect(resolveProjectId(stubPage(null), null)).rejects.toThrow(/No Flow project/);
+    } finally {
+      if (previous !== undefined) process.env.FLOW_PROJECT_ID = previous;
+      if (previousBudget === undefined) delete process.env.FLOW_PROJECT_RESOLVE_MS;
+      else process.env.FLOW_PROJECT_RESOLVE_MS = previousBudget;
     }
   });
 
@@ -97,5 +124,47 @@ describe.skipIf(process.env.RUN_FLOW !== "1")("flow render against the live Flow
     const after = await refreshFlowCredits();
     expect(before.balance - after.balance).toBe(7);
     console.log("[flow] rendered", current.mediaPath, `${before.balance} -> ${after.balance}`);
+  }, 25 * 60 * 1000);
+
+  // The dashboard's "upload an image" path: no project id is passed, so the
+  // composer must pick one and upload the frame into it itself.
+  it("renders one image-to-video clip without being told a project", async () => {
+    const imagePath = join(repoRoot, "tmp", "gflow_input.png");
+    if (!existsSync(imagePath)) return; // local sample frame only; nothing to prove otherwise
+
+    const { enqueueFlowJob, refreshFlowCredits } = await import("../../src/lib/flow/bridge.js");
+    const { getFlowJob } = await import("../../src/lib/db/repos/flowRepo.js");
+
+    const before = await refreshFlowCredits();
+    const job = await enqueueFlowJob({
+      prompt: "Kelima orang di foto bergerak makan dan mengucapkan hidup jokowi, kamera maju perlahan.",
+      model: "omni-flash",
+      duration: 4,
+      aspect: "16:9",
+      imagePath,
+    });
+    expect(job.mode).toBe("i2v");
+
+    let current = job;
+    const deadline = Date.now() + 20 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      current = await getFlowJob(job.id);
+      if (current.status === "completed" || current.status === "failed") break;
+    }
+
+    expect(current.error || "").toBe("");
+    expect(current.status).toBe("completed");
+    expect(current.projectId).toBeTruthy();
+
+    // mediaPath is stored relative to the media store, not to the test cwd.
+    const { resolveVideoAssetPath } = await import("../../src/lib/media/videoStore.js");
+    const onDisk = resolveVideoAssetPath(current.mediaPath);
+    expect(existsSync(onDisk)).toBe(true);
+    expect(statSync(onDisk).size).toBeGreaterThan(100_000);
+
+    const after = await refreshFlowCredits();
+    expect(before.balance - after.balance).toBe(current.creditCost);
+    console.log("[flow] i2v rendered", onDisk, `project ${current.projectId}`, `${before.balance} -> ${after.balance}`);
   }, 25 * 60 * 1000);
 });

@@ -190,23 +190,21 @@ export class AntigravityExecutor extends BaseExecutor {
       const contents = [];
       const srcContents = body.request?.contents || body.contents || [];
       for (const c of srcContents) {
-        const parts = (c.parts || [])
-          .map((p) => {
-            if (p?.text !== undefined) return { text: p.text };
-            const inline = p?.inlineData || p?.inline_data;
-            if (inline?.data) {
-              return {
-                inlineData: {
-                  mimeType: inline.mimeType || inline.mime_type || "image/png",
-                  data: inline.data,
-                },
-              };
-            }
-            return null;
-          })
-          .filter(Boolean);
-        if (parts.length > 0) {
-          contents.push({ role: c.role || "user", parts });
+        const imageParts = (c.parts || []).flatMap((p) => {
+          if (p?.text !== undefined) return [{ text: p.text }];
+          const inline = p?.inlineData || p?.inline_data;
+          if (inline?.data) {
+            return [{
+              inlineData: {
+                mimeType: inline.mimeType || inline.mime_type || "image/png",
+                data: inline.data,
+              },
+            }];
+          }
+          return [];
+        });
+        if (imageParts.length > 0) {
+          contents.push({ role: c.role || "user", parts: imageParts });
         }
       }
 
@@ -298,7 +296,7 @@ export class AntigravityExecutor extends BaseExecutor {
         parts: modifiedParts || parts || [],
       };
     });
-    const contents = normalizeGeminiContents(rawContents);
+    const contents = normalizeGeminiContents(rawContents, model);
 
     // Sanitize tool schemas and function names before sending to Antigravity.
     let tools = body.request?.tools;

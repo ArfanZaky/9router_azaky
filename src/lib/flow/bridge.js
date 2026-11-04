@@ -212,6 +212,11 @@ async function runJob(job) {
       onStep: (step) => {
         updateFlowJob(job.id, { step: String(step).slice(0, 200) }).catch(() => {});
       },
+      // The composer may have picked a Flow project itself; store it before the
+      // submit so a later resume reopens the project the clip was paid for.
+      onProject: (projectId) => {
+        updateFlowJob(job.id, { projectId }).catch(() => {});
+      },
     });
     const done = await updateFlowJob(job.id, {
       status: "completed",
@@ -219,12 +224,17 @@ async function runJob(job) {
       error: null,
       mediaPath: await persistVideo(job.id, result?.mediaPath),
       sourceUrl: result?.sourceUrl || null,
+      projectId: result?.projectId || undefined,
       finishedAt: new Date().toISOString(),
     });
     // Awaited, not fire-and-forget: the balance read opens the same profile the
     // next queued job is about to drive, so it must not overlap it. A failure
     // here is cosmetic — the render already succeeded.
+    // Flow charges the credits a few seconds after the clip is ready, so read
+    // the balance only after it settles; reading at once stores a stale number
+    // and the next affordability check would approve a clip the account cannot pay.
     try {
+      await new Promise((resolve) => setTimeout(resolve, 15000));
       await refreshFlowCredits();
     } catch (error) {
       console.error("[FLOW] credit refresh after job failed:", error?.message || error);

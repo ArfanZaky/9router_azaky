@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
-import { keyAccessFromColumns, keyAccessToColumns } from "@/shared/utils/keyAccess.js";
-import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
+import { keyAccessFromColumns, keyAccessToColumns } from "../../../shared/utils/keyAccess.js";
+import { KEY_ACCESS_UNRESTRICTED } from "../../../shared/constants/keyAccess.js";
 
 function rowToKey(row) {
   if (!row) return null;
@@ -39,7 +39,7 @@ export async function getApiKeyByKey(key) {
 export async function createApiKey(name, machineId) {
   if (!machineId) throw new Error("machineId is required");
   const db = await getAdapter();
-  const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
+  const { generateApiKeyWithMachine } = await import("../../../shared/utils/apiKey.js");
   const result = generateApiKeyWithMachine(machineId);
   const apiKey = {
     id: uuidv4(),

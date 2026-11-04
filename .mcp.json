@@ -22,6 +22,16 @@
         "serve"
       ],
       "description": "Agent control layer for Aseprite — draw, look, shade, animate, rig, palette, and export directly in Aseprite"
+    },
+    "gflow-cli": {
+      "transport": "stdio",
+      "enabled": true,
+      "command": "gflow",
+      "args": [
+        "mcp",
+        "run"
+      ],
+      "description": "Google Flow / Veo video + Imagen image generation via your own signed-in Google account. Video spends Flow credits; run `gflow auth login --browser chrome` once first."
     }
   }
 }

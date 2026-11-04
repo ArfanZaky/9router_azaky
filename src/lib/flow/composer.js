@@ -111,8 +111,15 @@ async function typePrompt(page, text) {
   await page.waitForTimeout(300);
 }
 
-/** Attach a local image: prefer the project library, upload only when it is not there. */
-async function attachImage(page, imagePath, { onStep }) {
+/**
+ * Attach a local image: prefer the project library, upload only when it is not there.
+ *
+ * Verified against the live sheet (2026-10-30): selecting a tile does not always
+ * close the sheet — the footer button "Tambahkan ke perintah" is what commits the
+ * selection. Clicking the tile alone leaves the composer empty, which is how the
+ * first i2v run failed without spending anything.
+ */
+export async function attachImage(page, imagePath, { onStep = () => {} } = {}) {
   const name = basename(String(imagePath));
   const attach = await firstVisible(page, SEL.attach, { timeout: 15000 });
   if (!attach) throw fail("Composer attach button not found; the composer layout changed");
@@ -120,11 +127,17 @@ async function attachImage(page, imagePath, { onStep }) {
   await attach.click();
   await page.waitForTimeout(1500);
 
-  const tile = page.locator(`${SEL.sheet[0]} button, ${SEL.sheet[1]} button`).filter({ hasText: name }).first();
+  const tileOf = () =>
+    page
+      .locator(`${SEL.sheet[0]} button, ${SEL.sheet[1]} button`)
+      .filter({ hasText: name })
+      // "Mengupload gflow_input.png" is the pending upload, not a selectable tile.
+      .filter({ hasNotText: /mengupload|uploading/i })
+      .first();
+
+  let tile = tileOf();
   if (await tile.count().catch(() => 0)) {
     onStep(`attaching ${name} from library`);
-    await tile.click();
-    await page.waitForTimeout(1500);
   } else {
     onStep(`uploading ${name}`);
     const upload = await firstVisible(page, SEL.upload, { timeout: 8000 });
@@ -133,24 +146,37 @@ async function attachImage(page, imagePath, { onStep }) {
     await upload.click();
     const fc = await chooser;
     await fc.setFiles(String(imagePath));
-    await page.waitForTimeout(4000);
     // Consent dialog on first use of a new image ("Hak untuk menggunakan gambar ini").
     const consent = page.locator("button:has-text('Saya setuju'), button:has-text('I agree')").first();
-    if (await consent.count().catch(() => 0)) {
-      await consent.click().catch(() => {});
-      await page.waitForTimeout(2000);
+    for (let i = 0; i < 20 && !(await tileOf().count().catch(() => 0)); i++) {
+      if (await consent.isVisible().catch(() => false)) await consent.click().catch(() => {});
+      await page.waitForTimeout(1000);
     }
-    const confirm = page.locator("button:has-text('Tambahkan ke perintah'), button:has-text('Add to prompt')").first();
-    if (await confirm.count().catch(() => 0)) {
-      await confirm.click().catch(() => {});
-      await page.waitForTimeout(2000);
-    }
+    tile = tileOf();
+    if (!(await tile.count().catch(() => 0))) throw fail(`Upload of ${name} never produced a selectable tile; nothing was submitted`);
+    onStep(`selecting uploaded ${name}`);
   }
 
-  const attached = page.locator(".ProseMirror img, .prompt-input img, img[alt='Gambar bahan']").first();
-  if (!(await attached.count().catch(() => 0))) {
-    throw fail(`Image ${name} did not attach to the composer; nothing was submitted`);
+  await tile.click();
+  await page.waitForTimeout(1200);
+
+  // The sheet closes itself when the tile attaches directly; when it stays open,
+  // its footer button commits the selection.
+  const confirm = page.locator("button:has-text('Tambahkan ke perintah'), button:has-text('Add to prompt')").first();
+  if (await confirm.isVisible().catch(() => false)) {
+    await confirm.click().catch(() => {});
+    await page.waitForTimeout(1500);
   }
+
+  // The composer shows the frame as a chip outside the editor
+  // (`flow-ingredient-chip > img[alt="Gambar bahan"]`), and it appears a moment
+  // after the click, so wait rather than sample once.
+  const attached = page.locator(".ProseMirror img, .prompt-input img, img[alt='Gambar bahan']").first();
+  for (let i = 0; i < 24; i++) {
+    if (await attached.count().catch(() => 0)) return;
+    await page.waitForTimeout(500);
+  }
+  throw fail(`Image ${name} did not attach to the composer; nothing was submitted`);
 }
 
 /**
@@ -272,20 +298,49 @@ export async function resumeFlowJob(job, { onStep = () => {} } = {}) {
 }
 
 /**
- * Render one job through the agent composer.
- * @returns {Promise<{mediaPath: string, sourceUrl: string}>}
+ * Which project the composer drives.
+ *
+ * i2v needs a project open (the composer lives on a project page), but the
+ * caller usually has none: the dashboard form never asked for one. Flow's
+ * homepage lists the account's projects newest-first, so the newest one is a
+ * safe default — a project is only a container for the render, and the image is
+ * uploaded into it when it is not already there.
  */
-export async function renderFlowInComposer(job, { onStep = () => {} } = {}) {
-  const projectId = job.projectId || process.env.FLOW_PROJECT_ID;
-  if (!projectId) {
-    throw fail(
-      "i2v needs a Flow project (projectId or FLOW_PROJECT_ID). Nothing was submitted; no credits spent."
-    );
-  }
+export async function resolveProjectId(page, hint) {
+  if (hint) return hint;
+  if (process.env.FLOW_PROJECT_ID) return process.env.FLOW_PROJECT_ID;
 
+  await page.goto("https://flow.google.com/", { waitUntil: "domcontentloaded", timeout: 90000 });
+  const budget = Number(process.env.FLOW_PROJECT_RESOLVE_MS);
+  const deadline = Date.now() + (Number.isFinite(budget) ? budget : 30000);
+  while (Date.now() < deadline) {
+    const id = await page
+      .evaluate(() => {
+        const a = document.querySelector("a[href*='/project/']");
+        return (a?.getAttribute("href") || "").match(/\/project\/([0-9a-f-]{36})/)?.[1] || null;
+      })
+      .catch(() => null);
+    if (id) return id;
+    await page.waitForTimeout(500);
+  }
+  throw fail(
+    "No Flow project on this account. Open https://flow.google.com/ once and create a project, then retry. Nothing was submitted; no credits spent."
+  );
+}
+
+/**
+ * Render one job through the agent composer.
+ * @returns {Promise<{mediaPath: string, sourceUrl: string, projectId: string}>}
+ */
+export async function renderFlowInComposer(job, { onStep = () => {}, onProject = () => {} } = {}) {
   const { ctx, page, videos } = await openFlowPage();
 
   try {
+    const projectId = await resolveProjectId(page, job.projectId);
+    // Persisted by the bridge before anything is submitted: a resume after a
+    // crashed process must reopen the project the clip was paid for.
+    onProject(projectId);
+
     onStep(`opening project ${projectId}`);
     await page.goto(`https://flow.google.com/project/${projectId}`, { waitUntil: "domcontentloaded", timeout: 90000 });
     await page.waitForTimeout(6000);
@@ -302,7 +357,8 @@ export async function renderFlowInComposer(job, { onStep = () => {} } = {}) {
     onStep("submitting");
     await submit.click();
 
-    return await harvestFlowResult(page, { videos, baseline, job, onStep });
+    const out = await harvestFlowResult(page, { videos, baseline, job: { ...job, projectId }, onStep });
+    return { ...out, projectId };
   } finally {
     await ctx.close().catch(() => {});
   }

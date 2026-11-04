@@ -4,7 +4,7 @@ import {
   KEY_ACCESS_MAX_ENTRIES,
   KEY_ACCESS_MAX_ENTRY_LENGTH,
   KEY_ACCESS_UNRESTRICTED,
-} from "@/shared/constants/keyAccess.js";
+} from "../constants/keyAccess.js";
 
 /**
  * Normalize an allow list: keep strings only, trim, drop empties, de-duplicate

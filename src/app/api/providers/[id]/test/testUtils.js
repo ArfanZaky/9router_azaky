@@ -8,6 +8,13 @@ import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js"
 import { CODEX_CLI_VERSION } from "open-sse/config/appConstants.js";
 import { GROK_CLI_PAGER_USER_AGENT, GROK_CLI_VERSION } from "open-sse/config/grokCli.js";
 import {
+  NOUS_CHAT_COMPLETIONS_URL,
+  NOUS_VALIDATION_MODEL,
+  createNousApiKeyProbe,
+  getNousApiKeyValidationError,
+  isNousApiKeyAccepted,
+} from "open-sse/services/nous.js";
+import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
 } from "open-sse/services/oauthCredentialManager.js";
@@ -22,6 +29,7 @@ import {
   KIMCHI_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
+import { hasWebIdentityProbe, fetchWebIdentity } from "open-sse/services/webIdentity.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -149,6 +157,21 @@ const OAUTH_TEST_CONFIG = {
     extraHeaders: { "x-api-version": "1.0.0" },
     refreshable: false,
   },
+  nous: {
+    url: NOUS_CHAT_COMPLETIONS_URL,
+    method: "POST",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    extraHeaders: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: NOUS_VALIDATION_MODEL,
+      messages: [{ role: "user", content: "ping" }],
+      max_tokens: 1,
+      stream: false,
+    }),
+    refreshable: true,
+    useApiKey: true,
+  },
 };
 
 const CONNECTION_TEST_TIMEOUT_MS = 10000;
@@ -218,7 +241,7 @@ function parseProviderErrorMessage(bodyText, fallback) {
 
 async function probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy = null) {
   const userAgent = connection.provider === "antigravity"
-    ? "google-api-nodejs-client/9.15.1 vscode-antigravity/1.107.0"
+    ? (ANTIGRAVITY_CONFIG.loadCodeAssistUserAgent || "antigravity/hub/2.24.0 darwin/arm64")
     : "google-api-nodejs-client/9.15.1 gemini-cli/0.34.0";
 
   const res = await fetchWithConnectionProxy(CLOUD_CODE_ASSIST_TEST_URL, {
@@ -265,7 +288,7 @@ async function refreshOAuthToken(connection) {
       return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
     }
 
-    if (provider === "codex" || provider === "grok-cli" || provider === "xai") {
+    if (provider === "codex" || provider === "grok-cli" || provider === "xai" || provider === "nous") {
       return await refreshProviderCredentials(provider, connection, console);
     }
 
@@ -390,7 +413,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     return { valid: true, error: null, refreshed: false, newTokens: null };
   }
 
-  let accessToken = connection.accessToken;
+  let accessToken = config.useApiKey ? (connection.apiKey || connection.accessToken) : connection.accessToken;
   let refreshed = false;
   let newTokens = null;
 
@@ -398,7 +421,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   if (config.refreshable && tokenExpired && connection.refreshToken) {
     const tokens = await refreshOAuthToken(connection);
     if (tokens) {
-      accessToken = tokens.accessToken;
+      accessToken = config.useApiKey ? (tokens.apiKey || tokens.accessToken) : tokens.accessToken;
       refreshed = true;
       newTokens = tokens;
     } else {
@@ -481,10 +504,11 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     if (res.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
       const tokens = await refreshOAuthToken(connection);
       if (tokens) {
-        const retryUrl = config.buildUrl ? config.buildUrl(tokens.accessToken) : testUrl;
+        const retryToken = config.useApiKey ? (tokens.apiKey || tokens.accessToken) : tokens.accessToken;
+        const retryUrl = config.buildUrl ? config.buildUrl(retryToken) : testUrl;
         const retryHeaders = config.noAuth
           ? { ...config.extraHeaders }
-          : { [config.authHeader]: `${config.authPrefix}${tokens.accessToken}`, ...config.extraHeaders };
+          : { [config.authHeader]: `${config.authPrefix}${retryToken}`, ...config.extraHeaders };
         const retryOpts = { method: config.method, headers: retryHeaders };
         if (config.body) retryOpts.body = config.body;
         const retryRes = await fetchWithConnectionProxy(retryUrl, retryOpts, effectiveProxy);
@@ -593,8 +617,40 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
     }
   }
 
+  // Web-cookie providers: a session probe (identity/lightweight endpoint) is the
+  // only meaningful test — the generic key probes have no way to read a cookie
+  // header. An inconclusive probe keeps the connection active so a network
+  // hiccup cannot mark a healthy session as broken.
+  if (hasWebIdentityProbe(connection.provider)) {
+    const identity = await fetchWebIdentity(connection.provider, connection.apiKey || "");
+    if (identity.status === "valid") return { valid: true, error: null };
+    if (identity.status === "invalid") return { valid: false, error: identity.error };
+    return { valid: true, error: `Could not verify the session: ${identity.error}` };
+  }
+
   try {
     switch (connection.provider) {
+      case "commandcode": {
+        const res = await fetchWithConnectionProxy(
+          "https://api.commandcode.ai/alpha/whoami?limits=1",
+          {
+            headers: {
+              Authorization: `Bearer ${connection.apiKey}`,
+              Accept: "application/json",
+            },
+          },
+          effectiveProxy,
+        );
+        const valid = res.ok;
+        return {
+          valid,
+          error: valid
+            ? null
+            : res.status === 401 || res.status === 403
+              ? "Invalid API key"
+              : `Command Code API error (${res.status})`,
+        };
+      }
       case "cloudflare-ai": {
         const psd = connection.providerSpecificData || {};
         const accountId = psd.accountId;
@@ -682,6 +738,20 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         }, effectiveProxy);
         const valid = res.status !== 401 && res.status !== 403;
         return { valid, error: valid ? null : "Invalid CodeBuddy CN API key" };
+      }
+      case "nous": {
+        // /models is public on Nous; a minimal chat request is required to
+        // distinguish an accepted Portal key from an arbitrary Bearer value.
+        const probe = createNousApiKeyProbe(connection.apiKey);
+        const res = await fetchWithConnectionProxy(probe.url, {
+          ...probe.options,
+          signal: AbortSignal.timeout(8000),
+        }, effectiveProxy);
+        const valid = isNousApiKeyAccepted(res.status);
+        return {
+          valid,
+          error: valid ? null : getNousApiKeyValidationError(res.status),
+        };
       }
       case "glm": {
         const res = await fetchWithConnectionProxy("https://api.z.ai/api/anthropic/v1/messages", {
@@ -805,7 +875,8 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       case "atria":
       case "agnes":
       case "bai":
-      case "muse": {
+      case "muse":
+      case "runcrate": {
         const cfg = PROVIDERS[connection.provider];
         const res = await fetchWithConnectionProxy(cfg.validateUrl, { headers: { Authorization: `Bearer ${connection.apiKey}` } }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
@@ -934,6 +1005,23 @@ case "llm7": {
         }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key or base URL" };
       }
+      case "sensenova": {
+        const validateUrl = PROVIDERS.sensenova?.validateUrl || "https://token.sensenova.cn/v1/models";
+        const res = await fetchWithConnectionProxy(validateUrl, {
+          method: "GET",
+          headers: {
+            Authorization: "Bearer " + connection.apiKey,
+            Accept: "application/json",
+          },
+        }, effectiveProxy);
+        const valid = res.ok;
+        return {
+          valid,
+          error: valid ? null : res.status === 401 || res.status === 403
+            ? "Invalid API key"
+            : `SenseNova API error (${res.status})`,
+        };
+      }
       case "kimchi": {
         // Dual-auth: same validation endpoint as the OAuth flow — the token (API key
         // or OAuth access token) is sent as Authorization: Bearer.
@@ -1014,6 +1102,7 @@ export async function testSingleConnection(id) {
   if (result.refreshed && result.newTokens) {
     if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;
     if (result.newTokens.refreshToken) updateData.refreshToken = result.newTokens.refreshToken;
+    if (result.newTokens.apiKey) updateData.apiKey = result.newTokens.apiKey;
     if (result.newTokens.idToken) updateData.idToken = result.newTokens.idToken;
     if (result.newTokens.lastRefreshAt) updateData.lastRefreshAt = result.newTokens.lastRefreshAt;
     if (result.newTokens.expiresIn) updateData.expiresIn = result.newTokens.expiresIn;

@@ -1,6 +1,10 @@
-- Terse concise communication preferred; avoid conversational filler.
-- Commit task changes locally upon completion; never push to remote.
-- Prefers responses in Bahasa Indonesia with concise root-cause analysis and explicit confirmation before running long or impactful commands.
-- User communicates in Indonesian (uses 'lanjut' to continue tasks) and expects concise summaries with root cause, fix list, and file/line references.
-- For end-to-end validation, prefers driving a real browser session (browser use) and logging into the 9Router account to obtain cookies rather than mocking or assuming API behavior.
 - Communicate in Indonesian always.
+- Prefers Indonesian for communication.
+- For SQL query review tasks, expects structured output: query explanation, list of affected tables with operation types (INSERT/UPDATE/DELETE), and risk review (missing WHERE, join-induced unintended updates, transactions/locking, null handling, logic bugs).
+- For SQL script patching, do not delete or modify backup copies (.bak or 'copy' files); preserve them untouched as backups.
+- For security protection testing on live servers, expects non-intrusive verification (minimal single GET requests) with explicit consent before any impactful probing.
+- Default tetap commit lokal saja (jangan push); push ke remote hanya saat user eksplisit minta (misal 'push ke git').
+- Install/download file besar (deps ML, model cache) ke drive F: karena ruang C: terbatas; F: sisa ~14.3 GB.
+- Saat membandingkan model/cost, user mau metrik efisiensi per unit (mis. credit/detik) diurutkan termurah dulu, bukan sekadar harga per clip.
+- Setelah task selesai, hapus file sementara/artefak kerja (sampah storage) otomatis; user minta bersih-bersih di akhir.
+- Mau AI benar-benar memainkan/farming game lewat MCP dengan input injection nyata, bukan simulasi.

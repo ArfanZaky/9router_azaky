@@ -157,14 +157,14 @@ function fail(message) {
  * Submits at most once: a retry after a submit that may have gone out would
  * spend credits twice, so every failure path here stops instead.
  */
-export async function renderFlowJob(job, { onStep = () => {} } = {}) {
+export async function renderFlowJob(job, { onStep = () => {}, onProject = () => {} } = {}) {
   // i2v cannot go through the CLI on this host (attach-image is unported, #799),
   // so it runs on the real composer instead. t2v stays on the CLI: it is proven
   // end-to-end and downloads the mp4 itself.
   if (job.mode === "i2v") {
     assertNotTestRun();
     const { renderFlowInComposer } = await import("./composer.js");
-    return renderFlowInComposer(job, { onStep });
+    return renderFlowInComposer(job, { onStep, onProject });
   }
   assertNotTestRun();
 

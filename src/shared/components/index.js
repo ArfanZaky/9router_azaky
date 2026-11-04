@@ -48,6 +48,7 @@ export { default as MergeConnectionsModal } from "./MergeConnectionsModal";
 export { default as Freebuff2ApiGatewayModal } from "./Freebuff2ApiGatewayModal";
 export { default as Pagination } from "./Pagination";
 export { default as AutoclawAutomationModal } from "./AutoclawAutomationModal";
+export { default as SmartPolicyModal } from "./SmartPolicyModal";
 
 // Layouts
 export * from "./layouts";

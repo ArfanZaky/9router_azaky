@@ -1,45 +1,30 @@
 ---
 name: self-improvement
-description: Hermes-style dual-tier memory and procedural skill self-evolution. Learn project gotchas, save user preferences, and create or patch skills automatically.
+description: Hermes-style dual-tier memory and procedural skill self-evolution. Learn project gotchas, save user preferences, and create or patch skills deliberately.
 ---
 
 # Self-Improving AI (Hermes Architecture)
 
-This skill enables the 9Router agent to continuously learn and retain knowledge across conversation turns and sessions without context window degradation.
+Persistent memory and reusable procedural skills are separate from REA. Loading the REA skill or discovering its MCP tools does **not** automatically produce a memory update. The agent should load the matching skill with `read_skill` and use REA tools when the task requires reverse engineering; it should only store verified, reusable conclusions.
 
-## 1. Dual-Tier Memory Structure
+## Dual-Tier Memory
 
-Memory is persistent, bounded, and injected into the agent system prompt prefix:
+- **`MEMORY.md`**: Durable project knowledge at `<workspace>/.9router/MEMORY.md`, limited to ~2,400 characters. Save architecture, verified commands and reusable gotchas, not transient state or unverified REA hypotheses.
+- **`USER.md`**: Explicit user preferences at `<workspace>/.9router/USER.md` (or the global fallback), limited to ~1,400 characters. Do not infer preferences from a single routine message.
+- Memory is injected into subsequent agent prompts. Old entries are bounded and deduplicated.
 
-1. **`MEMORY.md` (Project Knowledge & Gotchas)**:
-   - Stored in `<workspace>/.9router/MEMORY.md`.
-   - Max ~2,400 characters (~600 tokens).
-   - Holds durable project facts: framework quirks, specific build scripts, active service ports, database configurations, and error causes that were solved.
-   - Bounded with automated oldest-entry FIFO eviction so prompt overhead remains strictly predictable.
+## Tools
 
-2. **`USER.md` (User Preferences & Style)**:
-   - Stored in `<workspace>/.9router/USER.md` or global fallback `DATA_DIR/memory/USER.md`.
-   - Max ~1,400 characters (~350 tokens).
-   - Holds user communication style, preferred languages, concise tone instructions, and negative rules (e.g. "never do X").
+- `manage_memory`: `view`, `append`, `replace`; target `project` or `user`. Read before overwriting. Example: `manage_memory({action:"append",target:"project",content:"- Verified build command: npm run build."})`.
+- `manage_skill`: `list`, `view`, `create`, `patch`; use for repeatable workflows, not for per-chat facts. Read an existing skill before patching it.
 
-## 2. Tools
+## Post-turn review
 
-- **`manage_memory`**:
-  - `action`: `view` | `append` | `replace`
-  - `target`: `project` | `user`
-  - `content`: bullet point string or full text
-  - Example: `manage_memory({ action: "append", target: "project", content: "- Next.js build requires node 22 and runs on port 2026." })`
+A best-effort reviewer runs after a successful agent turn, before the `done` event so the dashboard can display its result. It returns a visible notice:
 
-- **`manage_skill`**:
-  - `action`: `list` | `view` | `create` | `patch`
-  - `name`: kebab-case skill identifier (e.g. `nextjs-optimization`)
-  - `description`: 1-line summary for frontmatter and catalogue
-  - `content`: Markdown body with workflow instructions
-  - Read-before-write discipline: always inspect or view the existing skill before patching.
+- `Self-improvement updated`: New durable knowledge was saved.
+- `Self-improvement skipped: no new durable knowledge`: Review ran and correctly found nothing worth persisting. This is normal, **not** an MCP failure.
+- `Self-improvement skipped: ...`: The turn was ineligible, for example plain chat mode or a routine acknowledgement.
+- `Self-improvement failed: ...`: The review or persistence failed; check the notice and chat run events. The primary chat answer remains available.
 
-## 3. Post-Turn Background Review Loop
-
-At the conclusion of each agent turn:
-1. A detached background reviewer evaluates the turn using the local model endpoint.
-2. If new durable project facts or explicit user preferences are identified, they are automatically deduplicated and committed into `MEMORY.md` and `USER.md`.
-3. Subsequent turns and sessions automatically receive these updated memories in their initial system prompt without requiring manual user repetition.
+The reviewer cannot substitute for calling REA: if `MCP rea unavailable: ...` appears, verify the enabled `rea` server in `/dashboard/chat` MCP settings and probe `npx -y rea-agents@6.4.0 mcp`. Do not claim reverse engineering was performed when its tools were unavailable. REA-specific workflow and evidence rules are in `rea-reverse-engineer`.

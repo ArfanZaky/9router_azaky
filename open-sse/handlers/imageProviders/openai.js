@@ -48,14 +48,22 @@ export default function createOpenAIAdapter(providerId) {
         quality,
         style,
         response_format,
+        output_format,
         image,
         images,
       } = body;
 
       const full = { model, prompt, n, size };
+      if (output_format) full.output_format = output_format;
       if (quality) full.quality = quality;
       if (style) full.style = style;
       if (response_format) full.response_format = response_format;
+
+      for (const field of ["output_format", "watermark", "prompt_extend"]) {
+        if (cfg.bodyFields?.includes(field) && body[field] !== undefined) {
+          full[field] = body[field];
+        }
+      }
 
       // Collect ref images as strings only (data URI or public URL)
       const list = [];
@@ -80,7 +88,7 @@ export default function createOpenAIAdapter(providerId) {
         if (list.length > 1) full.images = list;
       }
 
-      // bodyFields whitelist (e.g. xAI) — always allow image when present
+      // bodyFields whitelist (e.g. xAI accepts only model/prompt/n/response_format)
       if (Array.isArray(cfg.bodyFields)) {
         const fields = new Set(cfg.bodyFields);
         if (full.image) fields.add("image");

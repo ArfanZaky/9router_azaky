@@ -18,6 +18,7 @@ import {
   refreshZedToken,
   refreshWindsurfToken,
   refreshMiniMaxCodeToken,
+  refreshNousToken,
   classifyOAuthRefreshError,
 } from "./tokenRefresh/providers.js";
 import { refreshAutoclawToken } from "./tokenRefresh/autoclaw.js";
@@ -40,6 +41,7 @@ export {
   refreshZedToken,
   refreshWindsurfToken,
   refreshMiniMaxCodeToken,
+  refreshNousToken,
   classifyOAuthRefreshError,
 };
 
@@ -163,6 +165,7 @@ const REFRESH_HANDLERS = {
   // value and classifies invalid_grant (docs/minimax-code-proxy-plan.md §2.3)
   "minimax-code": (c, log) => refreshMiniMaxCodeToken("minimax-code", c.refreshToken, log),
   "minimax-code-global": (c, log) => refreshMiniMaxCodeToken("minimax-code-global", c.refreshToken, log),
+  nous: (c, log) => refreshNousToken(c.refreshToken, log),
   vertex: vertexRefreshHandler,
   "vertex-partner": vertexRefreshHandler,
   autoclaw: (c, log) => refreshAutoclawToken(c, log),

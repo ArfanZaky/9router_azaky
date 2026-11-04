@@ -4,15 +4,14 @@ import { PROVIDER_MEDIA } from "../../providers/index.js";
 
 const BASE_URL = PROVIDER_MEDIA["gemini"]?.imageConfig?.baseUrl;
 
-function toInlinePart(image) {
-  if (!image || typeof image !== "string") return null;
-  const parsed = parseDataUri(image);
+function resolveImageInput(input) {
+  if (!input || typeof input !== "string") return null;
+  const parsed = parseDataUri(input);
   if (parsed) {
     return { inlineData: { mimeType: parsed.mime, data: parsed.b64 } };
   }
-  // Public URL — Gemini generateContent expects inline/file data; skip unsupported URL-only
-  if (/^https?:\/\//i.test(image)) {
-    return null;
+  if (/^[A-Za-z0-9+/]/.test(input) && input.length > 100 && !input.startsWith("http")) {
+    return { inlineData: { mimeType: "image/png", data: input } };
   }
   return null;
 }
@@ -30,7 +29,7 @@ export default {
     if (Array.isArray(body.images)) refs.push(...body.images.filter(Boolean));
     if (body.image) refs.unshift(body.image);
     for (const ref of refs) {
-      const part = toInlinePart(ref);
+      const part = resolveImageInput(ref);
       if (part) parts.push(part);
     }
     parts.push({ text: body.prompt });

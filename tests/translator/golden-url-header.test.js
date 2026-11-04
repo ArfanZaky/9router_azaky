@@ -23,26 +23,26 @@ const SPECIALIZED = new Set([
   "xiaomi-tokenplan", "mimo-free",
 ]);
 
+// Per-process / per-request values: kimi's random device name, minimax's session UUID, codebuddy UUIDs.
+const VOLATILE_HEADERS = new Set([
+  "x-msh-device-name",
+  "x-mavis-session-id",
+  "x-conversation-id",
+  "x-conversation-message-id",
+  "x-conversation-request-id",
+  "x-request-id",
+]);
+
 // Sanitize header: khử token + field thời gian động (kimi X-Msh-Device-Id) để snapshot ổn định.
 function sanitize(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
-    if (typeof v !== "string") {
-      out[k] = v;
-      continue;
-    }
-    if (k === "User-Agent" && v.startsWith("9Router/")) {
-      out[k] = "9Router/<VERSION>";
-      continue;
-    }
-    if (["X-CLIENT-VERSION", "X-CORE-VERSION", "X-PLATFORM", "X-PLATFORM-VERSION", "X-Msh-Device-Model"].includes(k)) {
-      out[k] = `<${k}>`;
-      continue;
-    }
-    out[k] = v.replace(/Bearer .+/, "Bearer <TOK>")
-      .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
-      .replace(/kimi-\d{10,}/g, "kimi-<TS>")
-      .replace(/\b[0-9a-f]{32}\b/g, "<ID>");
+    if (VOLATILE_HEADERS.has(k.toLowerCase())) { out[k] = "<VOLATILE>"; continue; }
+    out[k] = typeof v === "string"
+      ? v.replace(/Bearer .+/, "Bearer <TOK>")
+          .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
+          .replace(/kimi-\d{10,}/g, "kimi-<TS>")
+      : v;
   }
   return out;
 }

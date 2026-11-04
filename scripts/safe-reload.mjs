@@ -111,7 +111,7 @@ async function runWorker() {
   const delayMs = Number(getArgValue("--delay", "4000"));
   const timeoutMs = Number(getArgValue("--timeout", "180000")); // Default 3 minutes
   const port = Number(getArgValue("--port", process.env.PORT || "2026"));
-  const pm2Target = getArgValue("--pm2-id", "0");
+  const pm2Target = getArgValue("--pm2-id", "9router"); // name-based: pm2 renumbers ids after each restart
   const force = hasArg("--force");
   const pidFile = path.join(rootDir, "safe-reload.pid");
 
