@@ -1,9 +1,12 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useState } from "react";
 import { Spinner } from "@/shared/components";
 import ChatMarkdown from "./ChatMarkdown";
 import ChatToolCard from "./ChatToolCard";
+import { groupMessageSegments } from "@/lib/chat/segmentGrouping";
+
+export { groupMessageSegments };
 
 function textValue(value) {
   if (typeof value === "string") return value;
@@ -43,6 +46,108 @@ function updateOrAppendSegment(segments, type, content, extra = {}) {
   return next;
 }
 
+function ChatActivityGroup({ items, isStreamingMessage, messageCreatedAt }) {
+  const hasRunningTool = items.some((it) => it.type === "tool" && it.status === "running");
+  const lastItem = items[items.length - 1];
+  const isStreamingReasoning = isStreamingMessage && lastItem?.type === "reasoning";
+  const isActive = hasRunningTool || isStreamingReasoning;
+
+  const toolItems = items.filter((it) => it.type === "tool");
+  const reasoningItems = items.filter((it) => it.type === "reasoning");
+  const toolNames = [...new Set(toolItems.map((t) => t.name || "tool"))];
+
+  const labelParts = [];
+  if (reasoningItems.length > 0) {
+    labelParts.push(isStreamingReasoning ? "Thinking…" : "Reasoning");
+  }
+  if (toolItems.length > 0) {
+    labelParts.push(`${toolItems.length} tool${toolItems.length > 1 ? "s" : ""}`);
+  }
+  const summaryTitle = labelParts.join(" · ") || "Activity";
+  const runningTool = toolItems.find((t) => t.status === "running");
+
+  return (
+    <details
+      key={isActive ? "activity-open" : "activity-closed"}
+      className="group/activity rounded-xl border border-border bg-background/40 overflow-hidden"
+      open={isActive || undefined}
+    >
+      <summary className="cursor-pointer select-none px-3 py-2 text-[11px] font-medium text-text-muted hover:bg-sidebar/50 transition flex items-center justify-between gap-2 list-none [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span
+            className={`material-symbols-outlined text-[15px] shrink-0 ${
+              isActive ? "animate-spin text-primary" : "text-primary/80"
+            }`}
+          >
+            {isActive ? "progress_activity" : reasoningItems.length > 0 && toolItems.length === 0 ? "psychology" : "account_tree"}
+          </span>
+          <span className="font-semibold text-text-main shrink-0">{summaryTitle}</span>
+          {runningTool ? (
+            <span className="truncate font-mono text-[10px] text-primary">
+              running {runningTool.name}…
+            </span>
+          ) : toolNames.length > 0 ? (
+            <span className="truncate font-mono text-[10px] text-text-muted opacity-80">
+              ({toolNames.slice(0, 4).join(", ")}{toolNames.length > 4 ? ` +${toolNames.length - 4}` : ""})
+            </span>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {lastItem?.timestamp ? (
+            <span className="font-mono text-[10px] opacity-70">{formatMessageTime(lastItem.timestamp)}</span>
+          ) : null}
+          <span className="material-symbols-outlined text-[15px] text-text-muted transition-transform duration-150 group-open/activity:rotate-180">
+            expand_more
+          </span>
+        </div>
+      </summary>
+
+      <div className="border-t border-border/70 bg-background/25 px-2.5 py-2 space-y-2">
+        {items.map((item, idx) => {
+          const isLastInGroup = idx === items.length - 1;
+          if (item.type === "reasoning") {
+            const streamingHere = isStreamingMessage && isLastInGroup;
+            return (
+              <details
+                key={`reasoning-${item.originalIndex ?? idx}`}
+                className="rounded-lg border border-border/70 bg-background/50 px-3 py-1.5"
+                open={streamingHere || items.length === 1 || undefined}
+              >
+                <summary className="cursor-pointer text-[11px] font-medium text-text-muted flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <span className={`material-symbols-outlined text-[13px] ${streamingHere ? "animate-spin text-primary" : ""}`}>
+                      psychology
+                    </span>
+                    <span>{streamingHere ? "Thinking…" : "Thought process"}</span>
+                  </span>
+                  {item.timestamp ? (
+                    <span className="font-mono text-[10px] opacity-70">{formatMessageTime(item.timestamp)}</span>
+                  ) : null}
+                </summary>
+                <div className="mt-1.5 whitespace-pre-wrap text-xs leading-5 text-text-muted max-h-60 overflow-y-auto custom-scrollbar">
+                  {item.content}
+                  {streamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
+                </div>
+              </details>
+            );
+          }
+
+          if (item.type === "tool") {
+            return (
+              <ChatToolCard
+                key={item.callId || `tool-${item.originalIndex ?? idx}`}
+                segment={item}
+                messageCreatedAt={messageCreatedAt}
+              />
+            );
+          }
+          return null;
+        })}
+      </div>
+    </details>
+  );
+}
+
 // ── Memoized Message Row Component (Zero Re-render on Typing) ─────────────────
 export const ChatMessageRow = memo(function ChatMessageRow({
   message,
@@ -61,19 +166,53 @@ export const ChatMessageRow = memo(function ChatMessageRow({
   const isSystem = message.role === "system";
   const content = textValue(message.content);
   const msgTime = formatMessageTime(message.createdAt);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(content);
 
   if (isSystem) {
+    const isCompactSummary = message.name === "compact_summary";
     return (
       <div data-chat-message-index={globalIndex} className="flex justify-start">
-        <div className="max-w-[min(92%,42rem)] w-full rounded-xl border border-border bg-background/40 px-3 py-2">
-          <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-text-muted">
+        <div
+          className={`max-w-[min(92%,42rem)] w-full rounded-xl border px-3.5 py-2.5 ${
+            isCompactSummary
+              ? "border-primary/30 bg-primary/5"
+              : "border-border bg-background/40"
+          }`}
+        >
+          <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] font-semibold text-text-muted">
             <span className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-[13px]">terminal</span>
-              Command
+              <span className={`material-symbols-outlined text-[14px] ${isCompactSummary ? "text-primary" : ""}`}>
+                {isCompactSummary ? "compress" : "terminal"}
+              </span>
+              <span className={isCompactSummary ? "text-primary" : ""}>
+                {isCompactSummary ? "Compacted Context Summary" : "Command"}
+              </span>
+              {isCompactSummary && message.tokenUsage?.prompt_tokens ? (
+                <span className="rounded-full bg-primary/15 px-2 py-0.5 font-mono text-[10px] font-medium text-primary">
+                  ~{message.tokenUsage.prompt_tokens} tokens
+                </span>
+              ) : null}
             </span>
-            {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
+            <div className="flex items-center gap-1.5">
+              {msgTime ? <span className="font-mono text-[10px] font-normal opacity-70">{msgTime}</span> : null}
+              <button
+                type="button"
+                className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100 transition cursor-pointer"
+                onClick={() => onCopy(content)}
+                title="Copy"
+              >
+                content_copy
+              </button>
+            </div>
           </div>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-muted">{content}</pre>
+          {isCompactSummary ? (
+            <div className="max-h-72 overflow-auto custom-scrollbar text-xs leading-5 text-text-main">
+              <ChatMarkdown content={content} onImageClick={onImageClick} />
+            </div>
+          ) : (
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-muted">{content}</pre>
+          )}
         </div>
       </div>
     );
@@ -139,7 +278,10 @@ export const ChatMessageRow = memo(function ChatMessageRow({
               <button
                 type="button"
                 className="material-symbols-outlined text-[14px] opacity-60 hover:opacity-100 transition cursor-pointer"
-                onClick={() => onEdit(message)}
+                onClick={() => {
+                  setEditValue(content);
+                  setIsEditing(true);
+                }}
                 title="Edit and resend"
                 disabled={isSending}
               >
@@ -174,7 +316,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
             ))}
           </div>
         ) : null}
-        {viewMode === "raw" && message.tool_calls?.length ? (
+        {viewMode === "raw" && message.tool_calls?.length && !message.segments?.some((s) => s.type === "tool") ? (
           <div className="mb-2 flex flex-wrap gap-1">
             {message.tool_calls.map((tc) => (
               <span
@@ -189,39 +331,27 @@ export const ChatMessageRow = memo(function ChatMessageRow({
         <div>
           {!isUser && message.segments?.length ? (
             <div className="space-y-3">
-              {message.segments.map((segment, index) => {
-                const isLast = index === message.segments.length - 1;
-                const isStreamingHere = message.status === "streaming" && isLast;
-                if (segment.type === "reasoning") {
-                  return showReasoning ? (
-                    <details key={`${segment.type}-${index}`} className="rounded-xl border border-border bg-background/40 px-3 py-2" open={message.status === "streaming"}>
-                      <summary className="cursor-pointer text-[11px] font-medium text-text-muted flex items-center justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <span className={`material-symbols-outlined text-[13px] ${isStreamingHere ? "animate-spin text-primary" : ""}`}>psychology</span>
-                          <span>{isStreamingHere ? "Thinking…" : "Reasoning"}</span>
-                        </span>
-                        {segment.timestamp ? <span className="font-mono text-[10px] opacity-70">{formatMessageTime(segment.timestamp)}</span> : null}
-                      </summary>
-                      <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-text-muted">
-                        {segment.content}
-                        {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
-                      </div>
-                    </details>
-                  ) : null;
+              {groupMessageSegments(message.segments, { showReasoning, viewMode }).map((group, gIdx) => {
+                if (group.kind === "activity") {
+                  return (
+                    <ChatActivityGroup
+                      key={`activity-${gIdx}`}
+                      items={group.items}
+                      isStreamingMessage={message.status === "streaming" || message.status === "tool_calls"}
+                      messageCreatedAt={message.createdAt}
+                    />
+                  );
                 }
-                if (segment.type === "tool") {
-                  return viewMode === "raw" ? (
-                    <ChatToolCard key={segment.callId || index} segment={segment} messageCreatedAt={message.createdAt} />
-                  ) : null;
-                }
+                const isLastSegment = group.originalIndex === message.segments.length - 1;
+                const isStreamingHere = message.status === "streaming" && isLastSegment;
                 return (
-                  <div key={`${segment.type}-${index}`} className="relative">
-                    <ChatMarkdown content={segment.content} onImageClick={onImageClick} />
+                  <div key={`text-${group.originalIndex ?? gIdx}`} className="relative">
+                    <ChatMarkdown content={group.segment.content} onImageClick={onImageClick} />
                     {isStreamingHere ? <span className="inline-block animate-pulse ml-0.5 text-primary">▋</span> : null}
                   </div>
                 );
               })}
-              {!message.segments.some((s) => s.type === "text") && content ? (
+              {!message.segments.some((s) => s.type === "text" && s.content) && content ? (
                 <div className="relative">
                   <ChatMarkdown content={content} onImageClick={onImageClick} />
                   {(message.status === "streaming" || message.status === "tool_calls") ? (
@@ -231,7 +361,53 @@ export const ChatMessageRow = memo(function ChatMessageRow({
               ) : null}
             </div>
           ) : isUser ? (
-            <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div>
+            isEditing ? (
+              <div className="space-y-2 min-w-[min(72vw,28rem)]">
+                <textarea
+                  autoFocus
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setIsEditing(false);
+                    } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault();
+                      if (editValue.trim() && editValue.trim() !== content.trim()) {
+                        onEdit(message, editValue.trim());
+                      }
+                      setIsEditing(false);
+                    }
+                  }}
+                  rows={Math.min(8, Math.max(2, editValue.split("\n").length))}
+                  className="w-full rounded-xl border border-white/25 bg-black/20 px-3 py-2 text-sm text-white placeholder-white/60 outline-none focus:border-white/60 resize-y"
+                />
+                <div className="flex items-center justify-end gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditing(false)}
+                    className="rounded-lg border border-white/20 px-2.5 py-1 text-white/80 hover:bg-white/10 transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (editValue.trim() && editValue.trim() !== content.trim()) {
+                        onEdit(message, editValue.trim());
+                      }
+                      setIsEditing(false);
+                    }}
+                    disabled={!editValue.trim() || editValue.trim() === content.trim()}
+                    className="rounded-lg bg-white px-2.5 py-1 font-semibold text-primary hover:bg-white/90 transition disabled:opacity-50 cursor-pointer"
+                  >
+                    Save & Resend
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="whitespace-pre-wrap break-words text-[14px] leading-6">{content}</div>
+            )
           ) : (
             <div>
               <ChatMarkdown content={content} onImageClick={onImageClick} />

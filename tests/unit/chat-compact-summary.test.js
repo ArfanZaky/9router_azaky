@@ -29,7 +29,7 @@ const adapter = {
       return store.messages
         .filter((m) => m.sessionId === params[0])
         .sort((a, b) => a.rowid - b.rowid)
-        .map((m) => (sql.includes("SELECT *") ? fullRow(m) : { rowid: m.rowid, role: m.role, content: m.content, toolCalls: m.toolCalls }));
+        .map((m) => (sql.includes("SELECT *") ? fullRow(m) : { rowid: m.rowid, id: m.id, role: m.role, content: m.content, toolCalls: m.toolCalls, toolName: m.toolName }));
     }
     return [];
   },
@@ -203,6 +203,28 @@ describe("chat compaction: summary instead of hard loss", () => {
 
     const latest = store.messages[store.messages.length - 1];
     expect(JSON.parse(latest.tokenUsage).prompt_tokens).toBe(second.estimatedTokens);
+  });
+
+  it("summarizes ALL conversation turns into a single compact_summary message when keepLastN is 0 (default)", async () => {
+    seedSession("s_all", [
+      { role: "user", content: "Build compact context feature" },
+      { role: "assistant", content: "Implemented LLM + deterministic digest compaction" },
+      { role: "user", content: "Verify token reduction" },
+      { role: "assistant", content: "Token usage reduced to summary size" },
+    ]);
+
+    const res = await compactSessionMessages("s_all", 0, {
+      summary: "- Goal: Build compact context feature\n- Outcome: Implemented LLM + deterministic digest compaction",
+    });
+
+    expect(res.summarizedCount).toBe(4);
+    expect(res.deletedCount).toBe(4);
+    expect(res.keptCount).toBe(1);
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0].role).toBe("system");
+    expect(store.messages[0].toolName).toBe("compact_summary");
+    expect(store.messages[0].content).toContain("- Goal: Build compact context feature");
+    expect(store.sessions.get("s_all").compactSummary).toContain("- Goal: Build compact context feature");
   });
 });
 

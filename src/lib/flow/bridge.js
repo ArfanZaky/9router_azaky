@@ -14,6 +14,7 @@
 // ./driver.js and is wired in P1; until then a job fails with an explicit
 // "driver not available" instead of pretending to render.
 import {
+  FLOW_IMAGE_MODELS,
   FLOW_VIDEO_MODELS,
   flowCreditCost,
 } from "../../../open-sse/providers/registry/flow.js";
@@ -144,10 +145,14 @@ export async function flowBudgetState() {
 }
 
 export async function enqueueFlowJob(input = {}) {
-  const req = validateFlowRequest(input);
+  const nextInput = { ...input };
+  if (!nextInput.imagePath && nextInput.image) {
+    nextInput.imagePath = await resolveFlowImageInput(nextInput.image);
+  }
+  const req = validateFlowRequest(nextInput);
   await assertAffordable(req.creditCost);
   await assertWithinDailyBudget(req.creditCost);
-  const job = await createFlowJob({ ...req, projectId: input.projectId || null, dryRun: DRY_RUN() });
+  const job = await createFlowJob({ ...req, projectId: nextInput.projectId || null, dryRun: DRY_RUN() });
   pump();
   return job;
 }
@@ -250,7 +255,84 @@ async function runJob(job) {
   }
 }
 
+let activeExclusive = Promise.resolve();
 let pumping = false;
+
+/** Serialize browser/CLI actions so image and video renders never collide on the Chrome profile. */
+function runExclusive(fn) {
+  const next = activeExclusive.then(fn, fn);
+  activeExclusive = next.catch(() => {});
+  return next;
+}
+
+/** Resolve an image input (local path, /api/flow/images/{id}, /api/image-gen/assets/{id}, data:image/..., or http URL) to an on-disk path. */
+export async function resolveFlowImageInput(input) {
+  if (!input || typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const [{ existsSync, mkdirSync, writeFileSync }, { join, isAbsolute }] = await Promise.all([
+    import("node:fs"),
+    import("node:path"),
+  ]);
+
+  if (isAbsolute(trimmed) && existsSync(trimmed)) return trimmed;
+
+  // /api/flow/images/{id}
+  const flowImgMatch = trimmed.match(/\/api\/flow\/images\/([^/?#]+)/i);
+  if (flowImgMatch) {
+    const { getFlowImage } = await import("../db/repos/flowImagesRepo.js");
+    const { resolveImageAssetPath } = await import("../media/imageStore.js");
+    const row = await getFlowImage(flowImgMatch[1]);
+    if (row?.path) {
+      const abs = resolveImageAssetPath(row.path);
+      if (abs && existsSync(abs)) return abs;
+    }
+  }
+
+  // /api/image-gen/assets/{id}
+  const genImgMatch = trimmed.match(/\/api\/image-gen\/assets\/([^/?#]+)/i);
+  if (genImgMatch) {
+    const { getImageAsset } = await import("../db/repos/imageGenRepo.js");
+    const { resolveImageAssetPath } = await import("../media/imageStore.js");
+    const row = await getImageAsset(genImgMatch[1]);
+    if (row?.path) {
+      const abs = resolveImageAssetPath(row.path);
+      if (abs && existsSync(abs)) return abs;
+    }
+  }
+
+  // data:image/*;base64,...
+  const dataMatch = trimmed.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,(.+)$/i);
+  if (dataMatch) {
+    const { DATA_DIR } = await import("../dataDir.js");
+    const { randomUUID } = await import("node:crypto");
+    const ext = dataMatch[1].toLowerCase().includes("jpeg") ? ".jpg" : dataMatch[1].toLowerCase().includes("webp") ? ".webp" : ".png";
+    const uploadDir = join(DATA_DIR, "flow", "uploads");
+    mkdirSync(uploadDir, { recursive: true });
+    const abs = join(uploadDir, `${randomUUID()}${ext}`);
+    writeFileSync(abs, Buffer.from(dataMatch[2], "base64"));
+    return abs;
+  }
+
+  // http(s) URL
+  if (/^https?:\/\//i.test(trimmed)) {
+    const { DATA_DIR } = await import("../dataDir.js");
+    const { randomUUID } = await import("node:crypto");
+    const res = await fetch(trimmed, { signal: AbortSignal.timeout(30000) });
+    if (res.ok) {
+      const mime = (res.headers.get("content-type") || "").toLowerCase();
+      const ext = mime.includes("jpeg") || mime.includes("jpg") ? ".jpg" : mime.includes("webp") ? ".webp" : ".png";
+      const uploadDir = join(DATA_DIR, "flow", "uploads");
+      mkdirSync(uploadDir, { recursive: true });
+      const abs = join(uploadDir, `${randomUUID()}${ext}`);
+      writeFileSync(abs, Buffer.from(await res.arrayBuffer()));
+      return abs;
+    }
+  }
+
+  return null;
+}
 
 async function pump() {
   if (pumping) return;
@@ -264,7 +346,7 @@ async function pump() {
       const job = await claimNextFlowJob();
       if (!job) break;
       active += 1;
-      await runJob(job);
+      await runExclusive(() => runJob(job));
       active -= 1;
     }
   } catch (error) {
@@ -274,10 +356,96 @@ async function pump() {
   }
 }
 
+/**
+ * Render one image through the Flow browser bridge (serialized with video jobs)
+ * and persist it into flowImages + media/images so it is reusable for i2v.
+ */
+export async function generateFlowImage(body = {}) {
+  const model = String(body.model || "nano2").replace(/^flow\//i, "");
+  const spec = FLOW_IMAGE_MODELS[model];
+  if (!spec) throw new FlowRequestError(`Unknown Flow image model '${model}'`);
+
+  const prompt = String(body.prompt || "").trim();
+  if (!prompt) throw new FlowRequestError("prompt is required");
+  if (prompt.length > 4000) throw new FlowRequestError("prompt is longer than 4000 characters");
+
+  let aspect = String(body.aspect_ratio || body.aspect || "");
+  if (!aspect && body.size) {
+    const sizeMap = {
+      "1024x1024": "1:1",
+      "1024x1792": "9:16",
+      "1792x1024": "16:9",
+      "1920x800": "16:9",
+      "1024x1536": "3:4",
+      "1536x1024": "4:3",
+    };
+    aspect = sizeMap[body.size] || "16:9";
+  }
+  if (!aspect || !spec.aspects.includes(aspect)) aspect = spec.aspects[0];
+
+  const rawRef = body.imagePath || body.image || (Array.isArray(body.images) ? body.images[0] : null);
+  const imagePath = rawRef ? await resolveFlowImageInput(rawRef) : null;
+
+  const { randomUUID } = await import("node:crypto");
+  const id = randomUUID();
+
+  if (DRY_RUN()) {
+    return {
+      id,
+      url: `/api/flow/images/${id}`,
+      b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      mime: "image/png",
+      dry_run: true,
+    };
+  }
+
+  return runExclusive(async () => {
+    const { renderFlowImage } = await import("./driver.js");
+    const result = await renderFlowImage({
+      id,
+      prompt,
+      model,
+      aspect,
+      imagePath,
+      projectId: body.projectId || null,
+    });
+
+    const [{ readFileSync }, { writeImageAssetFile }, { addFlowImage }] = await Promise.all([
+      import("node:fs"),
+      import("../media/imageStore.js"),
+      import("../db/repos/flowImagesRepo.js"),
+    ]);
+
+    const buffer = readFileSync(result.mediaPath);
+    const written = writeImageAssetFile({ id, buffer, mime: "image/png" });
+    await addFlowImage({
+      id,
+      name: prompt.slice(0, 60),
+      path: written.rel,
+      mime: written.mime,
+      origin: "generated",
+    });
+
+    return {
+      id,
+      url: `/api/flow/images/${id}`,
+      b64_json: buffer.toString("base64"),
+      mime: written.mime,
+    };
+  });
+}
+
 /** Map a stored job onto the async-job shape /v1/videos callers already poll. */
 export function flowJobToResponse(job) {
   if (!job) return null;
   const status = job.status === "completed" ? "completed" : job.status === "failed" ? "failed" : "processing";
+  const videoUrl = job.mediaPath
+    ? job.mediaPath.startsWith("/api/")
+      ? job.mediaPath
+      : job.mediaPath.startsWith("media/videos/")
+        ? `/api/video-prompt/media/${job.id}`
+        : job.mediaPath
+    : job.sourceUrl || null;
   return {
     request_id: job.id,
     id: job.id,
@@ -290,7 +458,7 @@ export function flowJobToResponse(job) {
     resolution: job.resolution,
     credit_cost: job.creditCost,
     dry_run: job.dryRun,
-    video: job.sourceUrl || job.mediaPath ? { url: job.sourceUrl || job.mediaPath } : undefined,
+    video: videoUrl ? { url: videoUrl, ...(job.sourceUrl ? { source_url: job.sourceUrl } : {}) } : undefined,
     error: job.error || undefined,
     created_at: job.createdAt,
     finished_at: job.finishedAt || undefined,

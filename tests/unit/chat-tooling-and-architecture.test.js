@@ -101,4 +101,43 @@ describe("Chat Developer Tooling & Architecture", () => {
       expect(fs.existsSync(path.resolve("src/app/(dashboard)/dashboard/chat/hooks/useRunExecution.js"))).toBe(true);
     });
   });
+
+  describe("Reasoning & Tool Calls Activity Grouping", () => {
+    it("groups consecutive reasoning and tool segments into collapsible activity blocks while keeping text separate", async () => {
+      const { groupMessageSegments } = await import("../../src/lib/chat/segmentGrouping.js");
+      const segments = [
+        { type: "reasoning", content: "First thought" },
+        { type: "tool", callId: "c1", name: "read_file", status: "done" },
+        { type: "tool", callId: "c2", name: "search_files", status: "done" },
+        { type: "reasoning", content: "Second thought after tools" },
+        { type: "text", content: "Here is the final answer." },
+      ];
+
+      const groups = groupMessageSegments(segments, { showReasoning: true, viewMode: "raw" });
+      expect(groups).toHaveLength(2);
+      expect(groups[0].kind).toBe("activity");
+      expect(groups[0].items).toHaveLength(4);
+      expect(groups[0].items.map((i) => i.type)).toEqual(["reasoning", "tool", "tool", "reasoning"]);
+      expect(groups[1].kind).toBe("text");
+      expect(groups[1].segment.content).toBe("Here is the final answer.");
+    });
+
+    it("respects showReasoning=false and viewMode='chat' filters when grouping", async () => {
+      const { groupMessageSegments } = await import("../../src/lib/chat/segmentGrouping.js");
+      const segments = [
+        { type: "reasoning", content: "Hidden thought" },
+        { type: "tool", callId: "c1", name: "read_file", status: "done" },
+        { type: "text", content: "Visible text" },
+      ];
+
+      const onlyTools = groupMessageSegments(segments, { showReasoning: false, viewMode: "raw" });
+      expect(onlyTools).toHaveLength(2);
+      expect(onlyTools[0].items).toHaveLength(1);
+      expect(onlyTools[0].items[0].type).toBe("tool");
+
+      const chatOnly = groupMessageSegments(segments, { showReasoning: false, viewMode: "chat" });
+      expect(chatOnly).toHaveLength(1);
+      expect(chatOnly[0].kind).toBe("text");
+    });
+  });
 });

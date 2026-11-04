@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { CHAT_COMMANDS, commandMatches } from "../SlashCommandPalette";
+import { getChatRun } from "@/lib/chat/chatRunRuntime";
 
 export function useSlashCommands({
   draft,
@@ -10,6 +11,7 @@ export function useSlashCommands({
   activeSession,
   activeSessionId,
   sessions,
+  agentRoles = [],
   handleNewChat,
   handleCopySession,
   sessionAction,
@@ -33,6 +35,8 @@ export function useSlashCommands({
   setVerifyMode,
   loadSessionDetail,
   toggleTerminal,
+  setMessages,
+  setCtxUsed,
   setAgentStatus,
   setError,
   setNotice,
@@ -52,7 +56,11 @@ export function useSlashCommands({
       setDraft("");
       try {
         if (name === "help") {
-          const list = CHAT_COMMANDS.map((command) => `/${command.name}${command.args ? ` ${command.args}` : ""} — ${command.summary}`).join("\n");
+          const list = CHAT_COMMANDS.map((command) => `/${command.name}${command.args ? ` ${command.args}` : ""} : ${command.summary}`).join("\n");
+          setMessages?.((prev) => [
+            ...prev,
+            { id: `sys_${Date.now()}`, role: "system", content: list, status: "done", createdAt: new Date().toISOString() },
+          ]);
           return { type: "system", content: list };
         }
         if (name === "new") {
@@ -91,7 +99,13 @@ export function useSlashCommands({
           return null;
         }
         if (name === "agent") {
-          updateAgentRole(value.toLowerCase());
+          if (agentRoles.length > 0) {
+            const role = agentRoles.find((item) => item.id === value.toLowerCase());
+            if (!role) throw new Error(`Usage: /agent ${agentRoles.map((item) => item.id).join("|")}`);
+            updateAgentRole(role.id);
+          } else {
+            updateAgentRole(value.toLowerCase());
+          }
           return null;
         }
         if (name === "agent-teams") {
@@ -114,8 +128,9 @@ export function useSlashCommands({
           return null;
         }
         if (name === "steer") {
-          if (!value) throw new Error("Usage during an active run: /steer <instruction>");
-          const res = await fetch(`/api/chat/runs/${activeSessionId}`, {
+          const runId = getChatRun(activeSessionId)?.runId;
+          if (!runId || !value) throw new Error("Usage during an active run: /steer <instruction>");
+          const res = await fetch(`/api/chat/runs/${runId}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ instruction: value }),
@@ -204,15 +219,20 @@ export function useSlashCommands({
           return null;
         }
         if (name === "compact") {
+          const keepLastN = Number(value) > 0 ? Number(value) : 0;
           const res = await fetch(`/api/chat/sessions/${activeSessionId}/compact`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ keepLastN: 20 }),
+            body: JSON.stringify({ keepLastN }),
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || "Failed to compact session");
+          if (data.estimatedTokens != null) setCtxUsed?.(data.estimatedTokens);
           await loadSessionDetail(activeSessionId);
-          setNotice(`Session compacted: kept ${data.keepLastN} recent messages`, "success");
+          setNotice(
+            data.message || `Session compacted: ${data.summarizedCount ?? data.deletedCount ?? 0} messages summarized into ${data.summaryChars ?? 0} chars`,
+            "success"
+          );
           return null;
         }
         throw new Error(`Unknown command: /${name}`);
@@ -227,6 +247,7 @@ export function useSlashCommands({
       sessions,
       activeSessionId,
       activeSession,
+      agentRoles,
       handleCopySession,
       toggleTerminal,
       sessionAction,
@@ -251,6 +272,8 @@ export function useSlashCommands({
       setVerifyMode,
       verifyMode,
       loadSessionDetail,
+      setMessages,
+      setCtxUsed,
       setAgentStatus,
       setError,
     ]

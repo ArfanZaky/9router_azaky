@@ -133,14 +133,14 @@ function findString(node, re, depth = 0) {
 /** Pull the saved file + remote URL out of whatever shape the CLI emits. */
 export function extractRenderResult(stdout = "", outFile = null) {
   const json = parseCliJson(stdout) || {};
-  let mediaPath = findString(json, /media_?path|video_?path|local_?path|output_?path|^path$|file ?path/i);
+  let mediaPath = findString(json, /media_?path|video_?path|image_?path|local_?path|output_?path|^path$|file ?path/i);
   if (mediaPath && !isAbsolute(mediaPath) && outFile) mediaPath = join(outDir(), mediaPath);
   // -o is authoritative: whatever the CLI printed, the file it wrote is the answer.
   if (outFile && existsSync(outFile)) mediaPath = outFile;
 
-  let sourceUrl = findString(json, /^(url|video_?url|source_?url|download_?url|media_?url)$/i);
+  let sourceUrl = findString(json, /^(url|video_?url|image_?url|source_?url|download_?url|media_?url)$/i);
   if (!sourceUrl) {
-    const match = String(stdout).match(/https?:\/\/[^\s"']+\.mp4[^\s"']*/i);
+    const match = String(stdout).match(/https?:\/\/[^\s"']+\.(?:mp4|png|jpe?g|webp)[^\s"']*/i);
     if (match) sourceUrl = match[0];
   }
   return { mediaPath: mediaPath || null, sourceUrl: sourceUrl || null, raw: json };
@@ -229,4 +229,62 @@ export async function readFlowCredits() {
     );
   }
   return Number(match[1].replace(/,/g, ""));
+}
+
+/**
+ * Render one image via `gflow image t2i` or `gflow image i2i`.
+ * @param {object} opts
+ * @param {string} opts.id
+ * @param {string} opts.prompt
+ * @param {string} [opts.model]
+ * @param {string} [opts.aspect]
+ * @param {string} [opts.imagePath]
+ * @param {string} [opts.projectId]
+ */
+export async function renderFlowImage({
+  id = `img-${Date.now()}`,
+  prompt,
+  model = "nano2",
+  aspect = "16:9",
+  imagePath = null,
+  projectId = null,
+} = {}) {
+  assertNotTestRun();
+
+  const target = join(outDir(), `${id}.png`);
+  const sub = imagePath ? "i2i" : "t2i";
+  const args = [
+    "image",
+    sub,
+    prompt,
+    "--model",
+    model,
+    "--aspect",
+    aspect,
+  ];
+  if (imagePath) args.push("--ref", imagePath);
+  if (projectId) args.push("--project", projectId);
+  if (process.env.FLOW_PROFILE) args.push("--profile", process.env.FLOW_PROFILE);
+  args.push("-o", target, "--json");
+
+  const logFile = join(outDir(), `${id}.log`);
+  const result = await runCli(args, { logFile });
+
+  if (result.timedOut) {
+    throw fail(`Flow image generation timed out after ${Math.round(RENDER_TIMEOUT_MS() / 60000)} min (log: ${logFile})`);
+  }
+  if (result.code !== 0) {
+    const detail = (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" | ").slice(0, 500);
+    throw fail(`gflow image exited ${result.code}: ${detail || "no output"} (log: ${logFile})`);
+  }
+
+  const { mediaPath, sourceUrl, raw } = extractRenderResult(result.stdout, target);
+  if (raw?.succeeded === false) {
+    const why = (raw.failure_reasons || []).join("; ") || raw.error_message || "no reason given";
+    throw fail(`Flow rejected image render: ${why} (log: ${logFile})`);
+  }
+  if (!mediaPath || !existsSync(mediaPath)) {
+    throw fail(`Flow image reported success but no image file was found (log: ${logFile})`);
+  }
+  return { mediaPath, sourceUrl };
 }

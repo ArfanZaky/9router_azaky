@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -12,7 +13,9 @@ const hasBuild =
 if (!process.env.NODE_ENV && hasBuild) process.env.NODE_ENV = "production";
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = process.env.HOSTNAME || "0.0.0.0";
+// ponytail: default to 0.0.0.0; Git Bash auto-exports HOSTNAME as machine name
+const envHost = process.env.HOSTNAME;
+const hostname = process.env.HOST || (envHost && envHost.toLowerCase() !== os.hostname().toLowerCase() ? envHost : "0.0.0.0");
 const port = Number(process.env.PORT || 2026);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();

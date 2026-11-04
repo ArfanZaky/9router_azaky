@@ -1,23 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import flowProvider, { FLOW_VIDEO_MODELS, flowCreditCost } from "../../open-sse/providers/registry/flow.js";
+import flowProvider, { FLOW_IMAGE_MODELS, FLOW_VIDEO_MODELS, flowCreditCost } from "../../open-sse/providers/registry/flow.js";
 import { PROVIDER_MEDIA, PROVIDER_MODELS } from "../../open-sse/providers/index.js";
 import { getVideoAdapter } from "../../open-sse/handlers/videoProviders/index.js";
+import { getImageAdapter } from "../../open-sse/handlers/imageProviders/index.js";
 import { handleVideoProxyCore } from "../../open-sse/handlers/videoCore.js";
+import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 import { flowJobToResponse, validateFlowRequest } from "../../src/lib/flow/bridge.js";
 import { deleteFlowJob } from "../../src/lib/db/repos/flowRepo.js";
 
 describe("flow provider registration", () => {
-  it("is reachable through PROVIDER_MEDIA with a video config", () => {
+  it("is reachable through PROVIDER_MEDIA with video and image configs", () => {
     expect(flowProvider.id).toBe("flow");
     expect(PROVIDER_MEDIA.flow?.videoConfig?.models).toEqual(FLOW_VIDEO_MODELS);
+    expect(PROVIDER_MEDIA.flow?.imageConfig?.models).toEqual(FLOW_IMAGE_MODELS);
     expect(PROVIDER_MEDIA.flow.videoConfig.baseUrl).toBe("flow://local-bridge");
   });
 
-  it("exposes its five video models to the model matrix", () => {
-    const models = PROVIDER_MODELS.flow.map((m) => m.id).sort();
-    expect(models).toEqual(["omni-flash", "veo-fast", "veo-lite", "veo-lite-lp", "veo-quality"]);
-    for (const model of PROVIDER_MODELS.flow) expect(model.kind).toBe("video");
+  it("exposes its five video models and four image models to the model matrix", () => {
+    const videoModels = PROVIDER_MODELS.flow.filter((m) => m.kind === "video").map((m) => m.id).sort();
+    expect(videoModels).toEqual(["omni-flash", "veo-fast", "veo-lite", "veo-lite-lp", "veo-quality"]);
+    const imageModels = PROVIDER_MODELS.flow.filter((m) => m.kind === "image").map((m) => m.id).sort();
+    expect(imageModels).toEqual(["imagen4", "nano-pro", "nano2", "nano2-lite"]);
   });
 
   // A URL plan would be fetched over the network; Flow has no reachable host,
@@ -147,6 +151,25 @@ describe("flow through the video handler (dry run, no spend)", () => {
       expect(polled.dry_run).toBe(true);
     } finally {
       if (id) await deleteFlowJob(id);
+      if (saved === undefined) delete process.env.FLOW_BRIDGE_DRYRUN;
+      else process.env.FLOW_BRIDGE_DRYRUN = saved;
+    }
+  });
+
+  it("renders a dry-run image through handleImageGenerationCore", async () => {
+    const saved = process.env.FLOW_BRIDGE_DRYRUN;
+    process.env.FLOW_BRIDGE_DRYRUN = "1";
+    try {
+      expect(getImageAdapter("flow")).toBeTruthy();
+      const res = await handleImageGenerationCore({
+        body: { model: "flow/nano2", prompt: "cyberpunk alley", size: "1792x1024" },
+        modelInfo: { provider: "flow", model: "nano2" },
+        credentials: null,
+      });
+      expect(res.success).toBe(true);
+      const payload = await res.response.json();
+      expect(payload.data?.[0]?.url).toMatch(/^\/api\/flow\/images\//);
+    } finally {
       if (saved === undefined) delete process.env.FLOW_BRIDGE_DRYRUN;
       else process.env.FLOW_BRIDGE_DRYRUN = saved;
     }

@@ -196,23 +196,46 @@ function ChatSessionRail({
   onRenameSubmit,
   onRenameCancel,
   listRef,
+  mobileOpen = false,
+  onCloseMobile = null,
 }) {
   const { getCaps } = useModelCaps();
 
-  return (
-    <aside className="hidden md:flex w-72 shrink-0 flex-col border-r border-border bg-sidebar/40">
+  const renderSessionList = (isMobile = false) => (
+    <>
       <div className="p-3 border-b border-border space-y-2">
-        <Button className="w-full" icon="add" onClick={onOpenCreateModal}>
-          New chat
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            className="flex-1"
+            icon="add"
+            onClick={() => {
+              onOpenCreateModal();
+              if (isMobile) onCloseMobile?.();
+            }}
+          >
+            New chat
+          </Button>
+          {isMobile ? (
+            <button
+              type="button"
+              onClick={onCloseMobile}
+              className="rounded-lg p-2 text-text-muted hover:bg-sidebar hover:text-text-main transition cursor-pointer"
+              title="Close sessions drawer"
+              aria-label="Close sessions drawer"
+            >
+              <span className="material-symbols-outlined text-[18px]">close</span>
+            </button>
+          ) : null}
+        </div>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search sessions…"
+          aria-label="Search sessions"
           className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
         />
       </div>
-      <div ref={listRef} className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
+      <div ref={isMobile ? undefined : listRef} className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
         {sessions.length === 0 ? (
           <p className="text-xs text-text-muted p-3">No sessions yet.</p>
         ) : (
@@ -225,7 +248,10 @@ function ChatSessionRail({
               hasPendingAsk={pendingAskSessionIds.has(session.id)}
               renameId={renameId}
               renameValue={renameValue}
-              onSelect={onSelectSession}
+              onSelect={(sid) => {
+                onSelectSession(sid);
+                if (isMobile) onCloseMobile?.();
+              }}
               onTogglePin={onTogglePin}
               onEdit={onEditSession}
               onCopy={onCopySession}
@@ -238,7 +264,31 @@ function ChatSessionRail({
           ))
         )}
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      <aside className="hidden md:flex w-72 shrink-0 flex-col border-r border-border bg-sidebar/40">
+        {renderSessionList(false)}
+      </aside>
+      {mobileOpen ? (
+        <div
+          className="fixed inset-0 z-[105] flex md:hidden bg-black/60 backdrop-blur-xs"
+          onClick={onCloseMobile}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Chat sessions"
+        >
+          <aside
+            className="flex h-full w-72 max-w-[85vw] flex-col border-r border-border bg-surface shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {renderSessionList(true)}
+          </aside>
+        </div>
+      ) : null}
+    </>
   );
 }
 

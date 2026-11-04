@@ -1,6 +1,6 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Button } from "@/shared/components";
 
 function ChatHeader({
@@ -27,9 +27,37 @@ function ChatHeader({
   onDuplicateSession,
   onExport,
   onOpenCreateModal,
+  onToggleMobileSessions,
 }) {
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuRef = useRef(null);
+
+  useEffect(() => {
+    if (!moreMenuOpen) return undefined;
+    const handleOutside = (e) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target)) {
+        setMoreMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [moreMenuOpen]);
+
   return (
     <header className="shrink-0 flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5 lg:px-4">
+      {/* Mobile Sessions Drawer Toggle */}
+      {onToggleMobileSessions ? (
+        <button
+          type="button"
+          onClick={onToggleMobileSessions}
+          className="flex md:hidden items-center justify-center rounded-xl border border-border bg-sidebar/50 p-2 text-text-main hover:bg-sidebar transition cursor-pointer"
+          title="Open chat sessions"
+          aria-label="Open chat sessions"
+        >
+          <span className="material-symbols-outlined text-[18px] text-primary">forum</span>
+        </button>
+      ) : null}
+
       {/* Model Selector */}
       <button
         type="button"
@@ -116,35 +144,37 @@ function ChatHeader({
           {showReasoning ? "Reasoning" : "Hidden"}
         </Button>
 
-        <Button
-          variant="ghost"
-          size="sm"
-          icon="extension"
-          onClick={onOpenMcpModal}
-          title="Manage MCP servers"
-        >
-          MCP
-        </Button>
+        <div className="hidden 2xl:flex items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="extension"
+            onClick={onOpenMcpModal}
+            title="Manage MCP servers"
+          >
+            MCP
+          </Button>
 
-        <Button
-          variant={skillsModalOpen ? "secondary" : "ghost"}
-          size="sm"
-          icon="auto_awesome"
-          onClick={() => setSkillsModalOpen(true)}
-          title="Agent Skills Hub"
-        >
-          Skills
-        </Button>
+          <Button
+            variant={skillsModalOpen ? "secondary" : "ghost"}
+            size="sm"
+            icon="auto_awesome"
+            onClick={() => setSkillsModalOpen(true)}
+            title="Agent Skills Hub"
+          >
+            Skills
+          </Button>
 
-        <Button
-          variant={shortcodesModalOpen ? "secondary" : "ghost"}
-          size="sm"
-          icon="bookmark"
-          onClick={() => setShortcodesModalOpen(true)}
-          title="Shortcode Prompts"
-        >
-          Shortcodes
-        </Button>
+          <Button
+            variant={shortcodesModalOpen ? "secondary" : "ghost"}
+            size="sm"
+            icon="bookmark"
+            onClick={() => setShortcodesModalOpen(true)}
+            title="Shortcode Prompts"
+          >
+            Shortcodes
+          </Button>
+        </div>
 
         {/* Docked Terminal Toggle Button */}
         <Button
@@ -198,23 +228,121 @@ function ChatHeader({
           </>
         ) : null}
 
-        <Button
-          variant="ghost"
-          size="sm"
-          icon="content_copy"
-          onClick={onDuplicateSession}
-          title="Duplicate session (new session with same name and path)"
-          disabled={!activeSession}
-        >
-          Duplicate
-        </Button>
+        <div className="hidden 2xl:flex items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="content_copy"
+            onClick={onDuplicateSession}
+            title="Duplicate session (new session with same name and path)"
+            disabled={!activeSession}
+          >
+            Duplicate
+          </Button>
 
-        <Button variant="ghost" size="sm" icon="download" onClick={() => onExport("md")} title="Export as Markdown">
-          MD
-        </Button>
-        <Button variant="ghost" size="sm" icon="data_object" onClick={() => onExport("json")} title="Export as JSON">
-          JSON
-        </Button>
+          <Button variant="ghost" size="sm" icon="download" onClick={() => onExport("md")} title="Export as Markdown">
+            MD
+          </Button>
+          <Button variant="ghost" size="sm" icon="data_object" onClick={() => onExport("json")} title="Export as JSON">
+            JSON
+          </Button>
+        </div>
+
+        {/* Grouped secondary actions dropdown for < 2xl screens */}
+        <div ref={moreMenuRef} className="relative 2xl:hidden">
+          <Button
+            variant={moreMenuOpen ? "secondary" : "ghost"}
+            size="sm"
+            icon="more_horiz"
+            onClick={() => setMoreMenuOpen((v) => !v)}
+            title="More tools & export options"
+          >
+            More
+          </Button>
+          {moreMenuOpen ? (
+            <div className="absolute right-0 top-full z-50 mt-1.5 w-48 rounded-xl border border-border bg-surface p-1.5 shadow-2xl">
+              <button
+                type="button"
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  setSkillsModalOpen(true);
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-text-main hover:bg-surface-2 transition cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px] text-primary">auto_awesome</span>
+                <span>Skills Hub</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  setShortcodesModalOpen(true);
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-text-main hover:bg-surface-2 transition cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px] text-primary">bookmark</span>
+                <span>Shortcodes</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  onOpenMcpModal();
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-text-main hover:bg-surface-2 transition cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px] text-primary">extension</span>
+                <span>MCP Servers</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  onOpenCodebaseEdit();
+                }}
+                className="flex md:hidden w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-text-main hover:bg-surface-2 transition cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px] text-primary">link</span>
+                <span>Set Codebase</span>
+              </button>
+              <div className="my-1 border-t border-border" />
+              <button
+                type="button"
+                disabled={!activeSession}
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  onDuplicateSession();
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-text-main hover:bg-surface-2 transition disabled:opacity-50 cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px]">content_copy</span>
+                <span>Duplicate Session</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  onExport("md");
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-text-main hover:bg-surface-2 transition cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px]">download</span>
+                <span>Export Markdown</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMoreMenuOpen(false);
+                  onExport("json");
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-text-main hover:bg-surface-2 transition cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px]">data_object</span>
+                <span>Export JSON</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
 
         <Button className="md:hidden" variant="ghost" size="sm" icon="add" onClick={onOpenCreateModal} title="New Chat">
           New

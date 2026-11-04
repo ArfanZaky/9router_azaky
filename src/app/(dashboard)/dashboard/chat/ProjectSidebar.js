@@ -204,19 +204,19 @@ function ProjectSidebarComponent({
       const res = await fetch(`/api/chat/sessions/${sessionId}/compact`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keepLastN: 20 }),
+        body: JSON.stringify({ keepLastN: 0 }),
       });
       const d = await res.json().catch(() => null);
       if (res.ok && d?.success) {
-        if (d.deletedCount > 0) {
+        if ((d.summarizedCount || d.deletedCount) > 0) {
           setCompactMsg({
             type: "success",
-            text: `Compacted: ${d.summarizedCount ?? d.deletedCount} messages summarized (${d.summaryChars ?? 0} chars kept as context), ${d.keptCount ?? d.keepLastN} kept verbatim`,
+            text: `Compacted ${d.summarizedCount ?? d.deletedCount} messages into summary (${d.summaryChars ?? 0} chars, ~${d.estimatedTokens ?? 0} tokens)`,
           });
         } else {
           setCompactMsg({
             type: "success",
-            text: `Transcript already compact (${d.totalCount} messages)`,
+            text: d.message || `Transcript already compacted (${d.totalCount} messages)`,
           });
         }
         if (onCompact) {
@@ -748,12 +748,12 @@ function ProjectSidebarComponent({
                     disabled={compacting || !sessionId}
                     onClick={handleCompactSession}
                     className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/20 transition disabled:opacity-50 shadow-sm cursor-pointer"
-                    title="Compact transcript: keep 20 recent messages and delete older turns"
+                    title="Summarize all conversation turns into a compact context digest"
                   >
                     <span className={`material-symbols-outlined text-[16px] ${compacting ? "animate-spin" : ""}`}>
                       {compacting ? "sync" : "compress"}
                     </span>
-                    <span>{compacting ? "Compacting..." : "Compact Context (keep 20)"}</span>
+                    <span>{compacting ? "Summarizing Context..." : "Compact Context (Summarize All)"}</span>
                   </button>
 
                   {compactMsg && (

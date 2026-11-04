@@ -25,7 +25,7 @@ export const CHAT_COMMANDS = [
   { name: "deny", summary: "Deny the pending tool approval (Alt+D)" },
   { name: "goal", args: "<text|status|pause|resume|clear>", summary: "Set or manage a standing goal" },
   { name: "verify", summary: "Toggle answer verification by a second model" },
-  { name: "compact", summary: "Compress transcript: summarize old messages, keep recent ones verbatim" },
+  { name: "compact", summary: "Summarize all conversation turns into a compact context digest" },
 ];
 
 export function commandMatches(value, shortcodes = []) {

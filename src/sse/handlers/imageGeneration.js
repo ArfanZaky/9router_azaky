@@ -18,7 +18,7 @@ import * as log from "../utils/logger.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
 
 // Providers that don't require credentials (noAuth)
-const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web"]);
+const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web", "flow"]);
 
 function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage }) {
   if (!usage || typeof usage !== "object") return;

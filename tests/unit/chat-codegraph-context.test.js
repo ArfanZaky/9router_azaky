@@ -166,7 +166,7 @@ describe("ProjectSidebar & ChatSessionRail Anti-Slop and Context Integration", (
     expect(content).toContain("CodeGraph Index");
     expect(content).toContain("Session Context");
     expect(content).toContain("handleCompactSession");
-    expect(content).toContain("Compact Context (keep 20)");
+    expect(content).toContain("Compact Context (Summarize All)");
     expect(content).toContain("useModelCaps");
     expect(content).not.toContain("\u2014"); // Anti-Slop R-02: FORBIDDEN em dash
   });

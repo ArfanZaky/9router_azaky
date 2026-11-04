@@ -12,6 +12,13 @@
 const DURATIONS = [4, 6, 8, 10];
 const ASPECTS = ["16:9", "9:16"];
 
+export const FLOW_IMAGE_MODELS = {
+  nano2: { name: "Nano Banana 2.1", aspects: ["16:9", "9:16", "1:1", "4:3", "3:4"], maxRefs: 10 },
+  "nano-pro": { name: "Nano Banana Pro", aspects: ["16:9", "9:16", "1:1", "4:3", "3:4"], maxRefs: 10 },
+  "nano2-lite": { name: "Nano Banana 2 Lite", aspects: ["16:9", "9:16", "1:1", "4:3", "3:4"], maxRefs: 3 },
+  imagen4: { name: "Imagen 4", aspects: ["16:9", "9:16", "1:1", "4:3", "3:4"], maxRefs: 3 },
+};
+
 export const FLOW_VIDEO_MODELS = {
   "omni-flash": {
     name: "Omni Flash",
@@ -64,13 +71,26 @@ export default {
   noAuth: true,
   authModes: ["none"],
   transport: null,
-  models: Object.entries(FLOW_VIDEO_MODELS).map(([id, spec]) => ({
-    id,
-    name: spec.name,
-    kind: "video",
-    params: ["duration", "aspect_ratio", ...(spec.resolutions.length ? ["resolution"] : [])],
-  })),
-  serviceKinds: ["video"],
+  models: [
+    ...Object.entries(FLOW_VIDEO_MODELS).map(([id, spec]) => ({
+      id,
+      name: spec.name,
+      kind: "video",
+      params: ["duration", "aspect_ratio", ...(spec.resolutions.length ? ["resolution"] : [])],
+    })),
+    ...Object.entries(FLOW_IMAGE_MODELS).map(([id, spec]) => ({
+      id,
+      name: spec.name,
+      kind: "image",
+      params: ["aspect_ratio"],
+    })),
+  ],
+  serviceKinds: ["video", "image"],
+  imageConfig: {
+    baseUrl: "flow://local-bridge",
+    noAuth: true,
+    models: FLOW_IMAGE_MODELS,
+  },
   videoConfig: {
     // No reachable upstream and no credentials: the adapter answers in-process
     // from src/lib/flow/bridge.js, which drives the signed-in browser. The

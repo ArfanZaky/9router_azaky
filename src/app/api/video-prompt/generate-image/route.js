@@ -9,7 +9,7 @@ import { getApiKeys } from "@/lib/localDb";
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { prompt, model, aspectRatio = "16:9", apiKey: clientApiKey } = body;
+    const { prompt, model, aspectRatio = "16:9", image, apiKey: *** } = body;
 
     if (!prompt || !prompt.trim()) {
       return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
@@ -35,7 +35,9 @@ export async function POST(request) {
       prompt: prompt.trim(),
       n: 1,
       size,
+      aspect_ratio: aspectRatio === "21:9" || aspectRatio === "2.39:1" ? "16:9" : aspectRatio,
       response_format: "url",
+      ...(image ? { image } : {}),
     };
 
     const headers = {

@@ -18,6 +18,7 @@ const STYLES = [
 
 const TARGET_ENGINES = [
   { name: "General AI Video (Runway Gen-3 / Sora / Kling / Luma)", short: "General Video", badge: "Universal" },
+  { name: "Google Flow (Veo 3.1 / Omni Flash)", short: "Google Flow", badge: "Veo 3.1" },
   { name: "Runway Gen-3 Alpha", short: "Runway Gen-3", badge: "Motion Brush" },
   { name: "Kling AI (v1.5 / High Quality)", short: "Kling AI 1.5", badge: "Kinetic" },
   { name: "Luma Dream Machine", short: "Luma Dream", badge: "Smooth Cam" },
@@ -75,7 +76,7 @@ const INSPIRATION_TEMPLATES = [
   },
 ];
 
-const VIDEO_DURATIONS = [5, 6, 8, 10];
+const VIDEO_DURATIONS = [4, 5, 6, 8, 10];
 const VIDEO_RESOLUTIONS = ["auto", "720p", "1080p"];
 
 const AVATAR_GRADIENTS = [
@@ -603,6 +604,7 @@ Example format:
           prompt: fullPrompt,
           model: imageModel,
           aspectRatio,
+          image: refImage || undefined,
           apiKey,
         }),
       });
@@ -680,7 +682,7 @@ Example format:
 
       setVideoGenStates((prev) => ({
         ...prev,
-        [sceneIndex]: { status: "processing", requestId, connectionId, error: "" },
+        [sceneIndex]: { status: "processing", step: data.step || "", requestId, connectionId, error: "" },
       }));
 
       // Poll video progress
@@ -703,12 +705,17 @@ Example format:
             };
             persistScenes(nextScenes);
             setVideoErrors((prev) => ({ ...prev, [sceneIndex]: false }));
-            setVideoGenStates((prev) => ({ ...prev, [sceneIndex]: { status: "completed", error: "" } }));
+            setVideoGenStates((prev) => ({ ...prev, [sceneIndex]: { status: "completed", step: "", error: "" } }));
           } else if (pollData.status === "failed") {
             clearInterval(pollInterval);
             setVideoGenStates((prev) => ({
               ...prev,
-              [sceneIndex]: { status: "failed", error: pollData.error || "Video rendering failed" },
+              [sceneIndex]: { status: "failed", step: pollData.step || "", error: pollData.error || "Video rendering failed" },
+            }));
+          } else if (pollData.step) {
+            setVideoGenStates((prev) => ({
+              ...prev,
+              [sceneIndex]: { ...prev[sceneIndex], step: pollData.step },
             }));
           }
         } catch (pollErr) {
@@ -2278,7 +2285,14 @@ Example format:
                               <p className="text-xs mt-1">Video clip not rendered yet</p>
                               {videoGenStates[selectedSceneIndex]?.status === "processing" && (
                                 <p className="text-xs text-primary font-medium mt-1 animate-pulse">
-                                  Rendering video motion on AI cluster...
+                                  {videoGenStates[selectedSceneIndex]?.step
+                                    ? `Rendering (${videoGenStates[selectedSceneIndex].step})...`
+                                    : "Rendering video motion on AI cluster..."}
+                                </p>
+                              )}
+                              {videoGenStates[selectedSceneIndex]?.error && (
+                                <p className="text-[11px] text-destructive mt-1.5 max-w-xs mx-auto">
+                                  {videoGenStates[selectedSceneIndex].error}
                                 </p>
                               )}
                             </div>

@@ -1,5 +1,6 @@
 import { handleVideoCreate, handleVideoGet } from "@/sse/handlers/videoGeneration.js";
 import { downloadAndSaveVideo } from "@/lib/media/videoStore.js";
+import { getApiKeys } from "@/lib/localDb";
 import { NextResponse } from "next/server";
 
 /**
@@ -17,25 +18,42 @@ export async function POST(request) {
       duration,
       aspectRatio,
       resolution,
-      apiKey,
+      apiKey: ***
     } = body;
 
     if (!model) return NextResponse.json({ error: "Video model is required" }, { status: 400 });
     if (!prompt || !prompt.trim()) return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
-    if (!apiKey) return NextResponse.json({ error: "No active API Key" }, { status: 400 });
+
+    let apiKey = clientApiKey;
+    if (!apiKey) {
+      const apiKeys = await getApiKeys();
+      apiKey = apiKeys.find((k) => k.isActive !== false)?.key || "";
+    }
+    const isFlow = String(model).startsWith("flow/");
 
     const forward = { model };
     if (prompt) forward.prompt = prompt.trim();
     if (image) forward.image = image;
-    if (duration) forward.duration = Number(duration);
-    if (aspectRatio) forward.aspect_ratio = aspectRatio;
-    if (resolution) forward.resolution = resolution;
+    if (duration) {
+      let dur = Number(duration);
+      if (isFlow) {
+        if (String(model).endsWith("veo-quality")) dur = 8;
+        else if (![4, 6, 8, 10].includes(dur)) dur = 4;
+      }
+      forward.duration = dur;
+    }
+    if (aspectRatio) {
+      forward.aspect_ratio = isFlow && !["16:9", "9:16"].includes(aspectRatio) ? "16:9" : aspectRatio;
+    }
+    if (resolution && resolution !== "auto" && !isFlow) {
+      forward.resolution = resolution;
+    }
 
     const mockReq = new Request("http://localhost/v1/videos/generations", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        ...(apiKey ? { Authorization: *** ${apiKey}` } : {}),
       },
       body: JSON.stringify(forward),
     });
@@ -49,7 +67,7 @@ export async function POST(request) {
     const rawVideoUrl = data.video?.url || data.url || "";
     let finalVideoUrl = rawVideoUrl;
 
-    if (data.status === "completed" && rawVideoUrl) {
+    if (data.status === "completed" && rawVideoUrl && /^https?:\/\//i.test(rawVideoUrl)) {
       try {
         const id = data.request_id || data.id || data.requestId;
         const saved = await downloadAndSaveVideo({ url: rawVideoUrl, id });
@@ -64,8 +82,9 @@ export async function POST(request) {
     return NextResponse.json({
       requestId: data.request_id || data.id || data.requestId || null,
       status: data.status || "processing",
+      step: data.step || null,
       videoUrl: finalVideoUrl,
-      sourceUrl: rawVideoUrl,
+      sourceUrl: data.video?.source_url || rawVideoUrl,
       model,
       connectionId: res.headers.get("x-9router-connection-id") || null,
     });
@@ -83,12 +102,16 @@ export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const requestId = searchParams.get("requestId");
     const connectionId = searchParams.get("connectionId");
-    const apiKey = searchParams.get("apiKey");
+    let apiKey = searchParams.get("apiKey");
 
     if (!requestId) return NextResponse.json({ error: "Missing requestId" }, { status: 400 });
-    if (!apiKey) return NextResponse.json({ error: "No active API Key" }, { status: 400 });
+    if (!apiKey) {
+      const apiKeys = await getApiKeys();
+      apiKey = apiKeys.find((k) => k.isActive !== false)?.key || "";
+    }
 
-    const headers = { Authorization: `Bearer ${apiKey}` };
+    const headers = {};
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     if (connectionId) headers["x-connection-id"] = connectionId;
 
     const mockReq = new Request(`http://localhost/v1/videos/${encodeURIComponent(requestId)}`, {
@@ -105,7 +128,7 @@ export async function GET(request) {
     const rawVideoUrl = data.video?.url || data.url || "";
     let finalVideoUrl = rawVideoUrl;
 
-    if (data.status === "completed" && rawVideoUrl) {
+    if (data.status === "completed" && rawVideoUrl && /^https?:\/\//i.test(rawVideoUrl)) {
       try {
         const id = data.request_id || requestId;
         const saved = await downloadAndSaveVideo({ url: rawVideoUrl, id });
@@ -119,8 +142,9 @@ export async function GET(request) {
 
     return NextResponse.json({
       status: data.status || "processing",
+      step: data.step || null,
       videoUrl: finalVideoUrl,
-      sourceUrl: rawVideoUrl,
+      sourceUrl: data.video?.source_url || rawVideoUrl,
       requestId: data.request_id || requestId,
       error: data.error || "",
     });
