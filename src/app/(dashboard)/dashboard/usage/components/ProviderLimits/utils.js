@@ -382,10 +382,11 @@ export function parseQuotaData(provider, data) {
       case "antigravity":
         if (data.quotas) {
           const entries = Object.entries(data.quotas);
-          const weeklyKeys = new Set(["gemini_weekly", "claude_gpt_weekly"]);
+          const weeklyKeys = new Set(["gemini_weekly", "claude_gpt_weekly", "gemini_argon_weekly"]);
           const sessionKeys = new Set(["gemini_session", "claude_gpt_session"]);
           const summaryKeys = new Set([...weeklyKeys, ...sessionKeys]);
-          const geminiModels = entries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image"));
+          // Argon has its own weekly pool; keep it out of the Gemini family rows.
+          const geminiModels = entries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image") && !k.includes("argon"));
           const claudeModels = entries.filter(([k]) => k.startsWith("claude-"));
           const imageModels = entries.filter(([k]) => k.includes("image"));
           const summaryModels = entries.filter(([k]) => summaryKeys.has(k));
@@ -442,6 +443,18 @@ export function parseQuotaData(provider, data) {
               });
             });
           }
+
+          // Gemini 4 Argon has a separate weekly pool on paid plans
+          summaryModels.filter(([k]) => k === "gemini_argon_weekly").forEach(([modelKey, quota]) => {
+            normalizedQuotas.push({
+              name: quota.displayName || modelKey,
+              modelKey,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
 
           // 2. Claude & GPT Family:
           if (hasClaudeSession) {

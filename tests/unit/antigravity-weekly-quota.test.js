@@ -140,6 +140,35 @@ describe("parseWeeklyQuotaSummary", () => {
     expect(parseWeeklyQuotaSummary({ quotaSummary: {} })).toEqual({});
   });
 
+  it("extracts Gemini 4 Argon weekly quota into its own key", () => {
+    const result = parseWeeklyQuotaSummary({
+      groups: [
+        GEMINI_GROUP,
+        CLAUDE_GPT_GROUP,
+        {
+          displayName: "Gemini 4 Argon",
+          buckets: [{
+            bucketId: "gemini-argon-wtu-weekly",
+            displayName: "Gemini 4 Argon Weekly Limit",
+            window: "weekly",
+            remainingFraction: 0,
+            resetTime: "2026-11-11T03:08:00Z",
+          }],
+        },
+      ],
+    });
+
+    expect(result.gemini_argon_weekly).toMatchObject({
+      used: 1000,
+      total: 1000,
+      remainingPercentage: 0,
+      displayName: "Gemini 4 Argon (Weekly)",
+    });
+    expect(result.gemini_argon_weekly.resetAt).toBe("2026-11-11T03:08:00.000Z");
+    // Argon must not overwrite the regular Gemini weekly pool
+    expect(result.gemini_weekly.remainingPercentage).toBe(75);
+  });
+
   it("handles groups with no buckets gracefully", () => {
     const data = {
       groups: [{ displayName: "Gemini Models" }],

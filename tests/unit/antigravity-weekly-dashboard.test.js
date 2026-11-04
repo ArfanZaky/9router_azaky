@@ -175,6 +175,46 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
     expect(quotas).toHaveLength(4);
   });
 
+  it("renders the Gemini 4 Argon weekly pool as its own row", () => {
+    const withArgon = {
+      quotas: {
+        gemini_weekly: {
+          displayName: "Gemini (Weekly)",
+          used: 250,
+          total: 1000,
+          resetAt: "2026-11-06T23:34:15Z",
+          remainingPercentage: 75,
+        },
+        gemini_argon_weekly: {
+          displayName: "Gemini 4 Argon (Weekly)",
+          used: 1000,
+          total: 1000,
+          resetAt: "2026-11-11T03:08:00Z",
+          remainingPercentage: 0,
+        },
+        "gemini-4-argon-high": {
+          displayName: "Gemini 4 Argon (High)",
+          used: 1000,
+          total: 1000,
+          resetAt: "2026-11-11T03:08:00Z",
+          remainingPercentage: 0,
+        },
+      },
+    };
+
+    const quotas = parseQuotaData("antigravity", withArgon);
+    const argon = quotas.find((q) => q.modelKey === "gemini_argon_weekly");
+
+    expect(argon).toMatchObject({
+      name: "Gemini 4 Argon (Weekly)",
+      used: 1000,
+      remainingPercentage: 0,
+      resetAt: "2026-11-11T03:08:00Z",
+    });
+    // Per-model argon keys must not be folded into the Gemini family row
+    expect(quotas.some((q) => q.modelKey === "gemini")).toBe(false);
+  });
+
   it("works with no weekly keys present (backward compat)", () => {
     const noWeekly = {
       quotas: {
