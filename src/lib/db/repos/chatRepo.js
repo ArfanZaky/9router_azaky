@@ -299,6 +299,10 @@ export async function deleteChatSession(id) {
   const db = await getAdapter();
   let ok = false;
   db.transaction(() => {
+    db.run(`DELETE FROM chatSubAgentEvents WHERE subAgentId IN (SELECT id FROM chatSubAgents WHERE sessionId = ?)`, [id]);
+    db.run(`DELETE FROM chatSubAgents WHERE sessionId = ?`, [id]);
+    db.run(`DELETE FROM chatRunEvents WHERE runId IN (SELECT id FROM chatRuns WHERE sessionId = ?)`, [id]);
+    db.run(`DELETE FROM chatRuns WHERE sessionId = ?`, [id]);
     db.run(`DELETE FROM chatMessages WHERE sessionId = ?`, [id]);
     const res = db.run(`DELETE FROM chatSessions WHERE id = ?`, [id]);
     ok = (res?.changes ?? 0) > 0;
@@ -511,6 +515,10 @@ export async function compactSessionMessages(sessionId, keepLastN = 0, options =
 
   if (keepN > 0 && keepFrom < totalCount) {
     db.transaction(() => {
+      db.run(`DELETE FROM chatSubAgentEvents WHERE subAgentId IN (SELECT id FROM chatSubAgents WHERE sessionId = ?)`, [sessionId]);
+      db.run(`DELETE FROM chatSubAgents WHERE sessionId = ?`, [sessionId]);
+      db.run(`DELETE FROM chatRunEvents WHERE runId IN (SELECT id FROM chatRuns WHERE sessionId = ?)`, [sessionId]);
+      db.run(`DELETE FROM chatRuns WHERE sessionId = ?`, [sessionId]);
       deletedCount = db.run(`DELETE FROM chatMessages WHERE sessionId = ? AND rowid < ?`, [
         sessionId,
         all[keepFrom].rowid,
@@ -578,6 +586,10 @@ export async function compactSessionMessages(sessionId, keepLastN = 0, options =
   };
 
   db.transaction(() => {
+    db.run(`DELETE FROM chatSubAgentEvents WHERE subAgentId IN (SELECT id FROM chatSubAgents WHERE sessionId = ?)`, [sessionId]);
+    db.run(`DELETE FROM chatSubAgents WHERE sessionId = ?`, [sessionId]);
+    db.run(`DELETE FROM chatRunEvents WHERE runId IN (SELECT id FROM chatRuns WHERE sessionId = ?)`, [sessionId]);
+    db.run(`DELETE FROM chatRuns WHERE sessionId = ?`, [sessionId]);
     deletedCount = db.run(`DELETE FROM chatMessages WHERE sessionId = ?`, [sessionId]).changes;
     db.run(
       `INSERT OR REPLACE INTO chatMessages(id, sessionId, role, content, attachments, status, error, tokenUsage, toolCallId, toolName, toolCalls, reasoning, segments, createdAt)
@@ -675,6 +687,10 @@ export async function clearChatSession(id) {
   if (!session) return null;
   const now = new Date().toISOString();
   db.transaction(() => {
+    db.run(`DELETE FROM chatSubAgentEvents WHERE subAgentId IN (SELECT id FROM chatSubAgents WHERE sessionId = ?)`, [id]);
+    db.run(`DELETE FROM chatSubAgents WHERE sessionId = ?`, [id]);
+    db.run(`DELETE FROM chatRunEvents WHERE runId IN (SELECT id FROM chatRuns WHERE sessionId = ?)`, [id]);
+    db.run(`DELETE FROM chatRuns WHERE sessionId = ?`, [id]);
     db.run(`DELETE FROM chatMessages WHERE sessionId = ?`, [id]);
     db.run(`UPDATE chatSessions SET compactSummary = '', compactedAt = '', updatedAt = ? WHERE id = ?`, [now, id]);
   });
