@@ -33,6 +33,11 @@ export default function JobsPanel({ jobs, onResume, reloading }) {
                 {job.status}
               </Badge>
               <span className="text-sm text-text-main">{job.model}</span>
+              {job.profile ? (
+                <Badge variant="info" size="sm">
+                  {job.profile}
+                </Badge>
+              ) : null}
               <span className="text-xs text-text-muted">
                 {job.mode} · {job.duration}s · {job.aspect} · {job.creditCost} credits
               </span>

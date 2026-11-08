@@ -64,4 +64,22 @@ describe("flow price table", () => {
     const lite = models.find((m) => m.id === "veo-lite");
     expect(lite.costs.every((c) => c.resolution === null)).toBe(true);
   });
+
+  it("includes imageModels and limits metadata in flowPriceTable", () => {
+    const { imageModels, limits } = flowPriceTable();
+    expect(Array.isArray(imageModels)).toBe(true);
+    expect(imageModels.length).toBeGreaterThanOrEqual(4);
+    expect(limits).toMatchObject({
+      maxPromptChars: 4000,
+      maxConcurrentPerAccount: 1,
+      maxImageUploadMb: 10,
+    });
+  });
+
+  it("resolves explicit profile name in profileDir", () => {
+    const previous = process.env.FLOW_PROFILE_DIR;
+    delete process.env.FLOW_PROFILE_DIR;
+    expect(profileDir("akun_dua")).toMatch(/profile_akun_dua$/);
+    if (previous !== undefined) process.env.FLOW_PROFILE_DIR = previous;
+  });
 });

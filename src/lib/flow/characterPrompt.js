@@ -2,6 +2,8 @@
 // into every view: that shared text is the only thing keeping the angles
 // consistent when the image model cannot take a reference image.
 
+import { sanitizeAntislopText } from "@/lib/videoPrompt/antislop.js";
+
 export const CHARACTER_VIEWS = ["front", "back", "left", "right"];
 
 const VIEW_DIRECTION = {
@@ -16,17 +18,22 @@ const VIEW_DIRECTION = {
  * @returns {{ view: string, prompt: string }[]} one entry per CHARACTER_VIEWS
  */
 export function buildViewPrompts({ name = "", description = "", style = "" } = {}) {
-  const subject = [name, description].map((part) => String(part || "").trim()).filter(Boolean).join(", ");
+  const subject = [name, description]
+    .map((part) => sanitizeAntislopText(String(part || "")))
+    .filter(Boolean)
+    .join(", ");
   if (!subject) throw new Error("a character needs a name or a description to build prompts");
+
+  const cleanStyle = style ? sanitizeAntislopText(String(style)) : "";
 
   return CHARACTER_VIEWS.map((view) => ({
     view,
     prompt: [
       subject,
       VIEW_DIRECTION[view],
-      style ? String(style).trim() : "",
-      "full body, neutral standing pose, plain light grey background, soft even studio lighting",
-      "character reference sheet, detailed, sharp focus",
+      cleanStyle,
+      "full body, neutral standing pose, plain neutral grey background, even studio lighting",
+      "character reference turnaround sheet, natural surface texture, accurate proportions, sharp focus, no watermark or text overlay",
     ]
       .filter(Boolean)
       .join(", "),

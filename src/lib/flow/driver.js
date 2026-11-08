@@ -49,7 +49,11 @@ function runCli(args, { timeoutMs = RENDER_TIMEOUT_MS(), logFile = null } = {}) 
     const started = Date.now();
     // shell:false on purpose: spawn() escapes nothing, so a prompt with spaces
     // or quotes reaches the CLI as one argv entry.
-    const child = spawn(BIN(), args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(BIN(), args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      env: { ...process.env, GFLOW_CLI_UPDATE_CHECK: "0" },
+    });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -92,17 +96,27 @@ function runCli(args, { timeoutMs = RENDER_TIMEOUT_MS(), logFile = null } = {}) 
   });
 }
 
-/** `--json` emits one object; tolerate banner lines or Rich leftovers. */
+/** `--json` emits one object or array; tolerate banner lines or Rich leftovers. */
 export function parseCliJson(stdout = "") {
   const text = String(stdout).trim();
   if (!text) return null;
   try {
     return JSON.parse(text);
   } catch {
-    /* fall through to a brace scan */
+    /* fall through to a bracket/brace scan */
   }
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
+  const objStart = text.indexOf("{");
+  const arrStart = text.indexOf("[");
+  let start = -1;
+  let closeChar = "}";
+  if (arrStart !== -1 && (objStart === -1 || arrStart < objStart)) {
+    start = arrStart;
+    closeChar = "]";
+  } else if (objStart !== -1) {
+    start = objStart;
+    closeChar = "}";
+  }
+  const end = text.lastIndexOf(closeChar);
   if (start === -1 || end <= start) return null;
   try {
     return JSON.parse(text.slice(start, end + 1));
@@ -157,14 +171,15 @@ function fail(message) {
  * Submits at most once: a retry after a submit that may have gone out would
  * spend credits twice, so every failure path here stops instead.
  */
-export async function renderFlowJob(job, { onStep = () => {}, onProject = () => {} } = {}) {
+export async function renderFlowJob(job, { onStep = () => {}, onProject = () => {}, profile = null, timeoutMs = null } = {}) {
+  const activeProfile = job.profile || profile || process.env.FLOW_PROFILE || null;
   // i2v cannot go through the CLI on this host (attach-image is unported, #799),
   // so it runs on the real composer instead. t2v stays on the CLI: it is proven
   // end-to-end and downloads the mp4 itself.
   if (job.mode === "i2v") {
     assertNotTestRun();
     const { renderFlowInComposer } = await import("./composer.js");
-    return renderFlowInComposer(job, { onStep, onProject });
+    return renderFlowInComposer({ ...job, profile: activeProfile }, { onStep, onProject });
   }
   assertNotTestRun();
 
@@ -182,12 +197,12 @@ export async function renderFlowJob(job, { onStep = () => {}, onProject = () => 
   ];
   // --resolution is deliberately never passed: see hostResolution() above.
   if (job.projectId) args.push("--project", job.projectId);
-  if (process.env.FLOW_PROFILE) args.push("--profile", process.env.FLOW_PROFILE);
+  if (activeProfile) args.push("--profile", activeProfile);
   args.push("-o", target, "--json");
 
-  onStep(`submitting ${job.model} ${job.duration}s ${job.aspect}${job.resolution ? ` at Flow default (${job.resolution})` : ""}`);
+  onStep(`submitting ${job.model} ${job.duration}s ${job.aspect}${job.resolution ? ` at Flow default (${job.resolution})` : ""}${activeProfile ? ` [${activeProfile}]` : ""}`);
   const logFile = join(outDir(), `${job.id}.log`);
-  const result = await runCli(args, { logFile });
+  const result = await runCli(args, { logFile, timeoutMs: timeoutMs || RENDER_TIMEOUT_MS() });
 
   if (result.timedOut) {
     throw fail(
@@ -217,9 +232,10 @@ export async function renderFlowJob(job, { onStep = () => {}, onProject = () => 
  * launches a browser (~10s), so callers refresh once per finished job rather
  * than per poll.
  */
-export async function readFlowCredits() {
+export async function readFlowCredits(profile = null) {
   const args = ["credits", "user"];
-  if (process.env.FLOW_PROFILE) args.push("--profile", process.env.FLOW_PROFILE);
+  const activeProfile = profile || process.env.FLOW_PROFILE || null;
+  if (activeProfile) args.push("--profile", activeProfile);
   const result = await runCli(args, { timeoutMs: CREDIT_TIMEOUT_MS() });
   const text = `${result.stdout}\n${result.stderr}`;
   const match = text.match(/Credits:\s*([0-9][0-9,]*)/i);
@@ -240,6 +256,7 @@ export async function readFlowCredits() {
  * @param {string} [opts.aspect]
  * @param {string} [opts.imagePath]
  * @param {string} [opts.projectId]
+ * @param {string} [opts.profile]
  */
 export async function renderFlowImage({
   id = `img-${Date.now()}`,
@@ -248,9 +265,11 @@ export async function renderFlowImage({
   aspect = "16:9",
   imagePath = null,
   projectId = null,
+  profile = null,
 } = {}) {
   assertNotTestRun();
 
+  const activeProfile = profile || process.env.FLOW_PROFILE || null;
   const target = join(outDir(), `${id}.png`);
   const sub = imagePath ? "i2i" : "t2i";
   const args = [
@@ -264,7 +283,7 @@ export async function renderFlowImage({
   ];
   if (imagePath) args.push("--ref", imagePath);
   if (projectId) args.push("--project", projectId);
-  if (process.env.FLOW_PROFILE) args.push("--profile", process.env.FLOW_PROFILE);
+  if (activeProfile) args.push("--profile", activeProfile);
   args.push("-o", target, "--json");
 
   const logFile = join(outDir(), `${id}.log`);
@@ -287,4 +306,109 @@ export async function renderFlowImage({
     throw fail(`Flow image reported success but no image file was found (log: ${logFile})`);
   }
   return { mediaPath, sourceUrl };
+}
+
+/** List all saved Flow profiles via `gflow auth list --json`. */
+export async function listFlowProfiles() {
+  const result = await runCli(["auth", "list", "--json"], { timeoutMs: 30000 });
+  const parsed = parseCliJson(result.stdout);
+  if (Array.isArray(parsed)) return parsed;
+  return [];
+}
+
+/** Set default profile via `gflow auth use <name>`. */
+export async function setDefaultFlowProfile(name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) throw fail("Profile name is required");
+  const result = await runCli(["auth", "use", trimmed], { timeoutMs: 15000 });
+  if (result.code !== 0) {
+    const detail = (result.stderr || result.stdout || "").trim().slice(0, 300);
+    throw fail(`Failed to switch profile '${trimmed}': ${detail}`);
+  }
+  return { ok: true, profile: trimmed };
+}
+
+/** Probe a profile's Flow session via `gflow auth status --profile <name>`. */
+export async function verifyFlowProfileStatus(name = null) {
+  const args = ["auth", "status"];
+  if (name) args.push("--profile", String(name).trim());
+  const result = await runCli(args, { timeoutMs: 60000 });
+  const combined = `${result.stdout}\n${result.stderr}`.trim();
+  const emailMatch = combined.match(/verified as\s+([^\s.]+\@[^\s.]+(?:\.[^\s.]+)+)/i);
+  return {
+    ok: result.code === 0,
+    code: result.code,
+    email: emailMatch ? emailMatch[1] : null,
+    output: combined.split("\n").slice(-4).join(" | ").slice(0, 400),
+  };
+}
+
+/** Renew a profile's session cookies headlessly via `gflow auth renew`. */
+export async function renewFlowProfile(name = null, { all = false } = {}) {
+  const args = ["auth", "renew", "--json"];
+  if (all) args.push("--all");
+  else if (name) args.push("--profile", String(name).trim());
+  const result = await runCli(args, { timeoutMs: 180000 });
+  const parsed = parseCliJson(result.stdout);
+  const combined = `${result.stdout}\n${result.stderr}`.trim();
+  return {
+    ok: result.code === 0,
+    code: result.code,
+    data: parsed,
+    output: combined.split("\n").slice(-4).join(" | ").slice(0, 400),
+  };
+}
+
+/** Remove a saved profile via `gflow auth logout --profile <name> --yes`. */
+export async function deleteFlowProfile(name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) throw fail("Profile name is required");
+  const result = await runCli(["auth", "logout", "--profile", trimmed, "--yes"], { timeoutMs: 30000 });
+  if (result.code !== 0) {
+    const detail = (result.stderr || result.stdout || "").trim().slice(0, 300);
+    throw fail(`Failed to delete profile '${trimmed}': ${detail}`);
+  }
+  return { ok: true, profile: trimmed };
+}
+
+/** Interactive browser login via `gflow auth login --profile <name> --browser <browser>`. */
+export async function loginFlowProfile({ profile, browser = "chrome", account = "" } = {}) {
+  const trimmed = String(profile || "").trim();
+  if (!trimmed) throw fail("Profile name is required");
+  if (!/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
+    throw fail("Profile name hanya boleh huruf, angka, titik, underscore, atau strip");
+  }
+  const args = ["auth", "login", "--profile", trimmed, "--browser", browser || "chrome"];
+  if (account && String(account).trim()) {
+    args.push("--account", String(account).trim());
+  }
+  const result = await runCli(args, { timeoutMs: 5 * 60 * 1000 });
+  const combined = `${result.stdout}\n${result.stderr}`.trim();
+  if (result.code !== 0) {
+    throw fail(`Login gagal (exit ${result.code}): ${combined.split("\n").slice(-3).join(" | ").slice(0, 400)}`);
+  }
+  return {
+    ok: true,
+    profile: trimmed,
+    output: combined.split("\n").slice(-3).join(" | ").slice(0, 400),
+  };
+}
+
+/** Run `gflow doctor --json` and `gflow project list --json`. */
+export async function getFlowDiagnostics(profile = null) {
+  const projArgs = ["project", "list", "--json"];
+  if (profile) projArgs.push("--profile", String(profile).trim());
+  const [docRes, projRes, verRes] = await Promise.all([
+    runCli(["doctor", "--json"], { timeoutMs: 30000 }),
+    runCli(projArgs, { timeoutMs: 20000 }),
+    runCli(["--version"], { timeoutMs: 10000 }),
+  ]);
+  const doctor = parseCliJson(docRes.stdout) || { overall_status: docRes.code === 0 ? "ok" : "issues", checks: [] };
+  const projects = parseCliJson(projRes.stdout);
+  const versionText = `${verRes.stdout}\n${verRes.stderr}`.trim().split("\n")[0] || "";
+  return {
+    cliVersion: versionText,
+    doctor,
+    projects: Array.isArray(projects) ? projects : [],
+  };
 }

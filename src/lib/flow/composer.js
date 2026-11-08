@@ -73,10 +73,10 @@ function fail(message) {
 }
 
 /** Resolve the Chrome profile that `gflow auth login` wrote, without hardcoding a name. */
-export function profileDir() {
+export function profileDir(explicitProfile = "") {
   if (process.env.FLOW_PROFILE_DIR) return process.env.FLOW_PROFILE_DIR;
   const base = `${process.env.LOCALAPPDATA || ""}/ffroliva/gflow-cli`;
-  let profile = process.env.FLOW_PROFILE || "";
+  let profile = explicitProfile || process.env.FLOW_PROFILE || "";
   if (!profile) {
     try {
       const toml = readFileSync(`${base}/config.toml`, "utf8");
@@ -219,12 +219,15 @@ async function answerCreditGate(page) {
  * One Chrome on the signed-in profile, with a response tap that records every
  * generated video URL Flow hands out (`flow-content.google/video/{id}`).
  */
-async function openFlowPage() {
+async function openFlowPage({ profile = "", channel = "", headless = null } = {}) {
   const { chromium } = await import("playwright");
+  const dir = profileDir(profile);
+  const useChannel = channel || process.env.FLOW_CHANNEL || "chrome";
+  const useHeadless = headless !== null ? Boolean(headless) : process.env.FLOW_HEADLESS === "1";
   const launch = () =>
-    chromium.launchPersistentContext(profileDir(), {
-      channel: process.env.FLOW_CHANNEL || "chrome",
-      headless: process.env.FLOW_HEADLESS === "1",
+    chromium.launchPersistentContext(dir, {
+      channel: useChannel === "internal" ? undefined : useChannel,
+      headless: useHeadless,
       viewport: { width: 1440, height: 900 },
       acceptDownloads: true,
       args: ["--no-first-run", "--no-default-browser-check"],
@@ -238,7 +241,7 @@ async function openFlowPage() {
     // reports it as "opening in existing browser session". Clear it only if no
     // Chrome has touched the profile for a while, then retry once.
     if (!/existing browser session|already in use/i.test(String(error?.message))) throw error;
-    const lock = join(profileDir(), "lockfile");
+    const lock = join(dir, "lockfile");
     const stale = (() => {
       try {
         return Date.now() - statSync(lock).mtimeMs > 120000;
@@ -279,11 +282,11 @@ async function openFlowPage() {
  * Finish a job whose submit already happened but whose orchestrating process
  * died: answer the pending credit gate, then download. Never submits again.
  */
-export async function resumeFlowJob(job, { onStep = () => {} } = {}) {
+export async function resumeFlowJob(job, { onStep = () => {}, channel = "", headless = null } = {}) {
   const projectId = job.projectId || process.env.FLOW_PROJECT_ID;
   if (!projectId) throw fail("resume needs the Flow project id");
 
-  const { ctx, page, videos } = await openFlowPage();
+  const { ctx, page, videos } = await openFlowPage({ profile: job.profile || "", channel, headless });
   try {
     onStep(`opening project ${projectId}`);
     await page.goto(`https://flow.google.com/project/${projectId}`, { waitUntil: "domcontentloaded", timeout: 90000 });
@@ -332,8 +335,8 @@ export async function resolveProjectId(page, hint) {
  * Render one job through the agent composer.
  * @returns {Promise<{mediaPath: string, sourceUrl: string, projectId: string}>}
  */
-export async function renderFlowInComposer(job, { onStep = () => {}, onProject = () => {} } = {}) {
-  const { ctx, page, videos } = await openFlowPage();
+export async function renderFlowInComposer(job, { onStep = () => {}, onProject = () => {}, channel = "", headless = null } = {}) {
+  const { ctx, page, videos } = await openFlowPage({ profile: job.profile || "", channel, headless });
 
   try {
     const projectId = await resolveProjectId(page, job.projectId);
