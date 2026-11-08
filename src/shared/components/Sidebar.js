@@ -26,6 +26,7 @@ const navItems = [
   { href: "/dashboard/video-prompt", label: "Video Prompts", icon: "movie_edit" },
   { href: "/dashboard/motion", label: "Motion Video", icon: "animation" },
   { href: "/dashboard/flow", label: "Google Flow", icon: "movie" },
+  { href: "/dashboard/elevenlabs", label: "ElevenLabs", icon: "record_voice_over" },
   { href: "/dashboard/combos", label: "Combo & Vision Adapter", icon: "layers" },
   { href: "/dashboard/usage", label: "Usage", icon: "bar_chart" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
