@@ -8,6 +8,7 @@ export function rowToFlowJob(row) {
   if (!row) return null;
   return {
     id: row.id,
+    profile: row.profile || null,
     projectId: row.projectId || null,
     mode: row.mode,
     model: row.model,
@@ -33,6 +34,7 @@ export async function createFlowJob(data = {}) {
   const db = await getAdapter();
   const job = {
     id: data.id || uuidv4(),
+    profile: data.profile || null,
     projectId: data.projectId || null,
     mode: data.mode === "i2v" ? "i2v" : "t2v",
     model: data.model,
@@ -54,10 +56,10 @@ export async function createFlowJob(data = {}) {
   };
   db.run(
     `INSERT INTO flowJobs
-      (id, projectId, mode, model, prompt, imagePath, duration, aspect, resolution, creditCost, status, step, error, mediaPath, sourceUrl, dryRun, createdAt, startedAt, finishedAt)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      (id, profile, projectId, mode, model, prompt, imagePath, duration, aspect, resolution, creditCost, status, step, error, mediaPath, sourceUrl, dryRun, createdAt, startedAt, finishedAt)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
-      job.id, job.projectId, job.mode, job.model, job.prompt, job.imagePath, job.duration,
+      job.id, job.profile, job.projectId, job.mode, job.model, job.prompt, job.imagePath, job.duration,
       job.aspect, job.resolution, job.creditCost, job.status, job.step, job.error, job.mediaPath,
       job.sourceUrl, job.dryRun, job.createdAt, job.startedAt, job.finishedAt,
     ]
@@ -80,7 +82,7 @@ export async function listFlowJobs({ status = "", limit = 50, offset = 0 } = {})
   return rows.map(rowToFlowJob);
 }
 
-const UPDATABLE = ["projectId", "status", "step", "error", "mediaPath", "sourceUrl", "startedAt", "finishedAt"];
+const UPDATABLE = ["profile", "projectId", "status", "step", "error", "mediaPath", "sourceUrl", "startedAt", "finishedAt"];
 
 export async function updateFlowJob(id, patchData = {}) {
   const db = await getAdapter();
@@ -93,9 +95,9 @@ export async function updateFlowJob(id, patchData = {}) {
   }
   db.run(
     `UPDATE flowJobs
-     SET projectId = ?, status = ?, step = ?, error = ?, mediaPath = ?, sourceUrl = ?, startedAt = ?, finishedAt = ?
+     SET profile = ?, projectId = ?, status = ?, step = ?, error = ?, mediaPath = ?, sourceUrl = ?, startedAt = ?, finishedAt = ?
      WHERE id = ?`,
-    [next.projectId, next.status, next.step, next.error, next.mediaPath, next.sourceUrl, next.startedAt, next.finishedAt, id]
+    [next.profile, next.projectId, next.status, next.step, next.error, next.mediaPath, next.sourceUrl, next.startedAt, next.finishedAt, id]
   );
   return next;
 }
@@ -122,15 +124,16 @@ export async function claimNextFlowJob() {
   return getFlowJob(row.id);
 }
 
-export async function addFlowCreditSnapshot({ balance, source = "bridge" } = {}) {
+export async function addFlowCreditSnapshot({ balance, profile = null, source = "bridge" } = {}) {
   const db = await getAdapter();
   const createdAt = new Date().toISOString();
-  db.run(`INSERT INTO flowCreditSnapshots (balance, source, createdAt) VALUES (?,?,?)`, [
+  db.run(`INSERT INTO flowCreditSnapshots (profile, balance, source, createdAt) VALUES (?,?,?,?)`, [
+    profile || null,
     Number(balance) || 0,
     source,
     createdAt,
   ]);
-  return { balance: Number(balance) || 0, source, createdAt };
+  return { profile: profile || null, balance: Number(balance) || 0, source, createdAt };
 }
 
 export async function deleteFlowCreditSnapshotsBySource(source = "test") {
@@ -139,18 +142,22 @@ export async function deleteFlowCreditSnapshotsBySource(source = "test") {
   return res?.changes || 0;
 }
 
-export async function getLatestFlowCreditSnapshot() {
+export async function getLatestFlowCreditSnapshot(profile = null) {
   const db = await getAdapter();
-  const row = db.get(`SELECT * FROM flowCreditSnapshots ORDER BY createdAt DESC LIMIT 1`);
-  return row ? { balance: row.balance, source: row.source, createdAt: row.createdAt } : null;
+  const row = profile
+    ? db.get(`SELECT * FROM flowCreditSnapshots WHERE profile = ? OR profile IS NULL ORDER BY CASE WHEN profile = ? THEN 0 ELSE 1 END, createdAt DESC LIMIT 1`, [profile, profile])
+    : db.get(`SELECT * FROM flowCreditSnapshots ORDER BY createdAt DESC LIMIT 1`);
+  return row ? { profile: row.profile || null, balance: row.balance, source: row.source, createdAt: row.createdAt } : null;
 }
 
 /** Most recent balances first, for the dashboard sparkline. */
-export async function listFlowCreditSnapshots({ limit = 60 } = {}) {
+export async function listFlowCreditSnapshots({ profile = "", limit = 60 } = {}) {
   const db = await getAdapter();
   const lim = Math.min(Math.max(Number(limit) || 60, 1), 500);
-  const rows = db.all(`SELECT * FROM flowCreditSnapshots ORDER BY createdAt DESC LIMIT ?`, [lim]);
-  return rows.map((row) => ({ balance: row.balance, source: row.source, createdAt: row.createdAt }));
+  const rows = profile
+    ? db.all(`SELECT * FROM flowCreditSnapshots WHERE profile = ? ORDER BY createdAt DESC LIMIT ?`, [profile, lim])
+    : db.all(`SELECT * FROM flowCreditSnapshots ORDER BY createdAt DESC LIMIT ?`, [lim]);
+  return rows.map((row) => ({ profile: row.profile || null, balance: row.balance, source: row.source, createdAt: row.createdAt }));
 }
 
 /**
@@ -178,11 +185,59 @@ export async function failStaleFlowJobs({ olderThanMinutes = 45 } = {}) {
  * Credits committed to jobs started since `sinceIso`. Counts completed jobs only:
  * a failed job is not charged, and a running one is not yet known to be.
  */
-export async function sumFlowCreditsSince(sinceIso) {
+export async function sumFlowCreditsSince(sinceIso, profile = "") {
   const db = await getAdapter();
-  const row = db.get(
-    `SELECT COALESCE(SUM(creditCost), 0) AS total, COUNT(*) AS jobs FROM flowJobs WHERE status = 'completed' AND createdAt >= ?`,
-    [sinceIso]
-  );
+  const row = profile
+    ? db.get(
+        `SELECT COALESCE(SUM(creditCost), 0) AS total, COUNT(*) AS jobs FROM flowJobs WHERE status = 'completed' AND createdAt >= ? AND (profile = ? OR profile IS NULL)`,
+        [sinceIso, profile]
+      )
+    : db.get(
+        `SELECT COALESCE(SUM(creditCost), 0) AS total, COUNT(*) AS jobs FROM flowJobs WHERE status = 'completed' AND createdAt >= ?`,
+        [sinceIso]
+      );
   return { credits: Number(row?.total) || 0, jobs: Number(row?.jobs) || 0 };
+}
+
+export async function getFlowStatsSummary() {
+  const db = await getAdapter();
+  const totalRow = db.get(
+    `SELECT COALESCE(SUM(CASE WHEN status = 'completed' THEN creditCost ELSE 0 END), 0) AS totalCredits,
+            COUNT(*) AS totalJobs,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completedJobs,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedJobs
+     FROM flowJobs`
+  );
+  const byProfileRows = db.all(
+    `SELECT COALESCE(profile, 'default') AS profile,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN creditCost ELSE 0 END), 0) AS credits,
+            COUNT(*) AS jobs,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completedJobs
+     FROM flowJobs
+     GROUP BY COALESCE(profile, 'default')`
+  );
+  const byModelRows = db.all(
+    `SELECT model,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN creditCost ELSE 0 END), 0) AS credits,
+            COUNT(*) AS jobs
+     FROM flowJobs
+     GROUP BY model`
+  );
+  return {
+    totalCredits: Number(totalRow?.totalCredits) || 0,
+    totalJobs: Number(totalRow?.totalJobs) || 0,
+    completedJobs: Number(totalRow?.completedJobs) || 0,
+    failedJobs: Number(totalRow?.failedJobs) || 0,
+    byProfile: byProfileRows.map((r) => ({
+      profile: r.profile,
+      credits: Number(r.credits) || 0,
+      jobs: Number(r.jobs) || 0,
+      completedJobs: Number(r.completedJobs) || 0,
+    })),
+    byModel: byModelRows.map((r) => ({
+      model: r.model,
+      credits: Number(r.credits) || 0,
+      jobs: Number(r.jobs) || 0,
+    })),
+  };
 }

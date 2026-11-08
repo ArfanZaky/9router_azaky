@@ -17,6 +17,7 @@ import {
   Freebuff2ApiGatewayModal,
 } from "@/shared/components";
 import { FREE_PROVIDERS } from "@/shared/constants/providers";
+import ElevenLabsAutomationPanel from "./ElevenLabsAutomationPanel";
 
 function getConnectionLabel(count) {
   return `${count} connection${count === 1 ? "" : "s"}`;
@@ -769,6 +770,14 @@ const AUTOMATION_PROVIDERS = [
     description: "Self-hosted gateway manager: account pool, GSuite auto-register, status and quota.",
     supportedModes: ["gateway", "register", "account-pool"],
     component: Freebuff2ApiAutomationPanel,
+  },
+  {
+    id: "elevenlabs",
+    label: "ElevenLabs",
+    icon: "record_voice_over",
+    description: "Google SSO login di Chrome lokal (support multiple akun via antrean/queue), lalu buat API key dan simpan ke halaman ElevenLabs.",
+    supportedModes: ["bulk-queue", "google-sso", "api-key"],
+    component: ElevenLabsAutomationPanel,
   },
   {
     id: "freebuff",

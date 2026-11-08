@@ -69,6 +69,19 @@ const DEFAULT_SETTINGS = {
   pxpipeTimeoutMs: 15000,
   // Per-provider user header overrides applied at dispatch: { [providerId]: { headers: {..} } }
   providerOverrides: {},
+  flowConfig: {
+    activeProfile: "",
+    rotationStrategy: "active_only", // "active_only" | "fallback" | "round_robin"
+    dailyBudgetCredits: 0,
+    hostResolution: "720p",
+    headless: false,
+    channel: "chrome",
+    renderTimeoutMinutes: 15,
+    composerTimeoutMinutes: 20,
+    creditTimeoutMinutes: 3,
+    defaultProjectId: "",
+    dryRun: false,
+  },
 };
 
 async function readRaw() {

@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 import { handleImageGeneration } from "@/sse/handlers/imageGeneration.js";
 import { getApiKeys } from "@/lib/localDb";
+import { applyAntislopImagePrompt } from "@/lib/videoPrompt/antislop.js";
 
 /**
  * POST /api/video-prompt/generate-image
- * Body: { prompt, model, aspectRatio, apiKey }
+ * Body: { prompt, model, aspectRatio, negativePrompt, apiKey }
  */
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { prompt, model, aspectRatio = "16:9", image, apiKey: *** } = body;
+    const { prompt, model, aspectRatio = "16:9", image, negativePrompt = "" } = body;
+    const clientApiKey = body["apiKey"];
 
     if (!prompt || !prompt.trim()) {
       return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
@@ -30,9 +32,11 @@ export async function POST(request) {
     else if (aspectRatio === "9:16") size = "1024x1792";
     else if (aspectRatio === "21:9" || aspectRatio === "2.39:1") size = "1920x800";
 
+    const cleanPrompt = applyAntislopImagePrompt(prompt, { negativePrompt });
+
     const payload = {
       model,
-      prompt: prompt.trim(),
+      prompt: cleanPrompt,
       n: 1,
       size,
       aspect_ratio: aspectRatio === "21:9" || aspectRatio === "2.39:1" ? "16:9" : aspectRatio,

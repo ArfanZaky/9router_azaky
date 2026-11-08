@@ -1,11 +1,12 @@
 import { handleVideoCreate, handleVideoGet } from "@/sse/handlers/videoGeneration.js";
 import { downloadAndSaveVideo } from "@/lib/media/videoStore.js";
 import { getApiKeys } from "@/lib/localDb";
+import { applyAntislopVideoPrompt } from "@/lib/videoPrompt/antislop.js";
 import { NextResponse } from "next/server";
 
 /**
  * POST /api/video-prompt/generate-video
- * Body: { model, prompt, image?, duration?, aspectRatio?, resolution?, apiKey }
+ * Body: { model, prompt, image?, duration?, aspectRatio?, resolution?, negativePrompt?, apiKey }
  * Calls internal handleVideoCreate directly without external HTTP hop.
  */
 export async function POST(request) {
@@ -18,8 +19,9 @@ export async function POST(request) {
       duration,
       aspectRatio,
       resolution,
-      apiKey: ***
+      negativePrompt = "",
     } = body;
+    const clientApiKey = body["apiKey"];
 
     if (!model) return NextResponse.json({ error: "Video model is required" }, { status: 400 });
     if (!prompt || !prompt.trim()) return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
@@ -32,7 +34,7 @@ export async function POST(request) {
     const isFlow = String(model).startsWith("flow/");
 
     const forward = { model };
-    if (prompt) forward.prompt = prompt.trim();
+    if (prompt) forward.prompt = applyAntislopVideoPrompt(prompt, { negativePrompt });
     if (image) forward.image = image;
     if (duration) {
       let dur = Number(duration);
@@ -53,7 +55,7 @@ export async function POST(request) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(apiKey ? { Authorization: *** ${apiKey}` } : {}),
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
       body: JSON.stringify(forward),
     });

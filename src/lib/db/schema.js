@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -337,6 +337,7 @@ export const TABLES = {
   flowJobs: {
     columns: {
       id: "TEXT PRIMARY KEY",
+      profile: "TEXT",
       projectId: "TEXT",
       mode: "TEXT NOT NULL",
       model: "TEXT NOT NULL",
@@ -364,11 +365,60 @@ export const TABLES = {
   flowCreditSnapshots: {
     columns: {
       id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      profile: "TEXT",
       balance: "INTEGER NOT NULL",
       source: "TEXT",
       createdAt: "TEXT NOT NULL",
     },
-    indexes: ["CREATE INDEX IF NOT EXISTS idx_fcs_created ON flowCreditSnapshots(createdAt DESC)"],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_fcs_created ON flowCreditSnapshots(createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_fcs_profile ON flowCreditSnapshots(profile, createdAt DESC)",
+    ],
+  },
+  // ElevenLabs Studio (src/lib/elevenlabs/service.js). One row per TTS call;
+  // the audio file lives under DATA_DIR/elevenlabs/audio. connectionId points at
+  // the providerConnections row (provider = "elevenlabs") that paid for it.
+  elevenlabsJobs: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      connectionId: "TEXT",
+      accountName: "TEXT",
+      model: "TEXT NOT NULL",
+      voiceId: "TEXT NOT NULL",
+      voiceName: "TEXT",
+      text: "TEXT NOT NULL",
+      outputFormat: "TEXT",
+      settings: "TEXT",
+      status: "TEXT NOT NULL",
+      error: "TEXT",
+      characterCost: "INTEGER DEFAULT 0",
+      mediaPath: "TEXT",
+      mime: "TEXT",
+      bytes: "INTEGER",
+      latencyMs: "INTEGER",
+      requestId: "TEXT",
+      historyItemId: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_elj_created ON elevenlabsJobs(createdAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_elj_conn ON elevenlabsJobs(connectionId, createdAt DESC)",
+    ],
+  },
+  // Subscription reads from GET /v1/user/subscription (needs the user_read key permission).
+  elevenlabsCreditSnapshots: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      connectionId: "TEXT NOT NULL",
+      tier: "TEXT",
+      characterCount: "INTEGER NOT NULL",
+      characterLimit: "INTEGER NOT NULL",
+      nextResetUnix: "INTEGER",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_elcs_conn ON elevenlabsCreditSnapshots(connectionId, createdAt DESC)",
+    ],
   },
   // Reusable Flow image library. Separate from imageAssets because that table's
   // jobId is NOT NULL and SQLite cannot drop it without a table rebuild; these

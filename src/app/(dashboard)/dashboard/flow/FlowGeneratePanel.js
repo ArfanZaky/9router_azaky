@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Input, Select } from "@/shared/components";
 
-export default function FlowGeneratePanel({ price, busy, startAsset, onClearStart, onPickImage, onQueued, onReload }) {
+export default function FlowGeneratePanel({ price, busy, startAsset, onClearStart, onPickImage, onQueued, onReload, profiles = [], activeProfile = "" }) {
   const [mode, setMode] = useState("i2v");
   const [prompt, setPrompt] = useState("");
   const [model, setModel] = useState("omni-flash");
   const [duration, setDuration] = useState(4);
   const [aspect, setAspect] = useState("16:9");
+  const [profile, setProfile] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -45,6 +46,7 @@ export default function FlowGeneratePanel({ price, busy, startAsset, onClearStar
           model,
           duration,
           aspect,
+          ...(profile ? { profile } : {}),
           ...(mode === "i2v" ? { imageAssetId: startAsset.id } : {}),
         }),
       });
@@ -87,7 +89,7 @@ export default function FlowGeneratePanel({ price, busy, startAsset, onClearStar
           required
         />
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
           <Select
             label="Model"
             value={model}
@@ -105,6 +107,18 @@ export default function FlowGeneratePanel({ price, busy, startAsset, onClearStar
             value={aspect}
             onChange={(e) => setAspect(e.target.value)}
             options={(modelSpec?.aspects || ["16:9"]).map((a) => ({ value: a, label: a }))}
+          />
+          <Select
+            label="Akun / Profil"
+            value={profile}
+            onChange={(e) => setProfile(e.target.value)}
+            options={[
+              { value: "", label: `Otomatis (${activeProfile || "Default"})` },
+              ...profiles.map((p) => ({
+                value: p.name,
+                label: `${p.name}${p.balance !== null && p.balance !== undefined ? ` (${p.balance} cr)` : ""}`,
+              })),
+            ]}
           />
         </div>
 

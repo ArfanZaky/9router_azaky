@@ -27,10 +27,96 @@ import {
   failStaleFlowJobs,
   sumFlowCreditsSince,
   updateFlowJob,
+  getFlowStatsSummary,
 } from "../db/repos/flowRepo.js";
+import { getSettings, updateSettings } from "../db/repos/settingsRepo.js";
 
 const CONCURRENCY = 1;
 const DRY_RUN = () => process.env.FLOW_BRIDGE_DRYRUN === "1";
+
+const DEFAULT_FLOW_CONFIG = {
+  activeProfile: "",
+  rotationStrategy: "active_only", // "active_only" | "fallback" | "round_robin"
+  dailyBudgetCredits: 0,
+  hostResolution: "720p",
+  headless: false,
+  channel: "chrome",
+  renderTimeoutMinutes: 15,
+  composerTimeoutMinutes: 20,
+  creditTimeoutMinutes: 3,
+  defaultProjectId: "",
+  dryRun: false,
+};
+
+let roundRobinIndex = 0;
+
+/** Read merged Flow configuration (env overrides DB settings when explicitly set). */
+export async function getFlowConfig() {
+  let stored = {};
+  try {
+    const settings = await getSettings();
+    stored = settings?.flowConfig || {};
+  } catch {
+    stored = {};
+  }
+  const merged = { ...DEFAULT_FLOW_CONFIG, ...stored };
+  return {
+    activeProfile: process.env.FLOW_PROFILE || merged.activeProfile || "",
+    rotationStrategy: merged.rotationStrategy || "active_only",
+    dailyBudgetCredits:
+      process.env.FLOW_DAILY_BUDGET_CREDITS !== undefined
+        ? Number(process.env.FLOW_DAILY_BUDGET_CREDITS) || 0
+        : Number(merged.dailyBudgetCredits) || 0,
+    hostResolution: process.env.FLOW_HOST_RESOLUTION || merged.hostResolution || "720p",
+    headless:
+      process.env.FLOW_HEADLESS !== undefined ? process.env.FLOW_HEADLESS === "1" : Boolean(merged.headless),
+    channel: process.env.FLOW_CHANNEL || merged.channel || "chrome",
+    renderTimeoutMinutes: Number(merged.renderTimeoutMinutes) || 15,
+    composerTimeoutMinutes: Number(merged.composerTimeoutMinutes) || 20,
+    creditTimeoutMinutes: Number(merged.creditTimeoutMinutes) || 3,
+    defaultProjectId: process.env.FLOW_PROJECT_ID || merged.defaultProjectId || "",
+    dryRun: process.env.FLOW_BRIDGE_DRYRUN !== undefined ? DRY_RUN() : Boolean(merged.dryRun),
+  };
+}
+
+export async function saveFlowConfig(patch = {}) {
+  const current = await getFlowConfig();
+  const next = {
+    activeProfile: patch.activeProfile !== undefined ? String(patch.activeProfile).trim() : current.activeProfile,
+    rotationStrategy:
+      patch.rotationStrategy && ["active_only", "fallback", "round_robin"].includes(patch.rotationStrategy)
+        ? patch.rotationStrategy
+        : current.rotationStrategy,
+    dailyBudgetCredits:
+      patch.dailyBudgetCredits !== undefined
+        ? Math.max(0, Number(patch.dailyBudgetCredits) || 0)
+        : current.dailyBudgetCredits,
+    hostResolution:
+      patch.hostResolution && ["360p", "720p"].includes(patch.hostResolution)
+        ? patch.hostResolution
+        : current.hostResolution,
+    headless: patch.headless !== undefined ? Boolean(patch.headless) : current.headless,
+    channel:
+      patch.channel && ["chrome", "auto", "internal"].includes(patch.channel) ? patch.channel : current.channel,
+    renderTimeoutMinutes:
+      patch.renderTimeoutMinutes !== undefined
+        ? Math.min(60, Math.max(1, Number(patch.renderTimeoutMinutes) || 15))
+        : current.renderTimeoutMinutes,
+    composerTimeoutMinutes:
+      patch.composerTimeoutMinutes !== undefined
+        ? Math.min(60, Math.max(1, Number(patch.composerTimeoutMinutes) || 20))
+        : current.composerTimeoutMinutes,
+    creditTimeoutMinutes:
+      patch.creditTimeoutMinutes !== undefined
+        ? Math.min(15, Math.max(1, Number(patch.creditTimeoutMinutes) || 3))
+        : current.creditTimeoutMinutes,
+    defaultProjectId:
+      patch.defaultProjectId !== undefined ? String(patch.defaultProjectId).trim() : current.defaultProjectId,
+    dryRun: patch.dryRun !== undefined ? Boolean(patch.dryRun) : current.dryRun,
+  };
+  await updateSettings({ flowConfig: next });
+  return getFlowConfig();
+}
 
 // The agent-only flow.google.com composer has no resolution row, so Flow renders
 // its own default (720p for omni-flash) no matter what was asked. Prices are
@@ -96,9 +182,9 @@ export function validateFlowRequest(body = {}) {
 }
 
 /** Refuse a job the account cannot afford — Flow would fail mid-render otherwise. */
-export async function assertAffordable(creditCost) {
-  if (DRY_RUN() || creditCost === 0) return;
-  const snapshot = await getLatestFlowCreditSnapshot();
+export async function assertAffordable(creditCost, profile = null, isDryRun = false) {
+  if (DRY_RUN() || isDryRun || creditCost === 0) return;
+  const snapshot = await getLatestFlowCreditSnapshot(profile);
   if (!snapshot) {
     throw new FlowRequestError(
       "Balance unknown: refresh Flow credits before spending. Submit is blocked because a job can cost more than the account holds.",
@@ -106,7 +192,7 @@ export async function assertAffordable(creditCost) {
     );
   }
   if (snapshot.balance < creditCost) {
-    throw new FlowRequestError(`Insufficient Flow credits: need ${creditCost}, last known balance ${snapshot.balance}`, 402);
+    throw new FlowRequestError(`Insufficient Flow credits: need ${creditCost}, last known balance ${snapshot.balance}${profile ? ` (${profile})` : ""}`, 402);
   }
 }
 
@@ -124,24 +210,77 @@ function localDayStart() {
  * loop or a runaway client can burn a whole account in one afternoon; this
  * refuses the job before submit instead. Off by default (0).
  */
-export async function assertWithinDailyBudget(creditCost) {
-  const cap = dailyBudget();
-  if (DRY_RUN() || !cap || creditCost === 0) return { cap: 0, spent: 0 };
-  const { credits } = await sumFlowCreditsSince(localDayStart());
+export async function assertWithinDailyBudget(creditCost, { capOverride = null, isDryRun = false, profile = "" } = {}) {
+  const cap = capOverride !== null ? Number(capOverride) || 0 : dailyBudget();
+  if (DRY_RUN() || isDryRun || !cap || creditCost === 0) return { cap: 0, spent: 0 };
+  const { credits } = await sumFlowCreditsSince(localDayStart(), profile);
   if (credits + creditCost > cap) {
     throw new FlowRequestError(
-      `Daily Flow budget reached: ${credits} of ${cap} credits already spent today, this clip needs ${creditCost}. Raise FLOW_DAILY_BUDGET_CREDITS to allow it.`,
+      `Daily Flow budget reached: ${credits} of ${cap} credits already spent today, this clip needs ${creditCost}. Raise FLOW_DAILY_BUDGET_CREDITS or Daily Budget in Flow Config to allow it.`,
       429
     );
   }
   return { cap, spent: credits };
 }
 
+/** Resolve which profile should run the next job based on config and rotation strategy. */
+export async function selectProfileForJob(requestedProfile = "", creditCost = 0) {
+  if (requestedProfile) return String(requestedProfile).trim();
+  const cfg = await getFlowConfig();
+  if (cfg.rotationStrategy === "active_only" || !cfg.rotationStrategy) {
+    return cfg.activeProfile || "";
+  }
+  try {
+    const { listFlowProfiles } = await import("./driver.js");
+    const profiles = (await listFlowProfiles()).filter((p) => p.cookies_present !== false);
+    if (!profiles.length) return cfg.activeProfile || "";
+
+    if (cfg.rotationStrategy === "round_robin") {
+      const idx = roundRobinIndex % profiles.length;
+      roundRobinIndex += 1;
+      return profiles[idx].name || cfg.activeProfile || "";
+    }
+
+    if (cfg.rotationStrategy === "fallback") {
+      // Order: activeProfile first (or default profile), then others
+      const ordered = [
+        ...profiles.filter((p) => (cfg.activeProfile ? p.name === cfg.activeProfile : p.is_default)),
+        ...profiles.filter((p) => !(cfg.activeProfile ? p.name === cfg.activeProfile : p.is_default)),
+      ];
+      for (const p of ordered) {
+        const snap = await getLatestFlowCreditSnapshot(p.name);
+        if (!snap || snap.balance >= creditCost) {
+          return p.name;
+        }
+      }
+      return ordered[0]?.name || cfg.activeProfile || "";
+    }
+  } catch {
+    /* fallback to activeProfile */
+  }
+  return cfg.activeProfile || "";
+}
+
 /** Balance, today's spend and the cap, for the dashboard header. */
-export async function flowBudgetState() {
-  const snap = await getLatestFlowCreditSnapshot();
-  const today = await sumFlowCreditsSince(localDayStart());
-  return { balance: snap?.balance ?? null, balanceAt: snap?.createdAt ?? null, spentToday: today.credits, jobsToday: today.jobs, dailyCap: dailyBudget() };
+export async function flowBudgetState(profile = null) {
+  const cfg = await getFlowConfig();
+  const targetProfile = profile !== null ? profile : cfg.activeProfile || null;
+  const [snap, today, stats] = await Promise.all([
+    getLatestFlowCreditSnapshot(targetProfile),
+    sumFlowCreditsSince(localDayStart()),
+    getFlowStatsSummary(),
+  ]);
+  const cap = cfg.dailyBudgetCredits || dailyBudget();
+  return {
+    profile: targetProfile || snap?.profile || null,
+    balance: snap?.balance ?? null,
+    balanceAt: snap?.createdAt ?? null,
+    spentToday: today.credits,
+    jobsToday: today.jobs,
+    dailyCap: cap,
+    stats,
+    config: cfg,
+  };
 }
 
 export async function enqueueFlowJob(input = {}) {
@@ -149,10 +288,23 @@ export async function enqueueFlowJob(input = {}) {
   if (!nextInput.imagePath && nextInput.image) {
     nextInput.imagePath = await resolveFlowImageInput(nextInput.image);
   }
+  const cfg = await getFlowConfig();
+  const isDry = DRY_RUN() || Boolean(cfg.dryRun);
   const req = validateFlowRequest(nextInput);
-  await assertAffordable(req.creditCost);
-  await assertWithinDailyBudget(req.creditCost);
-  const job = await createFlowJob({ ...req, projectId: nextInput.projectId || null, dryRun: DRY_RUN() });
+  const profile = isDry
+    ? nextInput.profile || cfg.activeProfile || null
+    : (await selectProfileForJob(nextInput.profile || "", req.creditCost)) || null;
+  await assertAffordable(req.creditCost, profile, isDry);
+  await assertWithinDailyBudget(req.creditCost, {
+    capOverride: cfg.dailyBudgetCredits,
+    isDryRun: isDry,
+  });
+  const job = await createFlowJob({
+    ...req,
+    profile,
+    projectId: nextInput.projectId || cfg.defaultProjectId || null,
+    dryRun: isDry,
+  });
   pump();
   return job;
 }
@@ -162,10 +314,12 @@ export async function enqueueFlowJob(input = {}) {
  * gate reads only what is stored here, so an unknown balance blocks submit
  * instead of risking a render the account cannot pay for.
  */
-export async function refreshFlowCredits() {
+export async function refreshFlowCredits(profile = null) {
+  const cfg = await getFlowConfig();
+  const targetProfile = profile || cfg.activeProfile || null;
   const { readFlowCredits } = await import("./driver.js");
-  const balance = await readFlowCredits();
-  return addFlowCreditSnapshot({ balance, source: "driver" });
+  const balance = await readFlowCredits(targetProfile);
+  return addFlowCreditSnapshot({ balance, profile: targetProfile, source: "driver" });
 }
 
 /**
@@ -213,7 +367,10 @@ async function runJob(job) {
   }
 
   try {
+    const cfg = await getFlowConfig();
     const result = await driver.renderFlowJob(running, {
+      profile: running.profile || cfg.activeProfile || null,
+      timeoutMs: (cfg.renderTimeoutMinutes || 15) * 60 * 1000,
       onStep: (step) => {
         updateFlowJob(job.id, { step: String(step).slice(0, 200) }).catch(() => {});
       },
@@ -240,7 +397,7 @@ async function runJob(job) {
     // and the next affordability check would approve a clip the account cannot pay.
     try {
       await new Promise((resolve) => setTimeout(resolve, 15000));
-      await refreshFlowCredits();
+      await refreshFlowCredits(running.profile || null);
     } catch (error) {
       console.error("[FLOW] credit refresh after job failed:", error?.message || error);
     }
@@ -400,6 +557,7 @@ export async function generateFlowImage(body = {}) {
   }
 
   return runExclusive(async () => {
+    const cfg = await getFlowConfig();
     const { renderFlowImage } = await import("./driver.js");
     const result = await renderFlowImage({
       id,
@@ -407,7 +565,8 @@ export async function generateFlowImage(body = {}) {
       model,
       aspect,
       imagePath,
-      projectId: body.projectId || null,
+      projectId: body.projectId || cfg.defaultProjectId || null,
+      profile: body.profile || cfg.activeProfile || null,
     });
 
     const [{ readFileSync }, { writeImageAssetFile }, { addFlowImage }] = await Promise.all([
@@ -449,6 +608,7 @@ export function flowJobToResponse(job) {
   return {
     request_id: job.id,
     id: job.id,
+    profile: job.profile || undefined,
     status,
     model: job.model,
     mode: job.mode,
@@ -488,7 +648,26 @@ export function flowPriceTable() {
       ),
     };
   });
-  return { hostResolution: host, models };
+  const imageModels = Object.entries(FLOW_IMAGE_MODELS).map(([id, spec]) => ({
+    id,
+    name: spec.name,
+    aspects: spec.aspects,
+    maxRefs: spec.maxRefs,
+    credits: 0,
+  }));
+  const limits = {
+    maxPromptChars: 4000,
+    maxConcurrentPerAccount: 1,
+    maxImageUploadMb: 10,
+    staleJobTimeoutMin: 45,
+    creditSettlementDelaySec: 15,
+    supportedModes: ["t2v", "i2v", "t2i", "i2i"],
+    tiers: [
+      { tier: "Google AI Pro", monthlyCredits: 1000, note: "Termasuk akses Veo 3.1 Lite/Fast & Omni Flash" },
+      { tier: "Google AI Ultra", monthlyCredits: 12500, note: "Termasuk akses Veo 3.1 Quality & prioritas penuh" },
+    ],
+  };
+  return { hostResolution: host, models, imageModels, limits };
 }
 
 export async function getFlowJobResponse(id) {

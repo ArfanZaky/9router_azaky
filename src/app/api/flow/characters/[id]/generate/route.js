@@ -4,6 +4,7 @@ import { handleImageGeneration } from "@/sse/handlers/imageGeneration.js";
 import { getApiKeys } from "@/lib/localDb";
 import { deleteImageFile, writeImageAssetFile, writeImageFromBase64 } from "@/lib/media/imageStore.js";
 import { CHARACTER_VIEWS, buildViewPrompt } from "@/lib/flow/characterPrompt.js";
+import { applyAntislopImagePrompt } from "@/lib/videoPrompt/antislop.js";
 import { getFlowCharacter, updateFlowCharacter } from "@/lib/db/repos/flowCharactersRepo.js";
 import { addFlowImage, deleteFlowImage, listFlowCharacterImages } from "@/lib/db/repos/flowImagesRepo.js";
 
@@ -75,7 +76,7 @@ export async function POST(request, { params }) {
   const errors = [];
   for (const view of views) {
     try {
-      const prompt = buildViewPrompt(character, view);
+      const prompt = applyAntislopImagePrompt(buildViewPrompt(character, view));
       const file = await generateImage({ model, prompt });
       await addFlowImage({
         name: `${character.name} (${view})`,

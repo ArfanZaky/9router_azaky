@@ -1,101 +1,102 @@
 "use client";
 
+// Design Read (antislop R-31, R-37, Part 3):
+// Reading this as: multi-stage video storyboard and render workspace for technical operators,
+// in 9Router's quiet control-panel language (DESIGN.md), dial ENERGY 1 / RHYTHM 2 / MOTION 1.
+// Key decisions:
+// - Palette: 9Router neutral surface tokens (bg, surface, surface-2, border) + single coral accent (primary).
+// - Surfaces: flat border- separated panels (rounded-xl, border-border), no decorative gradients or floating shadows.
+// - Typography: system sans for controls and prose, font-mono strictly for prompt strings, timecodes, and model IDs.
+// - Icons: Material Symbols matched to concrete media objects (movie_edit, videocam, image, person, merge).
+
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Button, ModelSelectModal, Modal, Badge } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import {
+  ANTISLOP_CHARACTER_EXTRACT_DIRECTIVE,
+  DEFAULT_NEGATIVE_PROMPT,
+  sanitizeAntislopText,
+} from "@/lib/videoPrompt/antislop.js";
 
 const STYLES = [
-  { id: "cinematic", label: "Cinematic 35mm (Arri Alexa, natural film grain, anamorphic flare)", tag: "35mm Film" },
-  { id: "photo", label: "Photorealistic 8K Documentary (ultra detailed, natural lighting)", tag: "8K Photo" },
-  { id: "cyberpunk", label: "Cyberpunk Neon & Wet Reflections (rain, holograms, high contrast)", tag: "Cyberpunk" },
-  { id: "anime", label: "Anime / Makoto Shinkai Style (vibrant sky, emotional lighting)", tag: "Anime" },
-  { id: "gothic", label: "Dark Moody Gothic Fantasy (shadows, atmospheric haze, candlelight)", tag: "Gothic" },
-  { id: "pixar", label: "3D Animation / Pixar Character Style (stylized shaders, subsurface scattering)", tag: "3D Pixar" },
-  { id: "vintage", label: "Vintage 1970s Retro Film (Kodachrome, warm grain, lens bloom)", tag: "1970s Retro" },
-  { id: "korean_drama", label: "K-Drama / Short Drama HD (soft glamour lighting, shallow depth of field)", tag: "K-Drama" },
-  { id: "surreal", label: "Surreal Dreamlike Fantasy (volumetric glow, floating particles)", tag: "Surreal" },
+  { id: "cinematic", label: "35mm Film (Arri Alexa, natural grain, practical lighting)", tag: "35mm Film" },
+  { id: "documentary", label: "Documentary Realism (handheld 24mm, available natural light)", tag: "Documentary" },
+  { id: "drama", label: "Studio Drama (85mm portrait lens, shallow depth of field, soft key light)", tag: "Studio Drama" },
+  { id: "noir", label: "Low-Key Noir (hard tungsten key light, deep shadows, 50mm prime)", tag: "Low-Key Noir" },
+  { id: "anime", label: "2D Cel Animation (hand-painted background, directional daylight)", tag: "2D Animation" },
+  { id: "stylized_3d", label: "3D Stylized Feature (matte shaders, studio three-point lighting)", tag: "3D Stylized" },
+  { id: "vintage", label: "1970s Kodachrome (warm film stock, soft halation, 35mm prime)", tag: "1970s Film" },
+  { id: "architectural", label: "Architectural Wide (24mm rectilinear lens, diffused overcast daylight)", tag: "Wide Angle" },
 ];
 
 const TARGET_ENGINES = [
-  { name: "General AI Video (Runway Gen-3 / Sora / Kling / Luma)", short: "General Video", badge: "Universal" },
+  { name: "General Video (Runway / Sora / Kling / Luma)", short: "General Video", badge: "Universal" },
   { name: "Google Flow (Veo 3.1 / Omni Flash)", short: "Google Flow", badge: "Veo 3.1" },
-  { name: "Runway Gen-3 Alpha", short: "Runway Gen-3", badge: "Motion Brush" },
-  { name: "Kling AI (v1.5 / High Quality)", short: "Kling AI 1.5", badge: "Kinetic" },
-  { name: "Luma Dream Machine", short: "Luma Dream", badge: "Smooth Cam" },
-  { name: "OpenAI Sora", short: "OpenAI Sora", badge: "High Res" },
-  { name: "Hailuo Minimax Video-01", short: "Hailuo Minimax", badge: "Cinematic" },
-  { name: "xAI Grok Imagine Video", short: "Grok Imagine", badge: "Fast Gen" },
-  { name: "Volcengine Seedance 2.0", short: "Volcengine", badge: "Action" },
-  { name: "Pika 2.0", short: "Pika 2.0", badge: "Effects" },
+  { name: "Runway Gen-3 Alpha", short: "Runway Gen-3", badge: "Gen-3" },
+  { name: "Kling 1.5", short: "Kling 1.5", badge: "Kling" },
+  { name: "Luma Dream Machine", short: "Luma Dream", badge: "Luma" },
+  { name: "OpenAI Sora", short: "OpenAI Sora", badge: "Sora" },
+  { name: "Hailuo Minimax Video-01", short: "Hailuo Minimax", badge: "Minimax" },
+  { name: "xAI Grok Imagine Video", short: "Grok Imagine", badge: "Grok" },
+  { name: "Volcengine Seedance 2.0", short: "Volcengine", badge: "Seedance" },
+  { name: "Pika 2.0", short: "Pika 2.0", badge: "Pika" },
 ];
 
 const ASPECT_RATIOS = [
   { id: "16:9", label: "16:9 Landscape", desc: "YouTube / Widescreen", ratioClass: "aspect-video" },
   { id: "9:16", label: "9:16 Vertical", desc: "TikTok / Shorts / Reels", ratioClass: "aspect-[9/16]" },
-  { id: "1:1", label: "1:1 Square", desc: "Instagram / Square", ratioClass: "aspect-square" },
-  { id: "2.39:1", label: "2.39:1 Cinema", desc: "Anamorphic Scope", ratioClass: "aspect-[2.39/1]" },
+  { id: "1:1", label: "1:1 Square", desc: "Feed / Square", ratioClass: "aspect-square" },
+  { id: "2.39:1", label: "2.39:1 Scope", desc: "Anamorphic Widescreen", ratioClass: "aspect-[2.39/1]" },
 ];
 
 const DIRECTOR_PERSONAS = [
-  { id: "huobao_drama", label: "Viral Drama Hook", desc: "Fast pacing, dynamic cuts, high emotional tension" },
-  { id: "cinematic_slowburn", label: "Cinematic Slow Burn", desc: "Deliberate movement, rich atmosphere, subtle acting" },
-  { id: "action_packed", label: "High-Octane Action", desc: "Tracking dolly, kinetic momentum, high impact" },
-  { id: "documentary", label: "Documentary Realism", desc: "Observational lens, natural lighting, lifelike grain" },
+  { id: "huobao_drama", label: "Tight Drama Cut", desc: "Immediate conflict in shot 1, close reaction framing, direct dialogue" },
+  { id: "cinematic_slowburn", label: "Measured Pacing", desc: "Unhurried camera movement, practical lighting, held reaction shots" },
+  { id: "action_packed", label: "Physical Action", desc: "Clear spatial geography, tracking camera movement, impact sound" },
+  { id: "documentary", label: "Observational", desc: "Handheld or tripod framing, available light, ambient room tone" },
 ];
 
+// Each template uses an icon tied to its subject matter (R-04):
+// theaters = stage/boardroom drama, videocam = documentary field shoot,
+// directions_car = night transit, menu_book = archival investigation, photo_camera = product tabletop.
 const INSPIRATION_TEMPLATES = [
   {
-    title: "Cyberpunk Noir",
-    icon: "bolt",
-    prompt: "In the rain-soaked alleys of Neo Shinjuku, a weary cybernetic investigator tracks a stolen memory drive through neon-lit noodle bars, holographic billboards, and shadowy augmented reality black markets.",
-    style: "Cyberpunk Neon & Wet Reflections (rain, holograms, high contrast)",
+    title: "Boardroom Audit",
+    icon: "theaters",
+    prompt: "During a late-evening audit in a glass-walled conference room, a forensic accountant places a stamped transfer ledger on the table in front of the CFO, while rain streaks the window behind them.",
+    style: "Studio Drama (85mm portrait lens, shallow depth of field, soft key light)",
   },
   {
-    title: "Anime Fantasy",
-    icon: "auto_awesome",
-    prompt: "A young sorceress stands atop floating ancient ruins at sunset. Luminous spirit butterflies circle her wooden staff as the clouds part to reveal a gargantuan celestial dragon gliding across the twilight sky.",
-    style: "Anime / Makoto Shinkai Style (vibrant sky, emotional lighting)",
+    title: "Harbor Documentary",
+    icon: "videocam",
+    prompt: "At dawn on a wet concrete pier, a marine biologist in a yellow oilskin jacket hauls up a brass water-sampling cylinder from the harbor while fishing trawlers idle in the background fog.",
+    style: "Documentary Realism (handheld 24mm, available natural light)",
   },
   {
-    title: "Viral Short Drama",
-    icon: "trending_up",
-    prompt: "A tense corporate boardroom confrontation where an unassuming junior analyst reveals an encrypted ledger that exposes the CEO's underground syndicate, triggering instant panic and private security intervention.",
-    style: "K-Drama / Short Drama HD (soft glamour lighting, shallow depth of field)",
+    title: "Night Diner Transit",
+    icon: "directions_car",
+    prompt: "A long-haul truck driver sits at a formica counter in a roadside diner at 2 AM, stirring black coffee under warm tungsten pendant lamps as headlights sweep across the front window.",
+    style: "35mm Film (Arri Alexa, natural grain, practical lighting)",
   },
   {
-    title: "Cinematic Sci-Fi",
-    icon: "rocket_launch",
-    prompt: "A solo astronaut on the rust-colored plains of Mars discovers a massive obsidian monolith humming with low-frequency resonance. As dust storms whip past the helmet visor, ancient geometric glyphs ignite along the monolith face.",
-    style: "Cinematic 35mm (Arri Alexa, natural film grain, anamorphic flare)",
+    title: "Archive Investigation",
+    icon: "menu_book",
+    prompt: "In a basement municipal archive lined with steel shelving, a journalist photographs a 1974 zoning map under a desk lamp while a wall clock ticks in the quiet room.",
+    style: "Low-Key Noir (hard tungsten key light, deep shadows, 50mm prime)",
   },
   {
-    title: "Dark Gothic Mystery",
-    icon: "candle",
-    prompt: "Inside an abandoned Victorian manor during a midnight thunderstorm, a candle-bearing scholar enters a hidden library behind an ancient grandfather clock, illuminating floating dust motes and velvet-bound grimoires.",
-    style: "Dark Moody Gothic Fantasy (shadows, atmospheric haze, candlelight)",
+    title: "Watchmaker Bench",
+    icon: "photo_camera",
+    prompt: "Close tabletop sequence of a horologist fitting a brass balance wheel into a mechanical wristwatch movement using fine tweezers under a directional workbench lamp.",
+    style: "1970s Kodachrome (warm film stock, soft halation, 35mm prime)",
   },
 ];
 
 const VIDEO_DURATIONS = [4, 5, 6, 8, 10];
 const VIDEO_RESOLUTIONS = ["auto", "720p", "1080p"];
-
-const AVATAR_GRADIENTS = [
-  "from-amber-500 to-rose-500",
-  "from-blue-500 to-indigo-600",
-  "from-emerald-500 to-teal-600",
-  "from-purple-500 to-pink-600",
-  "from-orange-500 to-red-600",
-  "from-cyan-500 to-blue-600",
-];
-
-function getCharacterGradient(name = "") {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const idx = Math.abs(hash) % AVATAR_GRADIENTS.length;
-  return AVATAR_GRADIENTS[idx];
-}
+const CHARACTER_VIEWS = ["front", "back", "left", "right"];
+const CHARACTER_VIEW_LABEL = { front: "Depan", back: "Belakang", left: "Kiri", right: "Kanan" };
+const CHARACTER_STATUS_VARIANT = { draft: "default", generating: "info", ready: "success", failed: "error" };
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -136,12 +137,11 @@ export default function VideoPromptPageClient() {
   const [showImageModal, setShowImageModal] = useState(false);
   const [showVideoModal, setShowVideoModal] = useState(false);
 
-  // Studio Settings & Presets
   const [videoDuration, setVideoDuration] = useState(5);
   const [videoAspect, setVideoAspect] = useState("16:9");
   const [videoResolution, setVideoResolution] = useState("auto");
   const [directorPersona, setDirectorPersona] = useState("huobao_drama");
-  const [negativePrompt, setNegativePrompt] = useState("blurry, low quality, deformed, extra limbs, watermark, text overlay");
+  const [negativePrompt, setNegativePrompt] = useState(DEFAULT_NEGATIVE_PROMPT);
 
   // Storyboard Generation inputs
   const [prompt, setPrompt] = useState("");
@@ -163,6 +163,25 @@ export default function VideoPromptPageClient() {
   const [newCharRole, setNewCharRole] = useState("Lead");
   const [newCharDesc, setNewCharDesc] = useState("");
   const [extractingChars, setExtractingChars] = useState(false);
+
+  // Flow Characters (CRUD + 4-angle reference sheet)
+  const [flowCharacters, setFlowCharacters] = useState([]);
+  const [flowCharForm, setFlowCharForm] = useState({ name: "", description: "", style: "", imageModel: "" });
+  const [editingFlowCharId, setEditingFlowCharId] = useState(null);
+  const [editingFlowCharDraft, setEditingFlowCharDraft] = useState({ name: "", description: "", style: "", imageModel: "" });
+  const [flowCharCreating, setFlowCharCreating] = useState(false);
+  const [flowCharSavingId, setFlowCharSavingId] = useState("");
+  const [flowCharBusyId, setFlowCharBusyId] = useState("");
+  const [flowCharError, setFlowCharError] = useState("");
+  const [showFlowCharModelModal, setShowFlowCharModelModal] = useState(false);
+  const [selectedRefCharLabel, setSelectedRefCharLabel] = useState("");
+
+  // Render / Combine Videos state
+  const [renderSelectedIndices, setRenderSelectedIndices] = useState([]);
+  const [renderingCombined, setRenderingCombined] = useState(false);
+  const [combinedVideoUrl, setCombinedVideoUrl] = useState("");
+  const [combinedVideoMeta, setCombinedVideoMeta] = useState(null);
+  const [renderError, setRenderError] = useState("");
 
   // Storyboard Output
   const [generating, setGenerating] = useState(false);
@@ -198,24 +217,39 @@ export default function VideoPromptPageClient() {
 
   const { copied, copy } = useCopyToClipboard(2000);
 
+  const loadFlowCharacters = useCallback(async () => {
+    try {
+      const res = await fetch("/api/flow/characters");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setFlowCharacters(data.characters || []);
+      }
+    } catch (e) {
+      console.error("Failed to load flow characters", e);
+    }
+  }, []);
+
   // Load initial environment data
   useEffect(() => {
     (async () => {
       try {
-        const [keysRes, providersRes, aliasesRes, projectsRes] = await Promise.all([
+        const [keysRes, providersRes, aliasesRes, projectsRes, flowCharsRes] = await Promise.all([
           fetch("/api/keys"),
           fetch("/api/providers"),
           fetch("/api/models/alias"),
           fetch("/api/video-prompt/projects"),
+          fetch("/api/flow/characters"),
         ]);
         const keysData = await keysRes.json().catch(() => ({}));
         const providersData = await providersRes.json().catch(() => ({}));
         const aliasesData = await aliasesRes.json().catch(() => ({}));
         const projectsData = await projectsRes.json().catch(() => ({}));
+        const flowCharsData = await flowCharsRes.json().catch(() => ({}));
 
         setApiKey((keysData.keys || []).find((k) => k.isActive !== false)?.key || "");
         setActiveProviders(providersData.connections || []);
         setModelAliases(aliasesData.aliases || {});
+        setFlowCharacters(flowCharsData.characters || []);
         const projs = projectsData.projects || [];
         setProjects(projs);
 
@@ -244,7 +278,15 @@ export default function VideoPromptPageClient() {
     })();
   }, []);
 
-  // Keyboard shortcut listener for Director Studio scene navigation
+  useEffect(() => {
+    if (!lightboxImage) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") setLightboxImage(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxImage]);
+
   useEffect(() => {
     if (activeTab !== "studio" || scenes.length === 0) return;
     const handleKeyDown = (e) => {
@@ -303,8 +345,8 @@ export default function VideoPromptPageClient() {
   const applyRefUrl = () => {
     const url = refUrlDraft.trim();
     if (!url) return;
-    if (!/^https?:\/\//i.test(url) && !url.startsWith("data:image/")) {
-      setError("Reference URL must start with http://, https://, or data:image/");
+    if (!/^https?:\/\//i.test(url) && !url.startsWith("data:image/") && !url.startsWith("/api/flow/images/")) {
+      setError("Reference URL must start with http://, https://, /api/flow/images/, or data:image/");
       return;
     }
     setRefImage(url);
@@ -395,7 +437,179 @@ export default function VideoPromptPageClient() {
     setCharacters(characters.filter((c) => c.id !== id));
   };
 
-  // Auto-extract characters from script prompt using active LLM
+  // Flow Character CRUD + 4-angle generation
+  const handleCreateFlowCharacter = async (e) => {
+    if (e?.preventDefault) e.preventDefault();
+    if (!flowCharForm.name.trim()) return;
+    setFlowCharError("");
+    setFlowCharCreating(true);
+    try {
+      const res = await fetch("/api/flow/characters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: flowCharForm.name.trim(),
+          description: flowCharForm.description.trim(),
+          style: flowCharForm.style.trim(),
+          imageModel: flowCharForm.imageModel || imageModel || "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Gagal membuat karakter");
+      setFlowCharForm({ name: "", description: "", style: "", imageModel: flowCharForm.imageModel });
+      await loadFlowCharacters();
+    } catch (err) {
+      setFlowCharError(String(err.message || err));
+    } finally {
+      setFlowCharCreating(false);
+    }
+  };
+
+  const handleStartEditFlowCharacter = (character) => {
+    setEditingFlowCharId(character.id);
+    setEditingFlowCharDraft({
+      name: character.name || "",
+      description: character.description || "",
+      style: character.style || "",
+      imageModel: character.imageModel || imageModel || "",
+    });
+  };
+
+  const handleSaveEditFlowCharacter = async (id) => {
+    if (!editingFlowCharDraft.name.trim()) return;
+    setFlowCharError("");
+    setFlowCharSavingId(id);
+    try {
+      const res = await fetch(`/api/flow/characters/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editingFlowCharDraft.name.trim(),
+          description: editingFlowCharDraft.description.trim(),
+          style: editingFlowCharDraft.style.trim(),
+          imageModel: editingFlowCharDraft.imageModel || imageModel || "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Gagal memperbarui karakter");
+      setEditingFlowCharId(null);
+      await loadFlowCharacters();
+    } catch (err) {
+      setFlowCharError(String(err.message || err));
+    } finally {
+      setFlowCharSavingId("");
+    }
+  };
+
+  const handleDeleteFlowCharacter = async (character) => {
+    if (!window.confirm(`Hapus karakter "${character.name}" beserta ${character.images?.length || 0} gambarnya?`)) return;
+    setFlowCharError("");
+    try {
+      const res = await fetch(`/api/flow/characters/${character.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Gagal menghapus karakter");
+      }
+      if (editingFlowCharId === character.id) setEditingFlowCharId(null);
+      await loadFlowCharacters();
+    } catch (err) {
+      setFlowCharError(String(err.message || err));
+    }
+  };
+
+  const handleGenerateFlowCharacterViews = async (character, views = CHARACTER_VIEWS) => {
+    const chosenModel = flowCharForm.imageModel || character.imageModel || imageModel;
+    if (!chosenModel) {
+      setFlowCharError("Pilih model gambar terlebih dahulu sebelum generate sudut karakter");
+      return;
+    }
+    setFlowCharError("");
+    setFlowCharBusyId(character.id);
+    try {
+      const res = await fetch(`/api/flow/characters/${character.id}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ views, model: chosenModel }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Generate karakter gagal");
+      if (body.errors?.length) setFlowCharError(`${character.name}: ${body.errors.join(" | ")}`);
+      await loadFlowCharacters();
+    } catch (err) {
+      setFlowCharError(String(err.message || err));
+    } finally {
+      setFlowCharBusyId("");
+    }
+  };
+
+  const handleSelectFlowCharacterRef = (character, image = null) => {
+    const targetImg = image || (character.images || [])[0] || null;
+    if (targetImg) {
+      const url = `/api/flow/images/${targetImg.id}`;
+      setRefImage(url);
+      setRefUrlDraft("");
+      const viewLabel = targetImg.view ? ` (${CHARACTER_VIEW_LABEL[targetImg.view] || targetImg.view})` : "";
+      setSelectedRefCharLabel(`${character.name}${viewLabel}`);
+    } else {
+      setSelectedRefCharLabel(character.name);
+    }
+    if (character.description) {
+      setCharacterDesc(
+        `${character.name}: ${character.description}${character.style ? ` (${character.style})` : ""}`
+      );
+    }
+    setError("");
+  };
+
+  // Auto-select ready video scenes when scenes update
+  useEffect(() => {
+    const readyIndices = scenes
+      .map((s, idx) => (s.videoUrl && !videoErrors[idx] ? idx : -1))
+      .filter((idx) => idx !== -1);
+    setRenderSelectedIndices(readyIndices);
+  }, [scenes, videoErrors]);
+
+  const handleToggleRenderScene = (idx) => {
+    setRenderSelectedIndices((prev) =>
+      prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx].sort((a, b) => a - b)
+    );
+  };
+
+  const handleCombineVideos = async () => {
+    const selectedClips = renderSelectedIndices
+      .map((idx) => scenes[idx])
+      .filter((s) => s && s.videoUrl);
+    if (selectedClips.length === 0) {
+      setRenderError("Pilih minimal 1 video shot yang sudah selesai dirender");
+      return;
+    }
+    setRenderingCombined(true);
+    setRenderError("");
+    try {
+      const res = await fetch("/api/video-prompt/render", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clips: selectedClips.map((s) => ({
+            sceneNumber: s.sceneNumber,
+            videoUrl: getPlayableVideoUrl(s.videoUrl),
+          })),
+          aspectRatio: videoAspect || aspectRatio,
+          resolution: videoResolution,
+          projectId: currentProjectId,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Gagal menggabungkan video");
+      setCombinedVideoUrl(data.videoUrl);
+      setCombinedVideoMeta({ id: data.id, clipCount: data.clipCount, size: data.size });
+    } catch (err) {
+      setRenderError(String(err.message || err));
+    } finally {
+      setRenderingCombined(false);
+    }
+  };
+
   const handleAutoExtractCharacters = async () => {
     if (!prompt.trim()) {
       setError("Please enter a story concept or script first before extracting characters");
@@ -409,11 +623,12 @@ export default function VideoPromptPageClient() {
     setExtractingChars(true);
     setError("");
     try {
-      const systemPrompt = `You are a character casting analyst. Extract the primary characters from the provided story concept.
-Return a valid JSON array of characters ONLY with keys: "name", "role" (Lead, Antagonist, Supporting, Mentor, Cameo), and "description" (physical appearance, age, distinctive features, wardrobe).
+      const systemPrompt = `You are a script breakdown assistant. Extract the primary characters from the provided story concept.
+${ANTISLOP_CHARACTER_EXTRACT_DIRECTIVE}
+Return a valid JSON array ONLY with keys: "name", "role" (Lead, Antagonist, Supporting, Mentor, Cameo), and "description" (age range, build, hair, wardrobe, props).
 Example format:
 [
-  {"name": "Jack Vance", "role": "Lead", "description": "35yo weary detective with worn leather trench coat, cybernetic glowing eye"}
+  {"name": "Rina Kartika", "role": "Lead", "description": "Late 20s forensic auditor, tied-back black hair, charcoal wool blazer, carrying a stamped ledger"}
 ]`;
 
       const payload = {
@@ -426,12 +641,12 @@ Example format:
         temperature: 0.3,
       };
 
+      const authHeaders = { "Content-Type": "application/json" };
+      if (apiKey) authHeaders.Authorization = `Bearer ${apiKey}`;
+
       const res = await fetch("/api/v1/chat/completions", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
+        headers: authHeaders,
         body: JSON.stringify(payload),
       });
 
@@ -452,9 +667,9 @@ Example format:
       if (Array.isArray(parsed) && parsed.length > 0) {
         const mapped = parsed.map((c, i) => ({
           id: `${Date.now()}_${i}`,
-          name: c.name || `Character ${i + 1}`,
-          role: c.role || "Lead",
-          description: c.description || "",
+          name: sanitizeAntislopText(c.name || "") || `Character ${i + 1}`,
+          role: sanitizeAntislopText(c.role || "") || "Lead",
+          description: sanitizeAntislopText(c.description || ""),
         }));
         setCharacters(mapped);
       }
@@ -532,6 +747,7 @@ Example format:
           characterDesc: combinedCharacterDesc,
           refImage: refImage || undefined,
           directorPersona,
+          negativePrompt,
         }),
       });
 
@@ -540,7 +756,7 @@ Example format:
         throw new Error(data.error || "Failed to generate video storyboard");
       }
 
-      setProjectTitle(data.projectTitle || "Generated Drama Storyboard");
+      setProjectTitle(data.projectTitle || "Untitled Storyboard");
       setCharacterConsistencyPrompt(data.characterConsistencyPrompt || "");
       const generatedScenes = (data.scenes || []).map((s, idx) => ({
         ...s,
@@ -597,16 +813,18 @@ Example format:
 
     try {
       const fullPrompt = `${targetScene.imagePrompt}. Consistent Style: ${characterConsistencyPrompt || style}`;
+      const reqBody = {
+        prompt: fullPrompt,
+        model: imageModel,
+        aspectRatio,
+        image: refImage || undefined,
+        negativePrompt,
+      };
+      reqBody["apiKey"] = apiKey;
       const res = await fetch("/api/video-prompt/generate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: fullPrompt,
-          model: imageModel,
-          aspectRatio,
-          image: refImage || undefined,
-          apiKey,
-        }),
+        body: JSON.stringify(reqBody),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -645,18 +863,20 @@ Example format:
     setError("");
 
     try {
+      const reqBody = {
+        model: videoModel,
+        prompt: targetScene.motionPrompt || targetScene.summary,
+        image: targetScene.imageUrl || undefined,
+        duration: videoDuration,
+        aspectRatio: videoAspect,
+        resolution: videoResolution,
+        negativePrompt,
+      };
+      reqBody["apiKey"] = apiKey;
       const res = await fetch("/api/video-prompt/generate-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: videoModel,
-          prompt: targetScene.motionPrompt || targetScene.summary,
-          image: targetScene.imageUrl || undefined,
-          duration: videoDuration,
-          aspectRatio: videoAspect,
-          resolution: videoResolution,
-          apiKey,
-        }),
+        body: JSON.stringify(reqBody),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -944,13 +1164,10 @@ Example format:
 
   return (
     <div className="flex flex-1 flex-col min-h-0 h-full w-full overflow-hidden bg-bg text-text-main">
-      {/* Top Studio Bar: Tier 1 = project info & quick actions, Tier 2 = production pipeline stages */}
-      <header className="shrink-0 z-20 border-b border-border bg-surface/95 backdrop-blur-md">
-        {/* Tier 1: Project Identity & Global Actions */}
+      <header className="shrink-0 z-20 border-b border-border bg-surface">
         <div className="flex items-center justify-between gap-2 sm:gap-3 px-3 sm:px-5 h-13 sm:h-14">
-          {/* Project identity */}
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-            <div className="size-8 sm:size-9 rounded-xl bg-primary/10 border border-primary/25 flex items-center justify-center text-primary shrink-0 shadow-xs">
+            <div className="size-8 sm:size-9 rounded-lg bg-primary/10 border border-primary/25 flex items-center justify-center text-primary shrink-0">
               <span className="material-symbols-outlined text-[18px] sm:text-[20px]" aria-hidden="true">movie_filter</span>
             </div>
             <div className="min-w-0 flex flex-col justify-center">
@@ -964,17 +1181,17 @@ Example format:
                     onChange={(e) => setProjectTitle(e.target.value)}
                     onBlur={() => setIsEditingTitle(false)}
                     onKeyDown={(e) => (e.key === "Enter" || e.key === "Escape") && setIsEditingTitle(false)}
-                    className="h-7 sm:h-8 w-36 sm:w-60 text-xs sm:text-sm font-semibold bg-surface-2 border border-primary rounded-md px-2 outline-none text-text-main"
+                    className="h-7 sm:h-8 w-36 sm:w-60 text-xs sm:text-sm font-semibold bg-surface-2 border border-primary rounded-md px-2 focus-visible:outline-2 focus-visible:outline-primary text-text-main"
                   />
                 ) : (
                   <button
                     type="button"
                     onClick={() => setIsEditingTitle(true)}
                     className="group flex items-center gap-1 min-h-[32px] max-w-[130px] sm:max-w-xs text-xs sm:text-sm font-semibold tracking-tight text-left rounded-md hover:text-primary focus-visible:outline-2 focus-visible:outline-primary transition-colors"
-                    title="Click to rename project"
+                    title="Rename project"
                   >
-                    <span className="truncate">{projectTitle || "Video Storyboard Studio"}</span>
-                    <span className="material-symbols-outlined text-[13px] sm:text-[14px] text-text-muted opacity-60 group-hover:opacity-100 shrink-0" aria-hidden="true">
+                    <span className="truncate">{projectTitle || "Untitled Storyboard"}</span>
+                    <span className="material-symbols-outlined text-[13px] sm:text-[14px] text-text-muted shrink-0" aria-hidden="true">
                       edit
                     </span>
                   </button>
@@ -1076,12 +1293,13 @@ Example format:
 
         {/* Tier 2: Production Pipeline Stage Track */}
         <div className="flex items-center justify-between gap-3 px-2 sm:px-5 h-12 border-t border-border/50 bg-surface-2/30">
-          <nav aria-label="Studio workflow" className="grid grid-cols-5 sm:flex sm:items-center gap-1 sm:gap-2 w-full sm:w-auto min-w-0">
+          <nav aria-label="Studio workflow" className="grid grid-cols-6 sm:flex sm:items-center gap-1 sm:gap-2 w-full sm:w-auto min-w-0">
             {[
               { id: "story", icon: "menu_book", label: "Story" },
-              { id: "characters", icon: "groups", label: "Cast", count: characters.length },
+              { id: "characters", icon: "person", label: "Character", count: flowCharacters.length + characters.length },
               { id: "storyboard", icon: "grid_view", label: "Shots", count: scenes.length },
               { id: "studio", icon: "videocam", label: "Director" },
+              { id: "render", icon: "movie_creation", label: "Render", count: videosReadyCount },
               { id: "settings", icon: "tune", label: "Settings" },
             ].map((t, i) => {
               const active = activeTab === t.id;
@@ -1115,7 +1333,7 @@ Example format:
                       </span>
                     )}
                   </button>
-                  {i < 4 && (
+                  {i < 5 && (
                     <span className="hidden sm:inline-flex items-center text-text-muted/30 select-none shrink-0" aria-hidden="true">
                       <span className="material-symbols-outlined text-[13px]">chevron_right</span>
                     </span>
@@ -1136,34 +1354,31 @@ Example format:
         </div>
       </header>
 
-      {/* Main Workspace Area */}
       <div className="flex flex-1 min-h-0 h-full overflow-hidden relative">
-        {/* TAB 1: SCRIPT & STORY INPUT */}
         {activeTab === "story" && (
           <div className="flex-1 flex overflow-y-auto custom-scrollbar p-4 sm:p-6 justify-center">
             <div className="max-w-4xl w-full space-y-5">
-              {/* Inspiration Template Chips */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-text-muted flex items-center gap-1.5 uppercase tracking-wider">
-                    <span className="material-symbols-outlined text-primary text-[15px]">lightbulb</span>
-                    Quick Starters & Inspiration
+                  <span className="text-xs font-semibold text-text-muted flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-primary text-[15px]">movie</span>
+                    Scene Starters
                   </span>
-                  <span className="text-[11px] text-text-muted">Click to populate concept</span>
+                  <span className="text-[11px] text-text-muted">Load sample production brief</span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2">
                   {INSPIRATION_TEMPLATES.map((tmpl) => (
                     <button
                       key={tmpl.title}
                       type="button"
                       onClick={() => handleApplyTemplate(tmpl)}
-                      className="p-2.5 rounded-xl border border-border bg-surface/60 hover:bg-surface hover:border-primary/50 text-left transition-all group flex flex-col justify-between"
+                      className="p-2.5 rounded-xl border border-border bg-surface hover:border-primary/50 text-left transition-colors group flex flex-col justify-between focus-visible:outline-2 focus-visible:outline-primary"
                     >
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-text-main group-hover:text-primary">
                         <span className="material-symbols-outlined text-[16px] text-primary">{tmpl.icon}</span>
                         <span className="truncate">{tmpl.title}</span>
                       </div>
-                      <p className="text-[10px] text-text-muted line-clamp-2 mt-1 leading-relaxed">
+                      <p className="text-[11px] text-text-muted line-clamp-2 mt-1 leading-relaxed">
                         {tmpl.prompt}
                       </p>
                     </button>
@@ -1171,24 +1386,24 @@ Example format:
                 </div>
               </div>
 
-              {/* Main Script Editor Card */}
-              <div className="p-5 rounded-2xl bg-surface border border-border shadow-sm space-y-4">
+              <div className="p-5 rounded-xl bg-surface border border-border space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-sm font-semibold flex items-center gap-2">
-                      <span className="material-symbols-outlined text-primary">auto_fix_high</span>
-                      Storyline & Drama Script
+                      <span className="material-symbols-outlined text-primary">movie_edit</span>
+                      Script & Scene Concept
                     </h2>
                     <p className="text-xs text-text-muted mt-0.5">
-                      Input your short story, drama screenplay, novel excerpt, or video concept
+                      Write the scene sequence, setting, and physical actions to break into shots
                     </p>
                   </div>
                   {prompt && (
                     <button
+                      type="button"
                       onClick={() => setPrompt("")}
-                      className="text-[11px] text-text-muted hover:text-destructive flex items-center gap-1"
+                      className="text-xs text-text-muted hover:text-destructive flex items-center gap-1 px-2 py-1 rounded-md focus-visible:outline-2 focus-visible:outline-primary"
                     >
-                      <span className="material-symbols-outlined text-[13px]">clear</span>
+                      <span className="material-symbols-outlined text-[14px]">clear</span>
                       Clear Text
                     </button>
                   )}
@@ -1197,29 +1412,28 @@ Example format:
                 <div className="space-y-1.5">
                   <textarea
                     rows={6}
+                    aria-label="Storyline and script concept"
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="Enter your storyline here... For example: A high-stakes corporate betrayal in Neo Tokyo where a rookie detective uncovers a conspiracy connecting the CEO with underground cybernetic syndicates. Scene 1 opens in the rain..."
-                    className="w-full text-sm bg-surface border border-border rounded-xl p-3.5 outline-none focus:border-primary transition-all resize-y placeholder:text-text-muted/60 leading-relaxed font-sans"
+                    placeholder="Write the scene sequence, setting, characters, and camera beats..."
+                    className="w-full text-sm bg-surface border border-border rounded-xl p-3.5 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary transition-colors resize-y placeholder:text-text-muted leading-relaxed font-sans"
                   />
-                  <div className="flex justify-between text-[11px] text-text-muted px-1">
-                    <span>Break into natural dramatic beats for best storyboard flow</span>
+                  <div className="flex justify-between text-xs text-text-muted px-1">
+                    <span>One paragraph or beat per shot works best</span>
                     <span>{prompt.length} characters</span>
                   </div>
                 </div>
 
-                {/* Director Configuration Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-border/70">
-                  {/* Style selector */}
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-text-muted flex items-center gap-1">
                       <span className="material-symbols-outlined text-[15px] text-primary">palette</span>
-                      Visual Style Preset
+                      Camera & Lighting Preset
                     </label>
                     <select
                       value={style}
                       onChange={(e) => setStyle(e.target.value)}
-                      className="w-full text-xs bg-surface border border-border rounded-xl px-3 py-2.5 outline-none focus:border-primary cursor-pointer text-text-main shadow-xs"
+                      className="w-full text-xs bg-surface border border-border rounded-xl px-3 py-2.5 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary cursor-pointer text-text-main"
                     >
                       {STYLES.map((s) => (
                         <option key={s.id} value={s.label}>
@@ -1229,7 +1443,6 @@ Example format:
                     </select>
                   </div>
 
-                  {/* Target Video Platform */}
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-text-muted flex items-center gap-1">
                       <span className="material-symbols-outlined text-[15px] text-primary">smart_display</span>
@@ -1238,7 +1451,7 @@ Example format:
                     <select
                       value={targetEngine}
                       onChange={(e) => setTargetEngine(e.target.value)}
-                      className="w-full text-xs bg-surface border border-border rounded-xl px-3 py-2.5 outline-none focus:border-primary cursor-pointer text-text-main shadow-xs"
+                      className="w-full text-xs bg-surface border border-border rounded-xl px-3 py-2.5 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary cursor-pointer text-text-main"
                     >
                       {TARGET_ENGINES.map((eng) => (
                         <option key={eng.name} value={eng.name}>
@@ -1334,22 +1547,146 @@ Example format:
                 </div>
 
                 {/* Reference Portrait / Visual anchor */}
-                <div className="space-y-2 pt-2 border-t border-border/70">
-                  <div className="flex items-center justify-between">
+                <div className="space-y-3 pt-2 border-t border-border/70">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-xs font-medium text-text-muted flex items-center gap-1">
                       <span className="material-symbols-outlined text-[15px] text-primary">face</span>
                       Reference Character / Keyframe Image (Optional)
                     </label>
-                    {refImage && (
+                    <div className="flex items-center gap-2">
+                      {selectedRefCharLabel && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20">
+                          Karakter: {selectedRefCharLabel}
+                        </span>
+                      )}
                       <button
-                        onClick={clearRefImage}
-                        className="text-[11px] text-destructive hover:underline flex items-center gap-1"
+                        type="button"
+                        onClick={() => setActiveTab("characters")}
+                        className="text-[11px] text-primary hover:underline flex items-center gap-1 font-medium"
                       >
-                        <span className="material-symbols-outlined text-[13px]">delete</span>
-                        Remove Image
+                        <span className="material-symbols-outlined text-[13px]">person_add</span>
+                        Kelola Character ({flowCharacters.length})
                       </button>
-                    )}
+                      {refImage && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            clearRefImage();
+                            setSelectedRefCharLabel("");
+                          }}
+                          className="text-[11px] text-destructive hover:underline flex items-center gap-1"
+                        >
+                          <span className="material-symbols-outlined text-[13px]">delete</span>
+                          Remove Image
+                        </button>
+                      )}
+                    </div>
                   </div>
+
+                  {/* Saved Flow Characters Picker */}
+                  {flowCharacters.length > 0 && (
+                    <div className="p-3 rounded-xl bg-surface-2/50 border border-border space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-text-main flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[14px] text-primary">badge</span>
+                          Pilih Karakter Tersimpan
+                        </span>
+                        <span className="text-[10px] text-text-muted">Klik sudut atau karakter untuk jadikan referensi</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-56 overflow-y-auto custom-scrollbar pr-1">
+                        {flowCharacters.map((fc) => {
+                          const imgs = fc.images || [];
+                          const firstImg = imgs[0];
+                          const isSelectedChar =
+                            selectedRefCharLabel.startsWith(fc.name) ||
+                            imgs.some((im) => refImage === `/api/flow/images/${im.id}`);
+                          return (
+                            <div
+                              key={fc.id}
+                              className={`p-2.5 rounded-xl border transition-all flex flex-col justify-between gap-2 ${
+                                isSelectedChar
+                                  ? "bg-primary/10 border-primary shadow-xs"
+                                  : "bg-surface border-border hover:border-primary/40"
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {firstImg ? (
+                                    <img
+                                      src={`/api/flow/images/${firstImg.id}`}
+                                      alt={fc.name}
+                                      className="h-10 w-10 rounded-lg object-cover border border-border shrink-0"
+                                    />
+                                  ) : (
+                                    <div className="h-10 w-10 rounded-lg bg-surface-2 border border-border text-text-main flex items-center justify-center font-bold text-xs shrink-0">
+                                      {fc.name[0]?.toUpperCase() || "C"}
+                                    </div>
+                                  )}
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-semibold text-text-main truncate">{fc.name}</p>
+                                    <p className="text-[10px] text-text-muted line-clamp-1">
+                                      {fc.description || fc.style || "Tanpa deskripsi"}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectFlowCharacterRef(fc, firstImg)}
+                                    className="px-2 py-1 rounded-md text-[10px] font-semibold bg-primary text-white hover:opacity-90"
+                                  >
+                                    Pilih
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleStartEditFlowCharacter(fc);
+                                      setActiveTab("characters");
+                                    }}
+                                    className="p-1 rounded text-text-muted hover:text-text-main"
+                                    title="Edit karakter"
+                                  >
+                                    <span className="material-symbols-outlined text-[14px]">edit</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteFlowCharacter(fc)}
+                                    className="p-1 rounded text-text-muted hover:text-destructive"
+                                    title="Hapus karakter"
+                                  >
+                                    <span className="material-symbols-outlined text-[14px]">delete</span>
+                                  </button>
+                                </div>
+                              </div>
+                              {imgs.length > 0 && (
+                                <div className="flex items-center gap-1.5 pt-1 border-t border-border/60">
+                                  {imgs.map((im) => {
+                                    const imgUrl = `/api/flow/images/${im.id}`;
+                                    const activeAngle = refImage === imgUrl;
+                                    return (
+                                      <button
+                                        key={im.id}
+                                        type="button"
+                                        onClick={() => handleSelectFlowCharacterRef(fc, im)}
+                                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] transition-all ${
+                                          activeAngle
+                                            ? "bg-primary text-white border-primary font-semibold"
+                                            : "bg-surface-2 border-border text-text-muted hover:text-text-main"
+                                        }`}
+                                      >
+                                        <img src={imgUrl} alt={im.view || ""} className="h-4 w-4 rounded-xs object-cover" />
+                                        <span>{CHARACTER_VIEW_LABEL[im.view] || im.view || "Frame"}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="flex flex-col sm:flex-row gap-3 items-stretch">
                     <div
@@ -1391,15 +1728,16 @@ Example format:
                     </div>
 
                     {refImage && (
-                      <div className="relative h-20 w-28 rounded-xl overflow-hidden border border-border bg-black/40 shrink-0 shadow-xs group">
+                      <div className="relative h-20 w-28 rounded-xl overflow-hidden border border-border bg-black/40 shrink-0 group">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={refImage} alt="Ref preview" className="w-full h-full object-cover" />
+                        <img src={refImage} alt="Reference keyframe preview" className="w-full h-full object-cover" />
                         <button
                           type="button"
                           onClick={() => setLightboxImage(refImage)}
-                          className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity"
+                          aria-label="Preview reference image"
+                          className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-white hover:bg-black/90 focus-visible:outline-2 focus-visible:outline-primary"
                         >
-                          <span className="material-symbols-outlined text-[18px]">zoom_in</span>
+                          <span className="material-symbols-outlined text-[16px]">zoom_in</span>
                         </button>
                       </div>
                     )}
@@ -1408,11 +1746,12 @@ Example format:
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      placeholder="Or paste reference image URL (https://...)"
+                      aria-label="Reference image URL"
+                      placeholder="https://example.com/reference.png"
                       value={refUrlDraft}
                       onChange={(e) => setRefUrlDraft(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && applyRefUrl()}
-                      className="flex-1 text-xs bg-surface border border-border rounded-xl px-3 py-1.5 outline-none focus:border-primary"
+                      className="flex-1 text-xs bg-surface border border-border rounded-xl px-3 py-1.5 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
                     />
                     <Button
                       variant="outline"
@@ -1425,15 +1764,15 @@ Example format:
                   </div>
                 </div>
 
-                {/* Action CTA Bar */}
                 <div className="pt-4 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-border/70">
                   <div className="flex items-center gap-2 text-xs text-text-muted">
-                    <span>LLM Director:</span>
+                    <span>Script Model:</span>
                     <button
+                      type="button"
                       onClick={() => setShowLlmModal(true)}
-                      className="px-2 py-0.5 rounded-lg bg-surface-2 border border-border text-primary font-semibold hover:border-primary transition-colors flex items-center gap-1"
+                      className="px-2.5 py-1 rounded-lg bg-surface-2 border border-border text-primary font-semibold hover:border-primary focus-visible:outline-2 focus-visible:outline-primary transition-colors flex items-center gap-1"
                     >
-                      <span className="truncate max-w-[160px]">{llmModel || "Select Model..."}</span>
+                      <span className="truncate max-w-[160px]">{llmModel || "Select LLM Model"}</span>
                       <span className="material-symbols-outlined text-[14px]">arrow_drop_down</span>
                     </button>
                   </div>
@@ -1442,13 +1781,13 @@ Example format:
                     <Button
                       variant="primary"
                       size="md"
-                      icon="auto_fix_high"
+                      icon="movie_edit"
                       loading={generating}
                       onClick={handleGenerateStoryboard}
                       disabled={generating || !prompt.trim()}
                       className="w-full sm:w-auto px-6 font-semibold"
                     >
-                      Generate Storyboard Pipeline
+                      Generate Storyboard
                     </Button>
                   </div>
                 </div>
@@ -1469,19 +1808,305 @@ Example format:
           </div>
         )}
 
-        {/* TAB 2: CAST & CHARACTERS */}
         {activeTab === "characters" && (
           <div className="flex-1 flex overflow-y-auto custom-scrollbar p-4 sm:p-6 justify-center">
             <div className="max-w-4xl w-full space-y-5">
-              <div className="p-5 rounded-2xl bg-surface border border-border shadow-sm space-y-5">
+              <div className="p-5 rounded-xl bg-surface border border-border space-y-5">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold flex items-center gap-2">
+                      <span className="material-symbols-outlined text-primary">person</span>
+                      Character Turnaround Sheet (Google Flow)
+                    </h2>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Buat karakter dengan 4 sudut referensi (Depan, Belakang, Kiri, Kanan) dan pilih langsung di Reference Character / Keyframe Image
+                    </p>
+                  </div>
+                </div>
+
+                <form onSubmit={handleCreateFlowCharacter} className="space-y-3 p-4 rounded-xl bg-surface-2/60 border border-border">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] font-semibold text-text-muted">Nama Karakter *</label>
+                      <input
+                        type="text"
+                        required
+                        value={flowCharForm.name}
+                        onChange={(e) => setFlowCharForm({ ...flowCharForm, name: e.target.value })}
+                        placeholder="Nama karakter"
+                        className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary text-text-main"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-text-muted">Style Visual</label>
+                      <input
+                        type="text"
+                        value={flowCharForm.style}
+                        onChange={(e) => setFlowCharForm({ ...flowCharForm, style: e.target.value })}
+                        placeholder="35mm film, 2D cel animation, 3D stylized"
+                        className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary text-text-main"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-text-muted">Deskripsi Karakter</label>
+                    <input
+                      type="text"
+                      value={flowCharForm.description}
+                      onChange={(e) => setFlowCharForm({ ...flowCharForm, description: e.target.value })}
+                      placeholder="Usia, postur, gaya rambut, pakaian, properti utama"
+                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary text-text-main"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      icon="image"
+                      onClick={() => setShowFlowCharModelModal(true)}
+                    >
+                      {flowCharForm.imageModel || imageModel || "Pilih model gambar"}
+                    </Button>
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      size="sm"
+                      icon="add"
+                      loading={flowCharCreating}
+                      disabled={!flowCharForm.name.trim()}
+                    >
+                      Simpan Karakter
+                    </Button>
+                  </div>
+                </form>
+
+                {flowCharError && (
+                  <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center justify-between gap-2">
+                    <span>{flowCharError}</span>
+                    <button type="button" onClick={() => setFlowCharError("")} className="hover:opacity-75">
+                      <span className="material-symbols-outlined text-[15px]">close</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Saved Flow Characters List (CRUD + 4-View Grid) */}
+                {flowCharacters.length === 0 ? (
+                  <div className="text-center py-8 border-2 border-dashed border-border rounded-2xl text-text-muted text-xs space-y-1">
+                    <span className="material-symbols-outlined text-[32px] text-primary/60">face</span>
+                    <p className="font-medium text-text-main">Belum ada karakter tersimpan</p>
+                    <p className="text-[11px] text-text-muted">Buat karakter baru di atas untuk generate 4 sudut gambar referensi.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {flowCharacters.map((fc) => {
+                      const byView = new Map((fc.images || []).map((img) => [img.view, img]));
+                      const isGenerating = flowCharBusyId === fc.id || fc.status === "generating";
+                      const isEditing = editingFlowCharId === fc.id;
+                      return (
+                        <div key={fc.id} className="p-4 rounded-xl bg-surface border border-border space-y-3 shadow-xs">
+                          {isEditing ? (
+                            <div className="space-y-3 p-3 rounded-xl bg-surface-2/60 border border-border">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                  <label className="text-[11px] font-semibold text-text-muted">Nama Karakter *</label>
+                                  <input
+                                    type="text"
+                                    value={editingFlowCharDraft.name}
+                                    onChange={(e) =>
+                                      setEditingFlowCharDraft({ ...editingFlowCharDraft, name: e.target.value })
+                                    }
+                                    className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-1.5 outline-none focus:border-primary"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-text-muted">Style Visual</label>
+                                  <input
+                                    type="text"
+                                    value={editingFlowCharDraft.style}
+                                    onChange={(e) =>
+                                      setEditingFlowCharDraft({ ...editingFlowCharDraft, style: e.target.value })
+                                    }
+                                    className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-1.5 outline-none focus:border-primary"
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <label className="text-[11px] font-semibold text-text-muted">Deskripsi</label>
+                                <input
+                                  type="text"
+                                  value={editingFlowCharDraft.description}
+                                  onChange={(e) =>
+                                    setEditingFlowCharDraft({ ...editingFlowCharDraft, description: e.target.value })
+                                  }
+                                  className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-1.5 outline-none focus:border-primary"
+                                />
+                              </div>
+                              <div className="flex items-center justify-end gap-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  onClick={() => setEditingFlowCharId(null)}
+                                >
+                                  Batal
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="primary"
+                                  size="xs"
+                                  loading={flowCharSavingId === fc.id}
+                                  onClick={() => handleSaveEditFlowCharacter(fc.id)}
+                                >
+                                  Simpan Perubahan
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h3 className="text-xs font-bold text-text-main">{fc.name}</h3>
+                                  <Badge variant={CHARACTER_STATUS_VARIANT[fc.status] || "default"} dot>
+                                    {fc.status}
+                                  </Badge>
+                                  {fc.style && (
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-surface-2 border border-border text-text-muted">
+                                      {fc.style}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-xs text-text-muted mt-1">{fc.description || "Tanpa deskripsi"}</p>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  icon="check_circle"
+                                  onClick={() => {
+                                    handleSelectFlowCharacterRef(fc);
+                                    setActiveTab("story");
+                                  }}
+                                >
+                                  Pakai di Reference
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="xs"
+                                  icon="edit"
+                                  onClick={() => handleStartEditFlowCharacter(fc)}
+                                  aria-label={`Edit ${fc.name}`}
+                                />
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="xs"
+                                  icon="delete"
+                                  onClick={() => handleDeleteFlowCharacter(fc)}
+                                  aria-label={`Hapus ${fc.name}`}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            {CHARACTER_VIEWS.map((view) => {
+                              const image = byView.get(view);
+                              return (
+                                <div key={view} className="space-y-1.5">
+                                  {image ? (
+                                    <>
+                                      <div className="relative group/angle">
+                                        <img
+                                          src={`/api/flow/images/${image.id}`}
+                                          alt={`${fc.name} ${CHARACTER_VIEW_LABEL[view]}`}
+                                          className="aspect-[3/4] w-full rounded-xl border border-border object-cover"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => setLightboxImage(`/api/flow/images/${image.id}`)}
+                                          className="absolute top-2 right-2 p-1 rounded-lg bg-black/70 text-white hover:bg-black/90 focus-visible:outline-2 focus-visible:outline-primary"
+                                          title="Zoom"
+                                          aria-label={`Zoom ${fc.name} ${CHARACTER_VIEW_LABEL[view]}`}
+                                        >
+                                          <span className="material-symbols-outlined text-[14px]">zoom_in</span>
+                                        </button>
+                                      </div>
+                                      <div className="flex gap-1">
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="xs"
+                                          className="flex-1"
+                                          onClick={() => {
+                                            handleSelectFlowCharacterRef(fc, image);
+                                            setActiveTab("story");
+                                          }}
+                                        >
+                                          Pakai
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="xs"
+                                          icon="refresh"
+                                          disabled={isGenerating}
+                                          onClick={() => handleGenerateFlowCharacterViews(fc, [view])}
+                                          aria-label={`Regenerate ${view}`}
+                                        />
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      disabled={isGenerating}
+                                      onClick={() => handleGenerateFlowCharacterViews(fc, [view])}
+                                      className="flex aspect-[3/4] w-full flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-border bg-surface-2/60 text-text-muted hover:border-primary/50 disabled:opacity-50"
+                                    >
+                                      <span className="material-symbols-outlined text-[22px]">add_photo_alternate</span>
+                                      <span className="text-xs">{isGenerating ? "…" : CHARACTER_VIEW_LABEL[view]}</span>
+                                    </button>
+                                  )}
+                                  <p className="text-center text-[11px] text-text-muted">{CHARACTER_VIEW_LABEL[view]}</p>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <Button
+                              type="button"
+                              variant="primary"
+                              size="xs"
+                              icon="grid_view"
+                              loading={isGenerating}
+                              onClick={() => handleGenerateFlowCharacterViews(fc, CHARACTER_VIEWS)}
+                            >
+                              Generate 4 Sudut
+                            </Button>
+                            <span className="text-[11px] text-text-muted">
+                              Model: {fc.imageModel || flowCharForm.imageModel || imageModel || "belum dipilih"}
+                            </span>
+                            {fc.error && <span className="w-full text-xs text-destructive">{fc.error}</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-5 rounded-xl bg-surface border border-border space-y-5">
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                   <div>
                     <h2 className="text-sm font-semibold flex items-center gap-2">
                       <span className="material-symbols-outlined text-primary">groups</span>
-                      Cast & Character Consistency Hub
+                      Script Cast & Continuity Notes
                     </h2>
                     <p className="text-xs text-text-muted mt-0.5">
-                      Define persistent visual traits, face structures, and wardrobe locks across all shots
+                      Define character appearance and wardrobe notes shared across all generated shots
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1489,10 +2114,10 @@ Example format:
                       <Button
                         variant="outline"
                         size="sm"
-                        icon="auto_awesome"
+                        icon="person_search"
                         loading={extractingChars}
                         onClick={handleAutoExtractCharacters}
-                        title="Analyze script and extract character specs automatically"
+                        title="Extract characters mentioned in the script"
                       >
                         Extract from Script
                       </Button>
@@ -1509,7 +2134,6 @@ Example format:
                   </div>
                 </div>
 
-                {/* Add new character form */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 rounded-xl bg-surface-2/60 border border-border">
                   <div>
                     <label className="text-[11px] font-semibold text-text-muted">Character Name *</label>
@@ -1517,8 +2141,8 @@ Example format:
                       type="text"
                       value={newCharName}
                       onChange={(e) => setNewCharName(e.target.value)}
-                      placeholder="e.g. Jack Vance"
-                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main"
+                      placeholder="Character name"
+                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary text-text-main"
                     />
                   </div>
                   <div>
@@ -1526,7 +2150,7 @@ Example format:
                     <select
                       value={newCharRole}
                       onChange={(e) => setNewCharRole(e.target.value)}
-                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main cursor-pointer"
+                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary text-text-main cursor-pointer"
                     >
                       <option value="Lead">Lead Protagonist</option>
                       <option value="Antagonist">Antagonist / Rival</option>
@@ -1541,29 +2165,28 @@ Example format:
                       type="text"
                       value={newCharDesc}
                       onChange={(e) => setNewCharDesc(e.target.value)}
-                      placeholder="e.g. 35yo, worn brown trench coat, glowing blue cyber eye"
-                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 outline-none focus:border-primary text-text-main"
+                      placeholder="Age range, build, hair, wardrobe, key props"
+                      className="w-full mt-1 text-xs bg-surface border border-border rounded-lg px-3 py-2 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary text-text-main"
                     />
                   </div>
                 </div>
 
-                {/* Character List Grid */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-                      Active Cast & Consistency Anchors ({characters.length})
+                    <h3 className="text-xs font-semibold text-text-muted">
+                      Active Cast ({characters.length})
                     </h3>
                     <span className="text-[11px] text-text-muted">
-                      Injected into every image and video prompt
+                      Included in every image and video prompt
                     </span>
                   </div>
 
                   {characters.length === 0 ? (
-                    <div className="text-center py-12 border-2 border-dashed border-border rounded-2xl text-text-muted text-xs space-y-2">
-                      <span className="material-symbols-outlined text-[36px] text-primary/60">person_search</span>
-                      <p className="font-medium text-text-main">No Cast Members Defined Yet</p>
+                    <div className="text-center py-10 border-2 border-dashed border-border rounded-xl text-text-muted text-xs space-y-2">
+                      <span className="material-symbols-outlined text-[32px] text-primary/60">person_search</span>
+                      <p className="font-medium text-text-main">No Cast Members Added</p>
                       <p className="text-[11px] text-text-muted max-w-sm mx-auto">
-                        Add key characters above or click &quot;Extract from Script&quot; to parse them from your storyline automatically.
+                        Add characters above or use &quot;Extract from Script&quot; to pull them from your story concept.
                       </p>
                     </div>
                   ) : (
@@ -1571,34 +2194,32 @@ Example format:
                       {characters.map((char) => (
                         <div
                           key={char.id}
-                          className="p-4 rounded-xl bg-surface border border-border hover:border-primary/50 transition-all space-y-2.5 relative group shadow-xs"
+                          className="p-4 rounded-xl bg-surface border border-border hover:border-primary/50 transition-colors space-y-2.5 relative group"
                         >
                           <div className="flex items-start justify-between">
                             <div className="flex items-center gap-3">
-                              <div
-                                className={`h-9 w-9 rounded-full bg-gradient-to-tr ${getCharacterGradient(
-                                  char.name
-                                )} text-white flex items-center justify-center font-bold text-sm shadow-xs`}
-                              >
+                              <div className="h-9 w-9 rounded-lg bg-surface-2 border border-border text-text-main flex items-center justify-center font-bold text-sm">
                                 {char.name[0]?.toUpperCase() || "C"}
                               </div>
                               <div>
                                 <h4 className="text-xs font-bold text-text-main">{char.name}</h4>
-                                <span className="inline-block mt-0.5 px-2 py-0.2 rounded-full text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20">
+                                <span className="inline-block mt-0.5 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20">
                                   {char.role}
                                 </span>
                               </div>
                             </div>
                             <button
+                              type="button"
                               onClick={() => handleDeleteCharacter(char.id)}
-                              className="text-text-muted hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                              className="text-text-muted hover:text-destructive p-1 rounded focus-visible:outline-2 focus-visible:outline-primary"
                               title="Delete character"
+                              aria-label={`Delete ${char.name}`}
                             >
                               <span className="material-symbols-outlined text-[16px]">close</span>
                             </button>
                           </div>
                           <p className="text-xs text-text-muted leading-relaxed line-clamp-3">
-                            {char.description || "No specific visual traits assigned."}
+                            {char.description || "No visual traits specified."}
                           </p>
                         </div>
                       ))}
@@ -1606,21 +2227,21 @@ Example format:
                   )}
                 </div>
 
-                {/* Global Character Consistency Prompt */}
                 <div className="space-y-2 pt-4 border-t border-border/70">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-semibold text-text-muted flex items-center gap-1">
                       <span className="material-symbols-outlined text-[15px] text-primary">lock_reset</span>
-                      Global Character Consistency Rules
+                      Character Continuity Prompt
                     </label>
-                    <span className="text-[11px] text-text-muted">Injected across all shot generations</span>
+                    <span className="text-[11px] text-text-muted">Appended to each shot generation</span>
                   </div>
                   <textarea
                     rows={3}
+                    aria-label="Character continuity prompt"
                     value={characterConsistencyPrompt}
                     onChange={(e) => setCharacterConsistencyPrompt(e.target.value)}
-                    placeholder="Global prompt injected into every scene to maintain visual style, actor facial features, lighting tone, and wardrobe lock..."
-                    className="w-full text-xs bg-surface border border-border rounded-xl p-3 outline-none focus:border-primary font-mono leading-relaxed"
+                    placeholder="Shared physical and wardrobe notes appended to every keyframe and video prompt..."
+                    className="w-full text-xs bg-surface border border-border rounded-xl p-3 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary font-mono leading-relaxed"
                   />
                 </div>
               </div>
@@ -1628,23 +2249,21 @@ Example format:
           </div>
         )}
 
-        {/* TAB 3: STORYBOARD SHOTS (THE PRODUCTION BOARD) */}
         {activeTab === "storyboard" && (
           <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Header Toolbar: Stats, View Toggles & Batch Actions */}
-            <div className="p-4 border-b border-border bg-surface/60 backdrop-blur-sm shrink-0 flex flex-wrap items-center justify-between gap-3">
+            <div className="p-4 border-b border-border bg-surface shrink-0 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-sm font-semibold flex items-center gap-2">
                     <span className="material-symbols-outlined text-primary">grid_view</span>
-                    {projectTitle || "Generated Storyboard Production Board"}
+                    {projectTitle || "Storyboard Shots"}
                   </h2>
                   <span className="text-xs text-text-muted font-mono">
                     ({scenes.length} Shots • ~{scenes.length * 5}s runtime)
                   </span>
                 </div>
                 <p className="text-xs text-text-muted mt-0.5">
-                  Visual Style: <span className="text-text-main font-medium">{style.split("(")[0]}</span> • Target Engine:{" "}
+                  Style: <span className="text-text-main font-medium">{style.split("(")[0]}</span> • Engine:{" "}
                   <span className="text-text-main font-medium">{targetEngine.split("(")[0]}</span>
                 </p>
               </div>
@@ -1712,31 +2331,29 @@ Example format:
               </div>
             </div>
 
-            {/* Main Content Area */}
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6">
               {scenes.length === 0 ? (
-                <div className="text-center py-20 border-2 border-dashed border-border rounded-2xl text-text-muted text-xs space-y-3 max-w-lg mx-auto">
-                  <span className="material-symbols-outlined text-[48px] text-primary/50">movie_edit</span>
+                <div className="text-center py-16 border-2 border-dashed border-border rounded-xl text-text-muted text-xs space-y-3 max-w-lg mx-auto">
+                  <span className="material-symbols-outlined text-[40px] text-primary/50">movie_edit</span>
                   <h3 className="text-base font-semibold text-text-main">No Storyboard Shots Yet</h3>
                   <p className="text-xs text-text-muted max-w-sm mx-auto">
-                    Go to Tab 1 (Story), enter your script or concept, and generate the storyboard pipeline.
+                    Open the Story tab, enter your script concept, and generate shots.
                   </p>
                   <div className="pt-2">
                     <Button variant="primary" size="sm" onClick={() => setActiveTab("story")}>
-                      Go to Story Input
+                      Open Story Input
                     </Button>
                   </div>
                 </div>
               ) : storyboardViewMode === "grid" ? (
-                /* GRID CARD VIEW */
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                   {scenes.map((scene, idx) => (
                     <div
                       key={idx}
-                      className={`p-4 rounded-2xl border transition-all flex flex-col justify-between group ${
+                      className={`p-4 rounded-xl border transition-colors flex flex-col justify-between group ${
                         selectedSceneIndex === idx
-                          ? "bg-surface border-primary/70 shadow-md ring-1 ring-primary/30"
-                          : "bg-surface/70 border-border hover:border-primary/40 hover:bg-surface"
+                          ? "bg-surface border-primary ring-1 ring-primary/25"
+                          : "bg-surface border-border hover:border-primary/40"
                       }`}
                     >
                       <div className="space-y-3">
@@ -1794,20 +2411,21 @@ Example format:
                               <button
                                 type="button"
                                 onClick={() => setLightboxImage(scene.imageUrl)}
-                                className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 text-white opacity-0 group-hover/thumb:opacity-100 transition-opacity"
+                                className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/70 text-white hover:bg-black/90 focus-visible:outline-2 focus-visible:outline-primary"
                                 title="Zoom Image"
+                                aria-label={`Zoom Shot ${idx + 1}`}
                               >
                                 <span className="material-symbols-outlined text-[16px]">zoom_in</span>
                               </button>
                             </div>
                           ) : (
-                            <div className="text-center text-text-muted/60 p-4">
+                            <div className="text-center text-text-muted p-4">
                               <span className="material-symbols-outlined text-[32px]">image</span>
                               <p className="text-[11px] mt-1">No media rendered</p>
                               <button
                                 type="button"
                                 onClick={() => handleGenerateImage(idx)}
-                                className="mt-2 px-2.5 py-1 rounded-md text-[11px] bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
+                                className="mt-2 px-2.5 py-1 rounded-md text-[11px] bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors focus-visible:outline-2 focus-visible:outline-primary"
                               >
                                 Generate First Frame
                               </button>
@@ -1815,19 +2433,18 @@ Example format:
                           )}
                         </div>
 
-                        {/* Shot Summary */}
                         <h4 className="text-xs font-semibold text-text-main line-clamp-2 leading-snug">
                           {scene.summary}
                         </h4>
 
-                        {/* Motion Prompt snippet */}
-                        <div className="p-2.5 rounded-xl bg-surface-2/60 border border-border text-[11px] text-text-muted line-clamp-2 font-mono leading-relaxed relative group/code">
+                        <div className="p-2.5 pr-8 rounded-xl bg-surface-2/60 border border-border text-[11px] text-text-muted line-clamp-2 font-mono leading-relaxed relative">
                           {scene.motionPrompt}
                           <button
                             type="button"
                             onClick={() => copy(scene.motionPrompt)}
-                            className="absolute top-1.5 right-1.5 p-1 rounded bg-surface border border-border text-text-muted hover:text-primary opacity-0 group-hover/code:opacity-100 transition-opacity"
+                            className="absolute top-1.5 right-1.5 p-1 rounded bg-surface border border-border text-text-muted hover:text-primary focus-visible:outline-2 focus-visible:outline-primary"
                             title="Copy Motion Prompt"
+                            aria-label={`Copy Shot ${idx + 1} Motion Prompt`}
                           >
                             <span className="material-symbols-outlined text-[13px]">content_copy</span>
                           </button>
@@ -1905,15 +2522,14 @@ Example format:
                   ))}
                 </div>
               ) : (
-                /* TIMELINE TABLE VIEW */
-                <div className="rounded-2xl border border-border bg-surface overflow-hidden shadow-xs">
+                <div className="rounded-xl border border-border bg-surface overflow-hidden">
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
-                        <tr className="border-b border-border bg-surface-2 text-text-muted font-semibold text-[11px] uppercase tracking-wider">
+                        <tr className="border-b border-border bg-surface-2 text-text-muted font-semibold text-xs">
                           <th className="py-3 px-4 w-16">Shot</th>
                           <th className="py-3 px-4 w-32">Preview</th>
-                          <th className="py-3 px-4">Summary & Prompts</th>
+                          <th className="py-3 px-4">Summary &amp; Prompts</th>
                           <th className="py-3 px-4 w-48">Camera / Lighting</th>
                           <th className="py-3 px-4 w-40">Audio / SFX</th>
                           <th className="py-3 px-4 w-36 text-right">Actions</th>
@@ -2005,19 +2621,18 @@ Example format:
           </div>
         )}
 
-        {/* TAB 4: DIRECTOR STUDIO (THE MASTER SUITE) */}
         {activeTab === "studio" && (
-          <div className="flex-1 flex overflow-hidden">
-            {/* Left Filmstrip Timeline Rail */}
-            <div className="w-64 border-r border-border bg-surface/40 overflow-y-auto custom-scrollbar p-3 space-y-2 shrink-0 flex flex-col justify-between">
+          <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+            <div className="w-full lg:w-64 max-h-48 lg:max-h-none border-b lg:border-b-0 lg:border-r border-border bg-surface/40 overflow-y-auto custom-scrollbar p-3 space-y-2 shrink-0 flex flex-col justify-between">
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-1">
-                  <span className="text-[11px] font-bold text-text-muted uppercase tracking-wider">
+                  <span className="text-xs font-semibold text-text-muted">
                     Filmstrip ({scenes.length})
                   </span>
                   <button
+                    type="button"
                     onClick={handleAddShot}
-                    className="text-[11px] text-primary hover:underline flex items-center gap-0.5 font-medium"
+                    className="text-xs text-primary hover:underline flex items-center gap-0.5 font-medium focus-visible:outline-2 focus-visible:outline-primary"
                   >
                     <span className="material-symbols-outlined text-[13px]">add</span>
                     Shot
@@ -2029,10 +2644,10 @@ Example format:
                     <div
                       key={idx}
                       onClick={() => setSelectedSceneIndex(idx)}
-                      className={`p-2 rounded-xl border text-left cursor-pointer transition-all flex items-center gap-2.5 ${
+                      className={`p-2 rounded-xl border text-left cursor-pointer transition-colors flex items-center gap-2.5 ${
                         selectedSceneIndex === idx
-                          ? "bg-surface border-primary text-text-main shadow-sm ring-1 ring-primary/20"
-                          : "bg-surface/50 border-border/80 text-text-muted hover:border-primary/40 hover:bg-surface"
+                          ? "bg-surface border-primary text-text-main ring-1 ring-primary/20"
+                          : "bg-surface border-border/80 text-text-muted hover:border-primary/40"
                       }`}
                     >
                       <div className="h-10 w-14 rounded-lg bg-surface-2 border border-border overflow-hidden shrink-0 flex items-center justify-center relative">
@@ -2159,9 +2774,8 @@ Example format:
                         : "grid-cols-1"
                     }`}
                   >
-                    {/* First-frame Keyframe Box */}
                     {(studioMonitorMode === "split" || studioMonitorMode === "image") && (
-                      <div className="p-4 rounded-2xl bg-surface border border-border shadow-sm space-y-3">
+                      <div className="p-4 rounded-xl bg-surface border border-border space-y-3">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-semibold flex items-center gap-1.5 text-text-main">
                             <span className="material-symbols-outlined text-primary text-[16px]">image</span>
@@ -2177,10 +2791,10 @@ Example format:
                             <>
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img src={activeScene.imageUrl} alt="First frame" className="w-full h-full object-cover" />
-                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                              <div className="absolute top-2 right-2 flex items-center gap-1.5">
                                 <Button
                                   variant="primary"
-                                  size="sm"
+                                  size="xs"
                                   icon="zoom_in"
                                   onClick={() => setLightboxImage(activeScene.imageUrl)}
                                 >
@@ -2191,15 +2805,15 @@ Example format:
                                   download={`shot-${activeScene.sceneNumber || selectedSceneIndex + 1}-keyframe.png`}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-surface border border-border text-text-main hover:bg-surface-2 transition-colors"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg bg-surface border border-border text-text-main hover:bg-surface-2 transition-colors focus-visible:outline-2 focus-visible:outline-primary"
                                 >
-                                  <span className="material-symbols-outlined text-[16px]">download</span>
+                                  <span className="material-symbols-outlined text-[15px]">download</span>
                                   Download
                                 </a>
                               </div>
                             </>
                           ) : (
-                            <div className="text-center text-text-muted/60 p-4">
+                            <div className="text-center text-text-muted p-4">
                               <span className="material-symbols-outlined text-[36px]">image_search</span>
                               <p className="text-xs mt-1">First-frame not rendered yet</p>
                             </div>
@@ -2223,13 +2837,12 @@ Example format:
                       </div>
                     )}
 
-                    {/* AI Video Render Box */}
                     {(studioMonitorMode === "split" || studioMonitorMode === "video") && (
-                      <div className="p-4 rounded-2xl bg-surface border border-border shadow-sm space-y-3">
+                      <div className="p-4 rounded-xl bg-surface border border-border space-y-3">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-semibold flex items-center gap-1.5 text-text-main">
                             <span className="material-symbols-outlined text-primary text-[16px]">movie</span>
-                            AI Motion Video Clip
+                            Video Clip
                           </span>
                           <div className="flex items-center gap-2">
                             <span className="text-[11px] text-text-muted font-mono truncate max-w-[150px]">
@@ -2280,14 +2893,14 @@ Example format:
                               </Button>
                             </div>
                           ) : (
-                            <div className="text-center text-text-muted/60 p-4">
+                            <div className="text-center text-text-muted p-4">
                               <span className="material-symbols-outlined text-[36px]">videocam_off</span>
                               <p className="text-xs mt-1">Video clip not rendered yet</p>
                               {videoGenStates[selectedSceneIndex]?.status === "processing" && (
-                                <p className="text-xs text-primary font-medium mt-1 animate-pulse">
+                                <p className="text-xs text-primary font-medium mt-1">
                                   {videoGenStates[selectedSceneIndex]?.step
                                     ? `Rendering (${videoGenStates[selectedSceneIndex].step})...`
-                                    : "Rendering video motion on AI cluster..."}
+                                    : "Rendering video clip..."}
                                 </p>
                               )}
                               {videoGenStates[selectedSceneIndex]?.error && (
@@ -2426,7 +3039,179 @@ Example format:
           </div>
         )}
 
-        {/* TAB 5: SETTINGS GUI (FULL CONFIGURATOR) */}
+        {/* TAB 5: RENDER & MERGE VIDEOS */}
+        {activeTab === "render" && (
+          <div className="flex-1 flex overflow-y-auto custom-scrollbar p-4 sm:p-6 justify-center">
+            <div className="max-w-4xl w-full space-y-5">
+              <div className="p-5 rounded-2xl bg-surface border border-border shadow-sm space-y-5">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold flex items-center gap-2">
+                      <span className="material-symbols-outlined text-primary">movie_creation</span>
+                      Final Render & Gabungkan Semua Video
+                    </h2>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Pilih urutan shot yang sudah memiliki video clip lalu gabungkan menjadi satu video MP4 utuh
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        const allReady = scenes
+                          .map((s, idx) => (s.videoUrl && !videoErrors[idx] ? idx : -1))
+                          .filter((idx) => idx !== -1);
+                        setRenderSelectedIndices(allReady);
+                      }}
+                    >
+                      Pilih Semua Ready ({videosReadyCount})
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      icon="merge"
+                      loading={renderingCombined}
+                      disabled={renderingCombined || renderSelectedIndices.length === 0}
+                      onClick={handleCombineVideos}
+                    >
+                      Gabungkan Video ({renderSelectedIndices.length} Clip)
+                    </Button>
+                  </div>
+                </div>
+
+                {renderError && (
+                  <div className="p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] shrink-0">error</span>
+                      <span>{renderError}</span>
+                    </div>
+                    <button type="button" onClick={() => setRenderError("")} className="hover:opacity-75">
+                      <span className="material-symbols-outlined text-[16px]">close</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Combined Output Video Player */}
+                {combinedVideoUrl && (
+                  <div className="p-4 rounded-2xl bg-surface-2/60 border border-primary/40 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+                          Render Selesai
+                        </span>
+                        <span className="text-xs font-semibold text-text-main">
+                          {projectTitle || "Final Combined Video"} ({combinedVideoMeta?.clipCount || renderSelectedIndices.length} Shots)
+                        </span>
+                      </div>
+                      <a
+                        href={`${combinedVideoUrl}${combinedVideoUrl.includes("?") ? "&" : "?"}download=1`}
+                        download={`${(projectTitle || "storyboard-final").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.mp4`}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-primary text-white hover:opacity-90 transition-opacity"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">download</span>
+                        Download Final MP4
+                      </a>
+                    </div>
+                    <div className="aspect-video w-full max-w-2xl mx-auto rounded-xl bg-black overflow-hidden border border-border">
+                      <video
+                        key={combinedVideoUrl}
+                        src={combinedVideoUrl}
+                        controls
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Scene Clip Selection List */}
+                {scenes.length === 0 ? (
+                  <div className="text-center py-14 border-2 border-dashed border-border rounded-2xl text-text-muted text-xs space-y-2">
+                    <span className="material-symbols-outlined text-[40px] text-primary/50">videocam_off</span>
+                    <p className="font-medium text-text-main">Belum ada storyboard shot</p>
+                    <p className="text-[11px] text-text-muted">Buat storyboard dan render video tiap shot terlebih dahulu di tab Shots atau Director.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between text-xs text-text-muted px-1">
+                      <span>Daftar Shot ({videosReadyCount} dari {scenes.length} video siap digabung)</span>
+                      <span>Urutan mengikuti nomor shot</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {scenes.map((sc, idx) => {
+                        const hasVideo = Boolean(sc.videoUrl && !videoErrors[idx]);
+                        const checked = renderSelectedIndices.includes(idx);
+                        return (
+                          <div
+                            key={idx}
+                            onClick={() => hasVideo && handleToggleRenderScene(idx)}
+                            className={`p-3 rounded-xl border transition-all flex items-center gap-3 ${
+                              !hasVideo
+                                ? "bg-surface/40 border-border/60 opacity-60 cursor-not-allowed"
+                                : checked
+                                  ? "bg-primary/10 border-primary cursor-pointer shadow-xs"
+                                  : "bg-surface border-border hover:border-primary/40 cursor-pointer"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!hasVideo}
+                              onChange={() => hasVideo && handleToggleRenderScene(idx)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="h-4 w-4 accent-primary rounded cursor-pointer"
+                            />
+                            <div className="h-14 w-24 rounded-lg bg-black/80 border border-border overflow-hidden shrink-0 flex items-center justify-center relative">
+                              {hasVideo ? (
+                                <video
+                                  src={getPlayableVideoUrl(sc.videoUrl)}
+                                  className="w-full h-full object-cover"
+                                  muted
+                                />
+                              ) : sc.imageUrl ? (
+                                <img src={sc.imageUrl} alt="" className="w-full h-full object-cover opacity-60" />
+                              ) : (
+                                <span className="material-symbols-outlined text-[18px] text-text-muted">videocam_off</span>
+                              )}
+                              <span className="absolute bottom-1 right-1 text-[9px] font-bold bg-black/75 text-white px-1.5 py-0.5 rounded">
+                                #{sc.sceneNumber || idx + 1}
+                              </span>
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-xs font-semibold text-text-main truncate">
+                                  Shot #{sc.sceneNumber || idx + 1}
+                                </span>
+                                {hasVideo ? (
+                                  <span className="text-[10px] font-semibold text-emerald-500">Ready</span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedSceneIndex(idx);
+                                      setActiveTab("studio");
+                                    }}
+                                    className="text-[10px] text-primary hover:underline font-medium"
+                                  >
+                                    Render di Studio
+                                  </button>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-text-muted line-clamp-2 mt-0.5">{sc.summary}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 6: SETTINGS GUI (FULL CONFIGURATOR) */}
         {activeTab === "settings" && (
           <div className="flex-1 flex overflow-y-auto custom-scrollbar p-4 sm:p-6 justify-center">
             <div className="max-w-4xl w-full space-y-5">
@@ -2585,17 +3370,18 @@ Example format:
           </div>
         )}
 
-        {/* Saved Projects Drawer / Sidebar */}
         {historyOpen && (
-          <aside className="w-80 border-l border-border bg-surface/95 backdrop-blur-md p-4 flex flex-col justify-between shrink-0 z-30 shadow-lg animate-in slide-in-from-right duration-200">
+          <aside className="w-80 border-l border-border bg-surface p-4 flex flex-col justify-between shrink-0 z-30">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                <h3 className="text-xs font-semibold text-text-muted">
                   Saved Storyboards ({projects.length})
                 </h3>
                 <button
+                  type="button"
+                  aria-label="Close saved storyboards"
                   onClick={() => setHistoryOpen(false)}
-                  className="text-text-muted hover:text-text-main p-1"
+                  className="text-text-muted hover:text-text-main p-1 rounded focus-visible:outline-2 focus-visible:outline-primary"
                 >
                   <span className="material-symbols-outlined text-[18px]">close</span>
                 </button>
@@ -2603,10 +3389,11 @@ Example format:
 
               <input
                 type="text"
+                aria-label="Search saved storyboards"
                 placeholder="Search history..."
                 value={searchHistory}
                 onChange={(e) => setSearchHistory(e.target.value)}
-                className="w-full text-xs bg-surface border border-border rounded-lg px-3 py-2 outline-none focus:border-primary"
+                className="w-full text-xs bg-surface border border-border rounded-lg px-3 py-2 focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
               />
 
               <div className="space-y-2 max-h-[70vh] overflow-y-auto custom-scrollbar pr-1">
@@ -2617,16 +3404,18 @@ Example format:
                     <div
                       key={p.id}
                       onClick={() => handleSelectProject(p)}
-                      className={`p-3 rounded-xl border text-left cursor-pointer transition-all relative group shadow-xs ${
+                      className={`p-3 rounded-xl border text-left cursor-pointer transition-colors relative group ${
                         currentProjectId === p.id
                           ? "bg-primary/10 border-primary text-text-main"
                           : "bg-surface border-border hover:border-primary/50 text-text-muted hover:text-text-main"
                       }`}
                     >
                       <button
+                        type="button"
                         onClick={(e) => handleDeleteProject(e, p.id)}
-                        className="absolute top-2.5 right-2.5 text-text-muted hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity p-0.5"
+                        className="absolute top-2.5 right-2.5 text-text-muted hover:text-destructive p-0.5 rounded focus-visible:outline-2 focus-visible:outline-primary"
                         title="Delete project"
+                        aria-label={`Delete ${p.title || "Untitled Storyboard"}`}
                       >
                         <span className="material-symbols-outlined text-[15px]">delete</span>
                       </button>
@@ -2718,19 +3507,26 @@ Example format:
         </div>
       </Modal>
 
-      {/* Lightbox Image Preview Modal */}
       {lightboxImage && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyframe high-resolution preview"
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
           onClick={() => setLightboxImage(null)}
         >
           <div
-            className="max-w-4xl w-full max-h-[90vh] overflow-hidden rounded-2xl bg-surface border border-border p-4 flex flex-col justify-between"
+            className="max-w-4xl w-full max-h-[90vh] overflow-hidden rounded-xl bg-surface border border-border p-4 flex flex-col justify-between"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between pb-3 border-b border-border">
-              <span className="text-xs font-semibold">Keyframe High-Resolution Preview</span>
-              <button onClick={() => setLightboxImage(null)} className="text-text-muted hover:text-text-main">
+              <span className="text-xs font-semibold">Keyframe Preview</span>
+              <button
+                type="button"
+                aria-label="Close keyframe preview"
+                onClick={() => setLightboxImage(null)}
+                className="text-text-muted hover:text-text-main p-1 rounded focus-visible:outline-2 focus-visible:outline-primary"
+              >
                 <span className="material-symbols-outlined text-[18px]">close</span>
               </button>
             </div>
@@ -2807,6 +3603,21 @@ Example format:
         modelAliases={modelAliases}
         kindFilter="video"
         title="Select AI Video Generation Model"
+      />
+
+      <ModelSelectModal
+        isOpen={showFlowCharModelModal}
+        onClose={() => setShowFlowCharModelModal(false)}
+        onSelect={(m) => {
+          const modelVal = m?.value || m?.name || m;
+          setFlowCharForm((prev) => ({ ...prev, imageModel: modelVal }));
+          setShowFlowCharModelModal(false);
+        }}
+        selectedModel={flowCharForm.imageModel || imageModel}
+        activeProviders={activeProviders}
+        modelAliases={modelAliases}
+        kindFilter="image"
+        title="Pilih Model Gambar untuk Karakter"
       />
     </div>
   );
