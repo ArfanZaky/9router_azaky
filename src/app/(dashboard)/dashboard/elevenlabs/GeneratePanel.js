@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Card, Input, SegmentedControl, Select, Toggle } from "@/shared/components";
+import { Button, Card, Input, Select, Toggle } from "@/shared/components";
 import { formatNumber } from "./format";
 
 const SLIDERS = [
@@ -22,19 +22,13 @@ const LANGUAGES = [
   { value: "auto", label: "Otomatis (deteksi dari teks)" },
 ];
 
-const VOICE_SOURCES = [
-  { value: "library", label: "Voice Library", icon: "public" },
-  { value: "account", label: "Voice akun", icon: "person" },
-];
-
 const langLabel = (code) => LANGUAGES.find((l) => l.value === code)?.label || code;
 // "" (no language_code) is stored as "auto" in the UI: Select reserves "" for its placeholder.
 const toUi = (code) => (code === "" ? "auto" : code);
 
 function voiceLabel(v) {
   const meta = [v.gender, v.accent].filter(Boolean).join(", ");
-  const paid = v.source === "library" && !v.freeUsersAllowed ? " · khusus berbayar" : "";
-  return `${v.name}${meta ? ` · ${meta}` : ""}${paid}`;
+  return `${v.name}${meta ? ` · ${meta}` : ""}`;
 }
 
 /** Fetch a voice list; state is keyed by URL so no setState runs synchronously in the effect. */
@@ -74,7 +68,6 @@ export default function GeneratePanel({ models, config, outputFormats, accounts,
   const [accountId, setAccountId] = useState("");
   const [settingsState, setVoiceSettings] = useState(hasPrefillSettings ? prefill.settings : null);
   const [languageState, setLanguage] = useState(null);
-  const [voiceSource, setVoiceSource] = useState("library");
   const [seed, setSeed] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [voiceFilter, setVoiceFilter] = useState("");
@@ -92,25 +85,15 @@ export default function GeneratePanel({ models, config, outputFormats, accounts,
   const language = languageUi === "auto" ? "" : languageUi;
 
   const voiceAccount = accountId || activeAccount?.id || "";
-  const chosenAccount = accounts.find((a) => a.id === voiceAccount) || activeAccount;
-  const isFreeTier = chosenAccount?.credits?.tier === "free";
-  const libraryLang = language || "id";
   const acct = encodeURIComponent(voiceAccount);
-  const accountVoices = useVoices(voiceAccount ? `/api/elevenlabs/voices?accountId=${acct}` : "");
-  const libraryVoices = useVoices(
-    voiceAccount ? `/api/elevenlabs/voices?source=library&language=${encodeURIComponent(libraryLang)}&accountId=${acct}` : ""
-  );
-  const current = voiceSource === "library" ? libraryVoices : accountVoices;
+  const current = useVoices(voiceAccount ? `/api/elevenlabs/voices?accountId=${acct}` : "");
   const voices = current.voices;
 
   const spec = useMemo(() => models.find((m) => m.id === model) || null, [models, model]);
   const chars = text.trim().length;
   const estimate = spec ? Math.ceil(chars * spec.costMultiplier) : chars;
   const tooLong = spec ? chars > spec.maxChars : false;
-  // A voice already in the account needs no add, even if it also appears in the Library.
-  const voice =
-    accountVoices.voices.find((v) => v.id === voiceId) || libraryVoices.voices.find((v) => v.id === voiceId) || null;
-  const needsAdd = voice?.source === "library";
+  const voice = voices.find((v) => v.id === voiceId) || null;
 
   const voiceOptions = useMemo(() => {
     const q = voiceFilter.trim().toLowerCase();
@@ -145,7 +128,6 @@ export default function GeneratePanel({ models, config, outputFormats, accounts,
           model,
           voiceId,
           voiceName: voice?.name || null,
-          ...(needsAdd && voice?.publicOwnerId ? { libraryOwnerId: voice.publicOwnerId } : {}),
           languageCode: language,
           outputFormat,
           voiceSettings,
@@ -242,44 +224,23 @@ export default function GeneratePanel({ models, config, outputFormats, accounts,
           </div>
 
           <div className="space-y-3 rounded-[10px] border border-border-subtle bg-surface-2 p-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <SegmentedControl size="sm" options={VOICE_SOURCES} value={voiceSource} onChange={setVoiceSource} />
-              <Input
-                className="min-w-0 flex-1 basis-56"
-                value={voiceFilter}
-                onChange={(e) => setVoiceFilter(e.target.value)}
-                placeholder="Cari nama, gender, aksen…"
-                icon="search"
-                aria-label="Cari voice"
-              />
-            </div>
+            <Input
+              value={voiceFilter}
+              onChange={(e) => setVoiceFilter(e.target.value)}
+              placeholder="Cari nama, gender, aksen…"
+              icon="search"
+              aria-label="Cari voice"
+            />
 
-            {voiceSource === "library" ? (
-              isFreeTier ? (
-                <p className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-2 text-xs text-yellow-600">
-                  Akun &lsquo;{chosenAccount?.name}&rsquo; masih paket free. ElevenLabs tidak mengizinkan akun free memakai voice Library lewat API
-                  (preview tetap bisa). Untuk akun free, buka tab Voice akun dan biarkan Bahasa = {language ? langLabel(language) : "Indonesia"}: model v4 akan
-                  membacakan teks dalam bahasa itu dengan voice bawaan.
-                </p>
-              ) : (
-                <p className="text-xs text-text-muted">
-                  Voice komunitas berbahasa {langLabel(libraryLang)}, diurutkan dari yang paling sering dipakai. Voice yang dipilih otomatis ditambahkan ke
-                  My Voices akun saat generate.
-                </p>
-              )
-            ) : (
-              <p className="text-xs text-text-muted">
-                Voice akun bersifat multibahasa. Dengan model v3/v4{language ? ` dan Bahasa = ${langLabel(language)}` : ""}, voice ini membacakan teks dalam
-                bahasa tersebut.
-              </p>
-            )}
+            <p className="text-xs text-text-muted">
+              Voice akun bersifat multibahasa. Dengan model v3/v4{language ? ` dan Bahasa = ${langLabel(language)}` : ""}, voice ini membacakan teks dalam
+              bahasa tersebut.
+            </p>
 
             <div className="flex flex-wrap items-end gap-3">
               <Select
                 className="min-w-0 flex-1 basis-64"
-                label={`${voiceSource === "library" ? `Voice Library · ${langLabel(libraryLang)}` : "Voice akun"}${
-                  current.loading ? " (memuat…)" : voices.length ? ` (${voiceOptions.length}/${voices.length})` : ""
-                }`}
+                label={`Voice akun${current.loading ? " (memuat…)" : voices.length ? ` (${voiceOptions.length}/${voices.length})` : ""}`}
                 value={voiceId}
                 onChange={(e) => setVoiceId(e.target.value)}
                 options={voiceOptions}
@@ -291,17 +252,13 @@ export default function GeneratePanel({ models, config, outputFormats, accounts,
             </div>
             {voice ? (
               <p className="text-xs text-text-muted">
-                {[voice.source === "library" ? "Voice Library" : "Voice akun", voice.locale || voice.language, voice.category, voice.description]
+                {["Voice akun", voice.locale || voice.language, voice.category, voice.description]
                   .filter(Boolean)
                   .join(" · ")}{" "}
                 · <span className="font-mono">{voice.id}</span>
-                {needsAdd ? " · akan ditambahkan ke My Voices (memakai 1 slot voice)" : ""}
               </p>
             ) : null}
             {current.error ? <p className="text-xs text-red-500">{current.error}</p> : null}
-            {!current.loading && !current.error && voiceSource === "library" && !voices.length ? (
-              <p className="text-xs text-text-muted">Tidak ada voice Library untuk bahasa ini.</p>
-            ) : null}
             <audio ref={previewRef} className="hidden" />
           </div>
 
