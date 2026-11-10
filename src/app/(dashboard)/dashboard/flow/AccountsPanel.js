@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Badge, Button, Card, Input, Select } from "@/shared/components";
+import AccountsBackupCard from "./AccountsBackupCard";
 
 function formatDate(val) {
   if (!val) return "—";
@@ -198,6 +199,8 @@ export default function AccountsPanel({
           </p>
         </form>
       </Card>
+
+      <AccountsBackupCard profiles={profiles} onReload={onReload} />
 
       <Card
         title={`Daftar Akun Tersimpan (${profiles.length})`}
