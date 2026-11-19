@@ -194,6 +194,13 @@ export const CLAUDE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official C
 export const ANTIGRAVITY_PROMPT_REWRITES = [
   { from: "You are a Claude agent, built on Anthropic's Claude Agent SDK.", to: "" },
   { from: /You are Hermes(?: Agent)?(?:,\s*(?:an intelligent AI assistant|an AI assistant|an AI agent))?(?:,?\s*(?:built|created)\s+by\s+Nous Research)?\./gi, to: "You are an AI assistant." },
+  { from: "Be direct: match the length of your reply to the weight of the ask", to: "Be direct: match the length of your response to the weight of the ask" },
+  { from: "the documentation at https://hermes-agent.nousresearch.com/docs is your authoritative reference", to: "the documentation at https://hermes-agent.nousresearch.com/docs is the authoritative reference" },
+  { from: "the deliverable is a working artifact backed by real tool output", to: "the expected deliverable is a working artifact backed by real tool output" },
+  { from: "Reporting a blocker honestly is always better than inventing a result.", to: "Reporting a blocker honestly is always better than fabricating a result." },
+  { from: "Hermes delivers their message as a standalone user message right after the latest tool results,", to: "The runtime delivers their message as a standalone user message right after the latest tool results," },
+  { from: "# Google model operational directives", to: "# Model operational directives" },
+  { from: "<!-- End Hermes runtime environment -->", to: "<!-- End runtime environment -->" },
   // Claude Code prepends this line to its system prompt. The Claude-format translator strips it,
   // but OpenAI-format clients (e.g. proxies that convert Claude Code to /v1/chat/completions)
   // pass it through, and any system text containing it gets a fake 429 RESOURCE_EXHAUSTED.
