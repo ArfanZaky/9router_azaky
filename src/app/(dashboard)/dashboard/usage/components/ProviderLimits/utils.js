@@ -383,9 +383,9 @@ export function parseQuotaData(provider, data) {
         if (data.quotas) {
           const entries = Object.entries(data.quotas);
           const weeklyKeys = new Set(["gemini_weekly", "claude_gpt_weekly", "gemini_argon_weekly"]);
-          const sessionKeys = new Set(["gemini_session", "claude_gpt_session"]);
+          const sessionKeys = new Set(["gemini_session", "claude_gpt_session", "gemini_argon_session"]);
           const summaryKeys = new Set([...weeklyKeys, ...sessionKeys]);
-          // Argon has its own weekly pool; keep it out of the Gemini family rows.
+          const argonModels = entries.filter(([k]) => k.startsWith("gemini-") && k.includes("argon"));
           const geminiModels = entries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image") && !k.includes("argon"));
           const claudeModels = entries.filter(([k]) => k.startsWith("claude-"));
           const imageModels = entries.filter(([k]) => k.includes("image"));
@@ -395,10 +395,12 @@ export function parseQuotaData(provider, data) {
           // Summary keys from retrieveUserQuotaSummary
           const hasGeminiWeekly = Boolean(data.quotas.gemini_weekly);
           const hasGeminiSession = Boolean(data.quotas.gemini_session);
+          const hasArgonWeekly = Boolean(data.quotas.gemini_argon_weekly);
+          const hasArgonSession = Boolean(data.quotas.gemini_argon_session);
           const hasClaudeWeekly = Boolean(data.quotas.claude_gpt_weekly);
           const hasClaudeSession = Boolean(data.quotas.claude_gpt_session);
 
-          // 1. Gemini Family:
+          // 1. Gemini Family (Flash / Pro):
           if (hasGeminiSession) {
             summaryModels.filter(([k]) => k === "gemini_session").forEach(([modelKey, quota]) => {
               normalizedQuotas.push({
@@ -444,17 +446,52 @@ export function parseQuotaData(provider, data) {
             });
           }
 
-          // Gemini 4 Argon has a separate weekly pool on paid plans
-          summaryModels.filter(([k]) => k === "gemini_argon_weekly").forEach(([modelKey, quota]) => {
-            normalizedQuotas.push({
-              name: quota.displayName || modelKey,
-              modelKey,
-              used: quota.used || 0,
-              total: quota.total || 0,
-              resetAt: quota.resetAt || null,
-              remainingPercentage: quota.remainingPercentage,
+          // 1b. Gemini 4 Argon Family (separate quota bucket on Pro plans):
+          if (hasArgonSession) {
+            summaryModels.filter(([k]) => k === "gemini_argon_session").forEach(([modelKey, quota]) => {
+              normalizedQuotas.push({
+                name: quota.displayName || modelKey,
+                modelKey,
+                used: quota.used || 0,
+                total: quota.total || 0,
+                resetAt: quota.resetAt || null,
+                remainingPercentage: quota.remainingPercentage,
+              });
             });
-          });
+          } else if (!hasArgonWeekly && argonModels.length > 0) {
+            const rep = argonModels.reduce((min, cur) =>
+              (cur[1].remainingPercentage ?? 100) < (min[1].remainingPercentage ?? 100) ? cur : min
+            )[1];
+            const geminiSessionResetAt = data.quotas.gemini_session?.resetAt;
+            const geminiWeeklyResetAt = data.quotas.gemini_weekly?.resetAt;
+            const sharesMainGeminiPool =
+              (hasGeminiSession && rep.resetAt === geminiSessionResetAt && rep.remainingPercentage === data.quotas.gemini_session?.remainingPercentage) ||
+              (hasGeminiWeekly && rep.resetAt === geminiWeeklyResetAt && rep.remainingPercentage === data.quotas.gemini_weekly?.remainingPercentage);
+
+            if (!sharesMainGeminiPool) {
+              normalizedQuotas.push({
+                name: "Gemini 4 Argon",
+                modelKey: "gemini_argon",
+                used: rep.used || 0,
+                total: rep.total || 0,
+                resetAt: rep.resetAt || null,
+                remainingPercentage: rep.remainingPercentage,
+              });
+            }
+          }
+
+          if (hasArgonWeekly) {
+            summaryModels.filter(([k]) => k === "gemini_argon_weekly").forEach(([modelKey, quota]) => {
+              normalizedQuotas.push({
+                name: quota.displayName || modelKey,
+                modelKey,
+                used: quota.used || 0,
+                total: quota.total || 0,
+                resetAt: quota.resetAt || null,
+                remainingPercentage: quota.remainingPercentage,
+              });
+            });
+          }
 
           // 2. Claude & GPT Family:
           if (hasClaudeSession) {
@@ -805,6 +842,22 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "clinepass":
+        // five_hour / weekly / monthly percentUsed windows from
+        // /api/v1/users/me/plan/usage-limits. remainingPercentage only.
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
+        }
+        break;
+
       case "zed":
         // Edit predictions + optional hosted model_requests; unlimited uses remainingPercentage.
         if (data.quotas) {
@@ -886,8 +939,10 @@ export function parseQuotaData(provider, data) {
       // Use modelKey for antigravity (mapped to family anchor), otherwise use name
       let keyA = a.modelKey || a.name;
       let keyB = b.modelKey || b.name;
+      if (keyA === "gemini_argon" || keyA === "gemini_argon_session") keyA = "gemini-4-argon-high";
       if (keyA === "gemini" || keyA === "gemini_session") keyA = "gemini-3.8-flash-high";
       if (keyA === "claude" || keyA === "claude_gpt_session") keyA = "claude-sonnet-4-6";
+      if (keyB === "gemini_argon" || keyB === "gemini_argon_session") keyB = "gemini-4-argon-high";
       if (keyB === "gemini" || keyB === "gemini_session") keyB = "gemini-3.8-flash-high";
       if (keyB === "claude" || keyB === "claude_gpt_session") keyB = "claude-sonnet-4-6";
       const orderA = orderMap.get(keyA) ?? 999;

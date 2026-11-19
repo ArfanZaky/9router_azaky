@@ -25,6 +25,9 @@ const nextConfig = {
   // plugins by dynamic require, neither of which survives bundling.
   // wreq-js resolves its rust native binding by relative require paths from its own
   // package dir — bundling breaks those paths ("Failed to load native module").
+  // undici must stay external too: webpack's vendored copy drops the per-request
+  // `dispatcher` connect options (ecdhCurve) — the built server then RSTs on
+  // DPI-shaped networks while the dev server (real undici) passes.
   serverExternalPackages: [
     "better-sqlite3",
     "sql.js",
@@ -37,6 +40,7 @@ const nextConfig = {
     "open",
     "@aws-sdk/credential-providers",
     "wreq-js",
+    "undici",
     "@remotion/bundler",
     "@remotion/renderer",
     "esbuild",
@@ -46,7 +50,9 @@ const nextConfig = {
   },
   outputFileTracingRoot: tracingRoot,
   outputFileTracingIncludes: {
-    "*": ["./src/mitm/**/*", "./src/shared/constants/**/*"]
+    // serverExternalPackages keeps undici external; dynamic import("undici")
+    // alone doesn't pull it into the trace, so force-ship the real package.
+    "*": ["./node_modules/undici/**/*", "./src/mitm/**/*", "./src/shared/constants/**/*"]
   },
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]

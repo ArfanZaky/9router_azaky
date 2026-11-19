@@ -116,9 +116,9 @@ export function getModelUpstreamId(aliasOrId, modelId, clientBody = null) {
     }
   }
 
-  // Look for tiered variant first if a tier was requested (e.g. gemini-3.8-flash-high)
+  // Look for tiered variant first if a tier was requested (e.g. gemini-3.8-flash-high or gemini-4-neon-extra)
   const tieredId = tier ? `${baseId}-${tier}` : null;
-  const found = (tieredId && findModel(models, tieredId, aliasOrId)) || findModel(models, baseId, aliasOrId);
+  const found = (rawSuffix && findModel(models, `${baseId}-${rawSuffix}`, aliasOrId)) || (tieredId && findModel(models, tieredId, aliasOrId)) || findModel(models, baseId, aliasOrId);
   const resolvedId = found?.upstreamModelId || found?.id;
   if (resolvedId) {
     const presetMatch = resolvedId.match(/\([^()]+\)\s*$/);

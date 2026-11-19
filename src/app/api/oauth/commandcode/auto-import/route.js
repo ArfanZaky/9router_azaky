@@ -1,64 +1,80 @@
 import { NextResponse } from "next/server";
-import { readFile } from "fs/promises";
+import { readFile, access, constants } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 
+function getCandidatePaths() {
+  const home = homedir();
+  const paths = [
+    join(home, ".commandcode", "auth.json"),
+  ];
+
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA || join(home, "AppData", "Roaming");
+    paths.push(join(appData, "commandcode", "auth.json"));
+  }
+
+  return paths;
+}
+
 /**
  * GET /api/oauth/commandcode/auto-import
- * Auto-detect and extract Command Code API key from local auth file.
- * Reads ~/.commandcode/auth.json.
+ * Auto-detect Command Code CLI credentials from ~/.commandcode/auth.json
  */
 export async function GET() {
   try {
-    const home = homedir();
-    const authPath = join(home, ".commandcode", "auth.json");
+    const candidates = getCandidatePaths();
 
-    let content;
-    try {
-      content = await readFile(authPath, "utf-8");
-    } catch {
+    let authPath = null;
+    for (const candidate of candidates) {
+      try {
+        await access(candidate, constants.R_OK);
+        authPath = candidate;
+        break;
+      } catch {
+        // try next
+      }
+    }
+
+    if (!authPath) {
       return NextResponse.json({
         found: false,
-        error: `Command Code auth file not found at ${authPath}. Please install Command Code CLI and login first.`,
+        error: `Command Code auth file not found. Checked:\n${candidates.join("\n")}\n\nRun 'commandcode login' in your terminal first.`,
       });
     }
 
-    let authData;
+    const raw = await readFile(authPath, "utf-8");
+    let auth;
     try {
-      authData = JSON.parse(content);
+      auth = JSON.parse(raw);
     } catch {
       return NextResponse.json({
         found: false,
-        error: "Invalid JSON in Command Code auth file.",
+        error: "auth.json is not valid JSON. Please run 'commandcode login' again.",
       });
     }
 
-    // Command Code auth.json typically has { "apiKey": "user_..." } or similar
-    const apiKey =
-      authData.apiKey ||
-      authData.accessToken ||
-      authData.access_token ||
-      authData.token ||
-      null;
-
-    if (!apiKey || typeof apiKey !== "string" || !apiKey.startsWith("user_")) {
+    const apiKey = typeof auth?.apiKey === "string" ? auth.apiKey.trim() : "";
+    if (!apiKey) {
       return NextResponse.json({
-        found: true,
-        raw: authData,
-        error: "No valid Command Code API key (user_...) found in auth.json.",
+        found: false,
+        error: "No apiKey found in ~/.commandcode/auth.json. Please run 'commandcode login'.",
       });
     }
 
     return NextResponse.json({
       found: true,
       apiKey,
+      userId: auth.userId || null,
+      userName: auth.userName || null,
+      email: auth.email || null,
+      accountId: auth.accountId || auth.userId || null,
+      keyName: auth.keyName || null,
+      authenticatedAt: auth.authenticatedAt || null,
       source: authPath,
-      // Include any additional useful info
-      email: authData.email || null,
-      accountId: authData.accountId || authData.userId || null,
     });
   } catch (error) {
-    console.log("Command Code auto-import error:", error);
+    console.error("Command Code auto-import error:", error);
     return NextResponse.json(
       { found: false, error: error.message },
       { status: 500 }

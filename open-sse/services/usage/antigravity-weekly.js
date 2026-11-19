@@ -26,11 +26,18 @@ export function _clearWeeklyCache() {
 }
 
 // — Group-name and window to stable key mapping ——————————————————————
+// Order matters: more specific family patterns (e.g. Gemini 4 Argon) must
+// precede the broader /gemini/i matcher so they do not get skipped.
 const GROUP_CONFIGS = [
   // Argon is its own pool; must be matched before the generic /gemini/ rule.
   {
     pattern: /argon/i,
     weekly: { key: "gemini_argon_weekly", displayName: "Gemini 4 Argon (Weekly)" },
+  },
+  {
+    pattern: /argon/i,
+    weekly: { key: "gemini_argon_weekly", displayName: "Gemini 4 Argon (Weekly)" },
+    session: { key: "gemini_argon_session", displayName: "Gemini 4 Argon (5h)" },
   },
   {
     pattern: /gemini/i,

@@ -55,7 +55,7 @@ export function filterToOpenAIFormat(body, opts = {}) {
         filteredContent.push({ type: OPENAI_BLOCK.TEXT, text: "" });
       }
       
-      return { ...msg, content: collapseTextParts(filteredContent) };
+      return { ...msg, content: collapseTextParts(filteredContent, opts) };
     }
     
     return msg;

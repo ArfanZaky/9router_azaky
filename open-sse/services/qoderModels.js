@@ -291,7 +291,6 @@ async function fetchQoderCatalogRaw(credentials, signal, proxyOptions = null, re
     // upstream returns code:112 + a pricing URL when a free-plan account
     // tries one of those keys, so refusing locally gives a clearer error.
     rawConfigs.set(key, entry);
-    if (entry.enable === false) continue;
 
     const display = entry.display_name || key;
     const ctx = Number(entry.max_input_tokens) || 131_072;
