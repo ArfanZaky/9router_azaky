@@ -6,6 +6,7 @@ import GeneratePanel from "./GeneratePanel";
 import HistoryPanel from "./HistoryPanel";
 import AccountsPanel from "./AccountsPanel";
 import ConfigPanel from "./ConfigPanel";
+import ApiPanel from "./ApiPanel";
 import { formatNumber, formatReset } from "./format";
 
 const TABS = [
@@ -13,6 +14,7 @@ const TABS = [
   { value: "history", label: "History", icon: "library_music" },
   { value: "accounts", label: "Accounts", icon: "manage_accounts" },
   { value: "config", label: "Config & Limits", icon: "tune" },
+  { value: "api", label: "API", icon: "api" },
 ];
 
 async function getJson(url) {
@@ -214,6 +216,7 @@ export default function ElevenLabsPageClient() {
       {tab === "config" && configData?.config ? (
         <ConfigPanel key={JSON.stringify(configData.config)} configData={configData} models={models} onReload={load} />
       ) : null}
+      {tab === "api" ? <ApiPanel config={configData?.config} /> : null}
     </div>
   );
 }
