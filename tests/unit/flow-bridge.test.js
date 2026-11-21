@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import flowProvider, { FLOW_IMAGE_MODELS, FLOW_VIDEO_MODELS, flowCreditCost } from "../../open-sse/providers/registry/flow.js";
+import flowProvider, { FLOW_IMAGE_MODELS, FLOW_VIDEO_MODELS, flowCliModel, flowCreditCost, isFlowModelRetired } from "../../open-sse/providers/registry/flow.js";
 import { PROVIDER_MEDIA, PROVIDER_MODELS } from "../../open-sse/providers/index.js";
 import { getVideoAdapter } from "../../open-sse/handlers/videoProviders/index.js";
 import { getImageAdapter } from "../../open-sse/handlers/imageProviders/index.js";
@@ -17,9 +17,9 @@ describe("flow provider registration", () => {
     expect(PROVIDER_MEDIA.flow.videoConfig.baseUrl).toBe("flow://local-bridge");
   });
 
-  it("exposes its five video models and four image models to the model matrix", () => {
+  it("exposes its six video models and four image models to the model matrix", () => {
     const videoModels = PROVIDER_MODELS.flow.filter((m) => m.kind === "video").map((m) => m.id).sort();
-    expect(videoModels).toEqual(["omni-flash", "veo-fast", "veo-lite", "veo-lite-lp", "veo-quality"]);
+    expect(videoModels).toEqual(["omni-1.2-flash", "omni-flash", "veo-fast", "veo-lite", "veo-lite-lp", "veo-quality"]);
     const imageModels = PROVIDER_MODELS.flow.filter((m) => m.kind === "image").map((m) => m.id).sort();
     expect(imageModels).toEqual(["imagen4", "nano-pro", "nano2", "nano2-lite"]);
   });
@@ -46,19 +46,56 @@ describe("flow provider registration", () => {
   });
 });
 
+// Prices depend on the day: Omni Flash 1.1 retires on 2026-12-05 and 1.2 is
+// billed per second from then on. Every assertion pins its own date.
+const BEFORE = new Date("2026-11-21T12:00:00Z");
+const AFTER = new Date("2026-12-05T00:00:00Z");
+
 describe("flow credit table", () => {
   // support.google.com/flow/answer/16526234: priced per clip, flat for Veo.
-  it("prices omni-flash per duration and resolution", () => {
-    expect(flowCreditCost("omni-flash", { duration: 4, resolution: "360p" })).toBe(4);
-    expect(flowCreditCost("omni-flash", { duration: 10, resolution: "360p" })).toBe(7);
-    expect(flowCreditCost("omni-flash", { duration: 10, resolution: "720p" })).toBe(15);
+  it("prices omni-flash at the 1.1 table before the retirement", () => {
+    expect(flowCreditCost("omni-flash", { duration: 4, resolution: "360p", at: BEFORE })).toBe(4);
+    expect(flowCreditCost("omni-flash", { duration: 10, resolution: "360p", at: BEFORE })).toBe(7);
+    expect(flowCreditCost("omni-flash", { duration: 4, resolution: "720p", at: BEFORE })).toBe(7);
+    expect(flowCreditCost("omni-flash", { duration: 10, resolution: "720p", at: BEFORE })).toBe(15);
+  });
+
+  it("prices omni-flash per second (1.2) from the retirement day", () => {
+    expect(flowCreditCost("omni-flash", { duration: 4, resolution: "360p", at: AFTER })).toBe(4);
+    expect(flowCreditCost("omni-flash", { duration: 10, resolution: "360p", at: AFTER })).toBe(10);
+    expect(flowCreditCost("omni-flash", { duration: 4, resolution: "720p", at: AFTER })).toBe(12);
+    expect(flowCreditCost("omni-flash", { duration: 10, resolution: "720p", at: AFTER })).toBe(30);
   });
 
   it("keeps Veo flat: 4s and 8s cost the same", () => {
-    expect(flowCreditCost("veo-lite", { duration: 4 })).toBe(10);
-    expect(flowCreditCost("veo-lite", { duration: 8 })).toBe(10);
-    expect(flowCreditCost("veo-fast", { duration: 8 })).toBe(20);
-    expect(flowCreditCost("veo-quality", { duration: 8 })).toBe(100);
+    expect(flowCreditCost("veo-lite", { duration: 4, at: BEFORE })).toBe(10);
+    expect(flowCreditCost("veo-lite", { duration: 8, at: AFTER })).toBe(10);
+    expect(flowCreditCost("veo-fast", { duration: 8, at: BEFORE })).toBe(20);
+    expect(flowCreditCost("veo-quality", { duration: 8, at: BEFORE })).toBe(100);
+  });
+
+  // gflow 0.103: `omni-flash` is Omni Flash 1.1 (retiring), `omni-1.2-flash` is 1.2.
+  it("sends omni-flash to gflow as omni-1.2-flash from the retirement day", () => {
+    expect(flowCliModel("omni-flash", { at: BEFORE })).toBe("omni-flash");
+    expect(flowCliModel("omni-flash", { at: AFTER })).toBe("omni-1.2-flash");
+    expect(flowCliModel("omni-1.2-flash", { at: BEFORE })).toBe("omni-1.2-flash");
+    expect(flowCliModel("veo-lite", { at: AFTER })).toBe("veo-lite");
+  });
+
+  it("prices Omni Flash 1.2 per second, with dearer seconds past 10s", () => {
+    expect(flowCreditCost("omni-1.2-flash", { duration: 3, resolution: "720p", at: BEFORE })).toBe(9);
+    expect(flowCreditCost("omni-1.2-flash", { duration: 10, resolution: "720p", at: BEFORE })).toBe(30);
+    expect(flowCreditCost("omni-1.2-flash", { duration: 15, resolution: "720p", at: BEFORE })).toBe(60);
+    expect(flowCreditCost("omni-1.2-flash", { duration: 15, resolution: "360p", at: BEFORE })).toBe(20);
+    expect(flowCreditCost("omni-1.2-flash", { duration: 2, resolution: "720p", at: BEFORE })).toBeNull();
+  });
+
+  it("retires Veo 3.1 Fast and Quality on 2026-12-05, not Lite or Omni", () => {
+    expect(isFlowModelRetired("veo-fast", { at: BEFORE })).toBe(false);
+    expect(isFlowModelRetired("veo-fast", { at: AFTER })).toBe(true);
+    expect(isFlowModelRetired("veo-quality", { at: AFTER })).toBe(true);
+    expect(isFlowModelRetired("veo-lite", { at: AFTER })).toBe(false);
+    expect(isFlowModelRetired("omni-flash", { at: AFTER })).toBe(false);
   });
 
   it("returns null for combinations the model does not offer", () => {
@@ -72,8 +109,15 @@ describe("flow request validation (pre-submit, no spend)", () => {
   // The agent-only Flow host has no resolution row: it always renders 720p, so
   // the price must be the 720p one even when nobody asked for a resolution.
   it("pins omni-flash to the resolution this host actually renders", () => {
-    const req = validateFlowRequest({ model: "omni-flash", prompt: "a cat", duration: 10 });
+    const req = validateFlowRequest({ model: "omni-flash", prompt: "a cat", duration: 10 }, { now: BEFORE });
     expect(req).toMatchObject({ mode: "t2v", aspect: "16:9", resolution: "720p", creditCost: 15 });
+    const later = validateFlowRequest({ model: "omni-flash", prompt: "a cat", duration: 10 }, { now: AFTER });
+    expect(later.creditCost).toBe(30);
+  });
+
+  it("refuses a retired model before any submit", () => {
+    expect(() => validateFlowRequest({ model: "veo-fast", prompt: "x", duration: 8 }, { now: AFTER })).toThrow(/retired/);
+    expect(() => validateFlowRequest({ model: "veo-quality", prompt: "x", duration: 8 }, { now: AFTER })).toThrow(/retired/);
   });
 
   it("refuses a resolution this host cannot select, before any spend", () => {
@@ -84,14 +128,14 @@ describe("flow request validation (pre-submit, no spend)", () => {
 
   it("rejects settings Flow itself would refuse, before any submit", () => {
     expect(() => validateFlowRequest({ model: "nope", prompt: "x" })).toThrow(/Unknown Flow model/);
-    expect(() => validateFlowRequest({ model: "veo-fast", prompt: "x", duration: 10 })).toThrow(/does not offer 10s/);
+    expect(() => validateFlowRequest({ model: "veo-lite", prompt: "x", duration: 10 })).toThrow(/does not offer 10s/);
     expect(() => validateFlowRequest({ model: "veo-lite", prompt: "x", duration: 8, resolution: "720p" })).toThrow(/no resolution option/);
     expect(() => validateFlowRequest({ model: "omni-flash", prompt: "" })).toThrow(/prompt is required/);
     expect(() => validateFlowRequest({ model: "omni-flash", prompt: "x", image: "frame.png" })).toThrow(/imagePath/);
   });
 
   it("marks i2v when an image is supplied", () => {
-    const req = validateFlowRequest({ model: "veo-fast", prompt: "push in", duration: 8, imagePath: "tmp/frame.png" });
+    const req = validateFlowRequest({ model: "veo-fast", prompt: "push in", duration: 8, imagePath: "tmp/frame.png" }, { now: BEFORE });
     expect(req.mode).toBe("i2v");
     expect(req.creditCost).toBe(20);
   });

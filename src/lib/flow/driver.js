@@ -16,8 +16,9 @@
 // flow.google.com host, issue #799) — that is P2 and needs real DOM work here.
 // Until then i2v fails loudly before anything is submitted.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
+import { flowCliModel } from "../../../open-sse/providers/registry/flow.js";
 
 const BIN = () => process.env.FLOW_GFLOW_BIN || "gflow";
 const RENDER_TIMEOUT_MS = () => Number(process.env.FLOW_RENDER_TIMEOUT_MS) || 15 * 60 * 1000;
@@ -173,23 +174,30 @@ function fail(message) {
  */
 export async function renderFlowJob(job, { onStep = () => {}, onProject = () => {}, profile = null, timeoutMs = null } = {}) {
   const activeProfile = job.profile || profile || process.env.FLOW_PROFILE || null;
-  // i2v cannot go through the CLI on this host (attach-image is unported, #799),
-  // so it runs on the real composer instead. t2v stays on the CLI: it is proven
-  // end-to-end and downloads the mp4 itself.
-  if (job.mode === "i2v") {
-    assertNotTestRun();
-    const { renderFlowInComposer } = await import("./composer.js");
-    return renderFlowInComposer({ ...job, profile: activeProfile }, { onStep, onProject });
-  }
   assertNotTestRun();
 
-  const target = join(outDir(), `${job.id}.mp4`);
+  // i2v goes through `gflow video i2v` first. Since Flow's 2026-11-20 build the
+  // composer has an "Agen Flow" switch; with it off, the prompt box generates
+  // whatever media its settings name (an image by default), so 9Router's own
+  // agent-composer driver gets pictures back. gflow 0.103 drives that classic
+  // arm, start frame included. The composer stays as the fallback for an
+  // account gflow cannot drive yet (exit 36, nothing submitted).
+  const isI2v = job.mode === "i2v";
+  if (isI2v && !job.imagePath) throw fail("i2v needs a start frame; nothing was submitted");
+
+  // A directory per job, not `-o <file>`: gflow 0.103 turned `-o` into the
+  // output-format switch (id|json|table). `--out-dir` means the same thing in
+  // 0.92 and 0.103, so the driver works on either.
+  const target = join(outDir(), job.id);
+  mkdirSync(target, { recursive: true });
   const args = [
     "video",
-    "t2v",
+    isI2v ? "i2v" : "t2v",
+    ...(isI2v ? ["--initial-frame", job.imagePath] : []),
     job.prompt,
     "--model",
-    job.model,
+    // `omni-flash` becomes `omni-1.2-flash` on Omni Flash 1.1's retirement day.
+    flowCliModel(job.model),
     "--duration",
     String(job.duration),
     "--aspect",
@@ -198,7 +206,7 @@ export async function renderFlowJob(job, { onStep = () => {}, onProject = () => 
   // --resolution is deliberately never passed: see hostResolution() above.
   if (job.projectId) args.push("--project", job.projectId);
   if (activeProfile) args.push("--profile", activeProfile);
-  args.push("-o", target, "--json");
+  args.push("--out-dir", target, "--json");
 
   onStep(`submitting ${job.model} ${job.duration}s ${job.aspect}${job.resolution ? ` at Flow default (${job.resolution})` : ""}${activeProfile ? ` [${activeProfile}]` : ""}`);
   const logFile = join(outDir(), `${job.id}.log`);
@@ -210,12 +218,29 @@ export async function renderFlowJob(job, { onStep = () => {}, onProject = () => 
     );
   }
   if (result.code !== 0) {
-    const detail = (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" | ").slice(0, 500);
-    throw fail(`gflow exited ${result.code}: ${detail || "no output"} (log: ${logFile})`);
+    // Exit 36: gflow cannot drive this request on this account's composer and
+    // refused before any click, so the agent composer may still try it.
+    if (isI2v && result.code === 36) {
+      onStep("gflow cannot drive i2v on this account; using the agent composer");
+      const { renderFlowInComposer } = await import("./composer.js");
+      return renderFlowInComposer({ ...job, profile: activeProfile }, { onStep, onProject });
+    }
+    const json = parseCliJson(result.stdout) || parseCliJson(result.stderr) || {};
+    const problem = json.error || json.problem || {};
+    const detail =
+      problem.detail || (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" | ");
+    throw fail(`gflow exited ${result.code}: ${String(detail || "no output").slice(0, 500)} (log: ${logFile})`);
   }
 
   onStep("downloading");
-  const { mediaPath, sourceUrl, raw } = extractRenderResult(result.stdout, target);
+  const extracted = extractRenderResult(result.stdout, null);
+  const { sourceUrl, raw } = extracted;
+  // The project gflow rendered into (it makes one when none was given): stored
+  // so the job points at the place the clip lives.
+  const renderedProject = findString(raw, /^project_?id$/i);
+  if (renderedProject && renderedProject !== job.projectId) onProject(renderedProject);
+  const saved = readdirSync(target).filter((name) => /\.mp4$/i.test(name)).sort();
+  const mediaPath = saved.length ? join(target, saved[0]) : extracted.mediaPath && existsSync(extracted.mediaPath) ? extracted.mediaPath : null;
   // gflow can exit 0 with a per-generation failure inside the payload.
   if (raw?.succeeded === false) {
     const why = (raw.failure_reasons || []).join("; ") || raw.error_message || "no reason given";
@@ -247,65 +272,98 @@ export async function readFlowCredits(profile = null) {
   return Number(match[1].replace(/,/g, ""));
 }
 
+const IMAGE_EXT = /\.(png|jpe?g|webp)$/i;
+
 /**
- * Render one image via `gflow image t2i` or `gflow image i2i`.
+ * Explain a failed `gflow image` run from its problem+json body.
+ *
+ * Exit 36 (FlowHostMigratedError) is the common one: on the agent-only
+ * flow.google.com composer gflow drives text-to-image only, so any reference
+ * image fails before submit. Saying that plainly beats a raw CLI dump.
+ */
+export function describeImageFailure(result, logFile) {
+  const json = parseCliJson(result.stdout) || parseCliJson(result.stderr) || {};
+  const problem = json.error || json.problem || {};
+  if (result.code === 36 || problem.class === "FlowHostMigratedError" || /flow-host-migrated/.test(String(problem.type || ""))) {
+    return "Akun Flow ini memakai composer agent-only: gflow hanya bisa text-to-image di sana, gambar referensi (i2i) belum didukung (#799). Hapus referensinya lalu coba lagi. Tidak ada kuota terpakai.";
+  }
+  const detail =
+    problem.detail ||
+    problem.title ||
+    (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" | ");
+  return `gflow image exited ${result.code}: ${String(detail || "no output").slice(0, 500)} (log: ${logFile})`;
+}
+
+/**
+ * Render 1-4 images via `gflow image t2i`, or `gflow image i2i` when reference
+ * images are given.
+ *
+ * Output goes to a fresh directory per call (`--out`): gflow names the files
+ * `<media_name>_<n>.png` there, so collecting every image in that directory is
+ * the one result shape that holds for any count.
+ *
  * @param {object} opts
- * @param {string} opts.id
+ * @param {string} opts.id          output directory / log name
  * @param {string} opts.prompt
  * @param {string} [opts.model]
  * @param {string} [opts.aspect]
- * @param {string} [opts.imagePath]
+ * @param {number} [opts.count]     1-4
+ * @param {string[]} [opts.refs]    local reference image paths (i2i)
+ * @param {string} [opts.imagePath] single reference, kept for older callers
  * @param {string} [opts.projectId]
  * @param {string} [opts.profile]
+ * @param {number} [opts.timeoutMs]
+ * @returns {Promise<{ mediaPaths: string[], mediaPath: string, sourceUrl: string|null }>}
  */
 export async function renderFlowImage({
   id = `img-${Date.now()}`,
   prompt,
   model = "nano2",
   aspect = "16:9",
+  count = 1,
+  refs = [],
   imagePath = null,
   projectId = null,
   profile = null,
+  timeoutMs = null,
 } = {}) {
   assertNotTestRun();
 
   const activeProfile = profile || process.env.FLOW_PROFILE || null;
-  const target = join(outDir(), `${id}.png`);
-  const sub = imagePath ? "i2i" : "t2i";
-  const args = [
-    "image",
-    sub,
-    prompt,
-    "--model",
-    model,
-    "--aspect",
-    aspect,
-  ];
-  if (imagePath) args.push("--ref", imagePath);
+  const references = [...refs, ...(imagePath ? [imagePath] : [])].filter(Boolean);
+  const n = Math.min(4, Math.max(1, Number(count) || 1));
+  const target = join(outDir(), id);
+  mkdirSync(target, { recursive: true });
+
+  const args = ["image", references.length ? "i2i" : "t2i", prompt, "--model", model, "--aspect", aspect, "-n", String(n)];
+  for (const ref of references) args.push("--ref", ref);
   if (projectId) args.push("--project", projectId);
   if (activeProfile) args.push("--profile", activeProfile);
-  args.push("-o", target, "--json");
+  args.push("--out", target, "--json");
 
   const logFile = join(outDir(), `${id}.log`);
-  const result = await runCli(args, { logFile });
+  const result = await runCli(args, { logFile, timeoutMs: timeoutMs || RENDER_TIMEOUT_MS() });
 
   if (result.timedOut) {
-    throw fail(`Flow image generation timed out after ${Math.round(RENDER_TIMEOUT_MS() / 60000)} min (log: ${logFile})`);
+    throw fail(`Flow image generation timed out after ${Math.round((timeoutMs || RENDER_TIMEOUT_MS()) / 60000)} min (log: ${logFile})`);
   }
-  if (result.code !== 0) {
-    const detail = (result.stderr || result.stdout || "").trim().split("\n").slice(-3).join(" | ").slice(0, 500);
-    throw fail(`gflow image exited ${result.code}: ${detail || "no output"} (log: ${logFile})`);
-  }
+  if (result.code !== 0) throw fail(describeImageFailure(result, logFile));
 
-  const { mediaPath, sourceUrl, raw } = extractRenderResult(result.stdout, target);
-  if (raw?.succeeded === false) {
-    const why = (raw.failure_reasons || []).join("; ") || raw.error_message || "no reason given";
+  const { mediaPath, sourceUrl, raw } = extractRenderResult(result.stdout, null);
+  if (raw?.succeeded === false || raw?.status === "fail") {
+    const why = (raw.failure_reasons || []).join("; ") || raw.error_message || raw.error?.detail || "no reason given";
     throw fail(`Flow rejected image render: ${why} (log: ${logFile})`);
   }
-  if (!mediaPath || !existsSync(mediaPath)) {
+
+  const mediaPaths = readdirSync(target)
+    .filter((name) => IMAGE_EXT.test(name))
+    .sort()
+    .map((name) => join(target, name));
+  if (!mediaPaths.length && mediaPath && existsSync(mediaPath)) mediaPaths.push(mediaPath);
+  if (!mediaPaths.length) {
     throw fail(`Flow image reported success but no image file was found (log: ${logFile})`);
   }
-  return { mediaPath, sourceUrl };
+  return { mediaPaths, mediaPath: mediaPaths[0], sourceUrl };
 }
 
 /** List all saved Flow profiles via `gflow auth list --json`. */
@@ -404,11 +462,13 @@ export async function getFlowDiagnostics(profile = null) {
     runCli(["--version"], { timeoutMs: 10000 }),
   ]);
   const doctor = parseCliJson(docRes.stdout) || { overall_status: docRes.code === 0 ? "ok" : "issues", checks: [] };
-  const projects = parseCliJson(projRes.stdout);
+  const parsed = parseCliJson(projRes.stdout);
+  // gflow <=0.92 printed a bare array; 0.103 wraps it as { status, projects }.
+  const projects = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.projects) ? parsed.projects : [];
   const versionText = `${verRes.stdout}\n${verRes.stderr}`.trim().split("\n")[0] || "";
   return {
     cliVersion: versionText,
     doctor,
-    projects: Array.isArray(projects) ? projects : [],
+    projects,
   };
 }

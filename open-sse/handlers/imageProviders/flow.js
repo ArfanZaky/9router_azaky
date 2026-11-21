@@ -18,15 +18,14 @@ export default {
       model: model || body.model,
     });
 
+    const images = img.images?.length ? img.images : [img];
     return {
       created: nowSec(),
-      data: [
-        {
-          url: img.url,
-          b64_json: img.b64_json,
-          ...(img.mime ? { mime_type: img.mime } : {}),
-        },
-      ],
+      data: images.map((item) => ({
+        url: item.url,
+        b64_json: item.b64_json,
+        ...(item.mime ? { mime_type: item.mime } : {}),
+      })),
     };
   },
 };

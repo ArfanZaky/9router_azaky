@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import path from "node:path";
 import fs from "node:fs";
 import { v4 as uuidv4 } from "uuid";
-import { enqueueFlowJob, FlowRequestError } from "@/lib/flow/bridge";
+import { enqueueFlowJob, FlowRequestError, reconcileOrphanedFlowJobs } from "@/lib/flow/bridge";
 import { listFlowJobs } from "@/lib/db/repos/flowRepo";
 import { getFlowImage } from "@/lib/db/repos/flowImagesRepo.js";
 import { resolveImageAssetPath } from "@/lib/media/imageStore.js";
@@ -14,6 +14,8 @@ const UPLOAD_DIR = path.join(DATA_DIR, "flow", "uploads");
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
+  // Jobs a previous server process left 'running' become failed + resumable.
+  await reconcileOrphanedFlowJobs().catch(() => {});
   const jobs = await listFlowJobs({
     status: searchParams.get("status") || "",
     limit: searchParams.get("limit") || 50,

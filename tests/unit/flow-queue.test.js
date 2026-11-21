@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 process.env.FLOW_BRIDGE_DRYRUN = "1";
 const bridge = await import("../../src/lib/flow/bridge.js");
 const repo = await import("../../src/lib/db/repos/flowRepo.js");
+const { flowCreditCost } = await import("../../open-sse/providers/registry/flow.js");
+
+// enqueueFlowJob prices at today's date, and Omni Flash changes price on
+// 2026-12-05: expect whatever the table says today instead of a literal.
+const omniCost = (duration) => flowCreditCost("omni-flash", { duration, resolution: "720p" });
 
 const created = [];
 const waitFor = async (id, statuses, ms = 3000) => {
@@ -21,7 +26,7 @@ describe("flow bridge queue (no credits spent)", () => {
     const job = await bridge.enqueueFlowJob({ model: "omni-flash", prompt: "tmp flow e2e dry", duration: 4 });
     created.push(job.id);
     expect(job.status).toBe("queued");
-    expect(job.creditCost).toBe(7);
+    expect(job.creditCost).toBe(omniCost(4));
     expect(job.dryRun).toBe(true);
 
     const done = await waitFor(job.id, ["completed", "failed"]);
@@ -30,19 +35,19 @@ describe("flow bridge queue (no credits spent)", () => {
     expect(done.mediaPath).toBeNull();
 
     const res = await bridge.getFlowJobResponse(job.id);
-    expect(res).toMatchObject({ request_id: job.id, status: "completed", dry_run: true, credit_cost: 7 });
+    expect(res).toMatchObject({ request_id: job.id, status: "completed", dry_run: true, credit_cost: omniCost(4) });
     expect(res.video).toBeUndefined();
   });
 
   it("blocks a paid job the last known balance cannot cover", async () => {
     process.env.FLOW_BRIDGE_DRYRUN = "0";
     await repo.addFlowCreditSnapshot({ balance: 5, source: "test" });
-    await expect(bridge.enqueueFlowJob({ model: "veo-fast", prompt: "x", duration: 8 })).rejects.toThrow(/Insufficient Flow credits/);
+    await expect(bridge.enqueueFlowJob({ model: "veo-lite", prompt: "x", duration: 8 })).rejects.toThrow(/Insufficient Flow credits/);
   });
 
   it("fails loudly (no submit) unless a real render is opted in", async () => {
     await repo.addFlowCreditSnapshot({ balance: 500, source: "test" });
-    const job = await bridge.enqueueFlowJob({ model: "veo-fast", prompt: "x", duration: 8 });
+    const job = await bridge.enqueueFlowJob({ model: "veo-lite", prompt: "x", duration: 8 });
     created.push(job.id);
     const done = await waitFor(job.id, ["completed", "failed"], 15000);
     expect(done.status).toBe("failed");
@@ -71,7 +76,7 @@ describe("flow bridge queue (no credits spent)", () => {
     expect(create.status).toBe(202);
     const payload = await create.json();
     expect(payload.status).toBe("processing");
-    expect(payload.credit_cost).toBe(10);
+    expect(payload.credit_cost).toBe(omniCost(6));
     created.push(payload.request_id);
 
     const done = await waitFor(payload.request_id, ["completed", "failed"]);

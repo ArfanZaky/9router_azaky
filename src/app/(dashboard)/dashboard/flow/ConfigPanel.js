@@ -34,7 +34,7 @@ export default function ConfigPanel({
     dailyBudgetCredits: cfg.dailyBudgetCredits ?? 0,
     hostResolution: cfg.hostResolution || "720p",
     channel: cfg.channel || "chrome",
-    headless: Boolean(cfg.headless),
+    offscreen: cfg.offscreen !== false,
     renderTimeoutMinutes: cfg.renderTimeoutMinutes ?? 15,
     composerTimeoutMinutes: cfg.composerTimeoutMinutes ?? 20,
     creditTimeoutMinutes: cfg.creditTimeoutMinutes ?? 3,
@@ -56,7 +56,7 @@ export default function ConfigPanel({
       dailyBudgetCredits: configData.config.dailyBudgetCredits ?? 0,
       hostResolution: configData.config.hostResolution || "720p",
       channel: configData.config.channel || "chrome",
-      headless: Boolean(configData.config.headless),
+      offscreen: configData.config.offscreen !== false,
       renderTimeoutMinutes: configData.config.renderTimeoutMinutes ?? 15,
       composerTimeoutMinutes: configData.config.composerTimeoutMinutes ?? 20,
       creditTimeoutMinutes: configData.config.creditTimeoutMinutes ?? 3,
@@ -214,12 +214,14 @@ export default function ConfigPanel({
           <div className="grid grid-cols-1 gap-3 rounded-[10px] border border-border-subtle bg-surface-2 p-3 sm:grid-cols-2">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-medium text-text-main">Headless Browser (Composer I2V)</p>
-                <p className="text-xs text-text-muted">Jalankan browser di belakang layar saat render Image-to-Video</p>
+                <p className="text-sm font-medium text-text-main">Jendela Chrome di luar layar (Composer I2V)</p>
+                <p className="text-xs text-text-muted">
+                  Chrome tetap berjalan normal (bukan headless, yang ditolak reCAPTCHA), tapi jendelanya tidak muncul di layar. Matikan untuk melihat jalannya render.
+                </p>
               </div>
               <Toggle
-                checked={form.headless}
-                onChange={(val) => setForm({ ...form, headless: Boolean(val) })}
+                checked={form.offscreen}
+                onChange={(val) => setForm({ ...form, offscreen: Boolean(val) })}
               />
             </div>
             <div className="flex items-center justify-between gap-3">
@@ -281,16 +283,24 @@ export default function ConfigPanel({
             <div key={t.tier} className="rounded-[10px] border border-border-subtle bg-surface-2 p-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-text-main">{t.tier}</span>
-                <Badge variant="info">{t.monthlyCredits.toLocaleString("id-ID")} credits / bulan</Badge>
+                <Badge variant="info">
+                  {Number(t.credits ?? t.monthlyCredits ?? 0).toLocaleString("id-ID")} credits / {t.period || "bulan"}
+                </Badge>
               </div>
               <p className="mt-1 text-xs text-text-muted">{t.note}</p>
             </div>
           ))}
         </div>
 
+        {limits.retirement?.note ? (
+          <div className="mt-4 rounded-[10px] border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-text-main">
+            {limits.retirement.note}
+          </div>
+        ) : null}
+
         <div className="mt-4 rounded-[10px] border border-border-subtle bg-surface-2 p-3 text-xs text-text-muted space-y-1">
           <p className="font-semibold text-text-main">Mekanisme Proteksi Kredit (Credit Gate):</p>
-          <p>1. Harga dihitung per clip (flat untuk Veo 3.1 Lite/Fast/Quality), sedangkan Omni Flash mengikuti durasi (4s/6s/8s/10s) dan resolusi.</p>
+          <p>1. Harga dihitung per clip (flat untuk Veo 3.1 Lite/Fast/Quality), sedangkan Omni Flash mengikuti durasi (4s/6s/8s/10s) dan resolusi. Untuk model yang harganya beda per paket, dipakai harga non-Ultra.</p>
           <p>2. Sebelum job dikirim ke browser, bridge mengecek saldo terakhir. Jika saldo belum pernah di-refresh atau kurang dari biaya clip, job ditolak sebelum submit agar tidak gagal di tengah jalan.</p>
           <p>3. Setiap job hanya di-submit maksimal 1 kali (tanpa auto-retry setelah tombol submit ditekan) untuk mencegah pemotongan kredit ganda.</p>
         </div>
@@ -319,6 +329,11 @@ export default function ConfigPanel({
                     <td className="py-2.5 pr-2">
                       <p className="font-semibold text-text-main">{m.name}</p>
                       <p className="text-[11px] text-text-subtle">flow/{m.id}</p>
+                      {m.retired ? (
+                        <Badge variant="error">Pensiun sejak {m.retiresOn}</Badge>
+                      ) : m.retiresOn ? (
+                        <Badge variant="warning">Pensiun {m.retiresOn}</Badge>
+                      ) : null}
                     </td>
                     <td className="py-2.5 px-2 text-text-main">{(m.durations || []).map((d) => `${d}s`).join(", ")}</td>
                     <td className="py-2.5 px-2 text-text-main">{(m.aspects || []).join(", ")}</td>
@@ -370,6 +385,34 @@ export default function ConfigPanel({
               </tbody>
             </table>
           </div>
+
+          {(limits.imageDailyLimits || []).length ? (
+            <div className="mt-4 border-t border-border-subtle pt-3">
+              <p className="text-xs font-semibold text-text-main mb-2">Kuota Harian Gambar (bukan kredit, reset 24 jam setelah generate pertama)</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-border-subtle text-text-muted">
+                      <th className="py-2 pr-2">Model / Fitur</th>
+                      <th className="py-2 px-2">Tanpa paket</th>
+                      <th className="py-2 px-2">Plus & Pro</th>
+                      <th className="py-2 pl-2">Ultra</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border-subtle">
+                    {limits.imageDailyLimits.map((row) => (
+                      <tr key={row.item}>
+                        <td className="py-2 pr-2 text-text-main">{row.item}</td>
+                        <td className="py-2 px-2 text-text-main">{row.free || "—"}</td>
+                        <td className="py-2 px-2 text-text-main">{row.plusPro || "—"}</td>
+                        <td className="py-2 pl-2 text-text-main">{row.ultra || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-4 border-t border-border-subtle pt-3">
             <p className="text-xs font-semibold text-text-main mb-2">Ringkasan Pemakaian Lokal (Database 9Router)</p>

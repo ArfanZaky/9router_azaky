@@ -89,7 +89,7 @@ describe("flow composer project resolution", () => {
   });
 });
 
-// Opt-in: a real render spends real credits (omni-flash 360p 10s = 7).
+// Opt-in: a real render spends real credits (omni-flash 4s 720p, 7 or 12 credits).
 // RUN_FLOW=1 npx vitest run --config ./vitest.config.js tests/unit/flow-driver.test.js
 describe.skipIf(process.env.RUN_FLOW !== "1")("flow render against the live Flow account", () => {
   it("renders one clip, stores the mp4, and charges the table price", async () => {
@@ -104,8 +104,10 @@ describe.skipIf(process.env.RUN_FLOW !== "1")("flow render against the live Flow
       duration: 4,
       aspect: "16:9",
     });
-    // 4s omni-flash at the 720p this host renders: the cheapest real render.
-    expect(job.creditCost).toBe(7);
+    // 4s omni-flash at the 720p this host renders: the cheapest real render
+    // (7 credits on Omni Flash 1.1, 12 on 1.2 from 2026-12-05).
+    const { flowCreditCost } = await import("../../open-sse/providers/registry/flow.js");
+    expect(job.creditCost).toBe(flowCreditCost("omni-flash", { duration: 4, resolution: "720p" }));
 
     let current = job;
     const deadline = Date.now() + 20 * 60 * 1000;

@@ -94,7 +94,9 @@ export default function FlowGeneratePanel({ price, busy, startAsset, onClearStar
             label="Model"
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            options={(price?.models || []).map((m) => ({ value: m.id, label: m.name }))}
+            options={(price?.models || [])
+              .filter((m) => !m.retired)
+              .map((m) => ({ value: m.id, label: m.retiresOn ? `${m.name} (pensiun ${m.retiresOn})` : m.name }))}
           />
           <Select
             label="Duration"

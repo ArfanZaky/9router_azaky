@@ -22,6 +22,7 @@
 
 import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { flowCliModel } from "../../../open-sse/providers/registry/flow.js";
 
 const TIMEOUT_MS = () => Number(process.env.FLOW_COMPOSER_TIMEOUT_MS) || 20 * 60 * 1000;
 const DEBUG = () => process.env.FLOW_DEBUG === "1";
@@ -219,18 +220,46 @@ async function answerCreditGate(page) {
  * One Chrome on the signed-in profile, with a response tap that records every
  * generated video URL Flow hands out (`flow-content.google/video/{id}`).
  */
-async function openFlowPage({ profile = "", channel = "", headless = null } = {}) {
+/**
+ * Chrome's `--window-position` for a headed run, or null to let Chrome place it.
+ *
+ * Headless is not an option for Flow: reCAPTCHA Enterprise rejects headless
+ * Chromium outright. So the window stays headed and is parked off-screen
+ * instead, which Flow cannot tell apart from a visible one (gflow does the
+ * same by default, GFLOW_CLI_BROWSER_WINDOW_POSITION). FLOW_WINDOW_POSITION
+ * overrides it with any "X,Y"; set it empty to watch the run.
+ */
+export function windowPositionArg({ offscreen = true } = {}) {
+  const raw = process.env.FLOW_WINDOW_POSITION;
+  if (raw !== undefined) {
+    const match = String(raw).trim().match(/^(-?\d+)\s*,\s*(-?\d+)$/);
+    return match ? `--window-position=${match[1]},${match[2]}` : null;
+  }
+  return offscreen ? "--window-position=-30000,-30000" : null;
+}
+
+async function openFlowPage({ profile = "", channel = "", headless = null, offscreen = null } = {}) {
   const { chromium } = await import("playwright");
   const dir = profileDir(profile);
   const useChannel = channel || process.env.FLOW_CHANNEL || "chrome";
   const useHeadless = headless !== null ? Boolean(headless) : process.env.FLOW_HEADLESS === "1";
+  let useOffscreen = offscreen;
+  if (useOffscreen === null) {
+    try {
+      const { getFlowConfig } = await import("./bridge.js");
+      useOffscreen = (await getFlowConfig()).offscreen !== false;
+    } catch {
+      useOffscreen = true;
+    }
+  }
+  const position = useHeadless ? null : windowPositionArg({ offscreen: useOffscreen });
   const launch = () =>
     chromium.launchPersistentContext(dir, {
       channel: useChannel === "internal" ? undefined : useChannel,
       headless: useHeadless,
       viewport: { width: 1440, height: 900 },
       acceptDownloads: true,
-      args: ["--no-first-run", "--no-default-browser-check"],
+      args: ["--no-first-run", "--no-default-browser-check", ...(position ? [position] : [])],
     });
 
   let ctx;
@@ -278,23 +307,239 @@ async function openFlowPage({ profile = "", channel = "", headless = null } = {}
   return { ctx, page, videos };
 }
 
+// ---------------------------------------------------------------------------
+// Finding the finished clip after Flow's 2026-11-19 build.
+//
+// Flow stopped naming clips on the page (gflow #1354): the grid tile, its hover
+// player and the chat option all use opaque `flow.google.com/asb/<token>=…`
+// URLs, and `flow-content.google/video/<uuid>` no longer shows up in the
+// responses the old tap watched. Completion is therefore read from the DOM (no
+// `flow-pending-tile` left, a new finished `flow-video-tile`), and the clip's id
+// from the project listing (`Zzl0ze`), whose record poster shares the tile's
+// /asb/ token. Ported from gflow 0.103 agent_only_composer.py / batchexecute.py.
+// ---------------------------------------------------------------------------
+
+const LISTING_RPC = "Zzl0ze";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CDN_VIDEO_RE = /^https:\/\/flow-content\.google\/video\/([0-9a-f-]{36})(?:[?#]|$)/i;
+const STATUS_DONE = 3;
+// A listed clip created this long before our submit is still accepted (clock skew).
+const SUBMIT_MARGIN_MS = 15000;
+const LISTING_RETRY_MS = 15000;
+
+/** Every `["wrb.fr", rpcid, "<json>"]` frame of a batchexecute body, decoded. */
+export function parseBatchexecute(text = "") {
+  let body = String(text).trimStart();
+  if (body.startsWith(")]}'")) body = body.slice(4);
+  const frames = [];
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    if (!line.startsWith("[")) continue;
+    let decoded;
+    try {
+      decoded = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    for (const item of Array.isArray(decoded) ? decoded : []) {
+      if (!Array.isArray(item) || item.length < 3 || item[0] !== "wrb.fr" || typeof item[1] !== "string") continue;
+      if (typeof item[2] !== "string") continue;
+      try {
+        frames.push({ rpcid: item[1], payload: JSON.parse(item[2]) });
+      } catch {
+        /* an undecodable payload is an error envelope, not a reply */
+      }
+    }
+  }
+  return frames;
+}
+
+/** The opaque token of a `/asb/<token>=…` media URL, or null. */
+export function asbToken(url) {
+  let path;
+  try {
+    path = new URL(String(url || "")).pathname;
+  } catch {
+    return null;
+  }
+  const at = path.indexOf("/asb/");
+  if (at === -1) return null;
+  const token = path.slice(at + 5).split("=")[0].split("/")[0];
+  return token || null;
+}
+
+const at = (node, ...path) => {
+  let current = node;
+  for (const i of path) {
+    if (!Array.isArray(current) || i >= current.length) return null;
+    current = current[i];
+  }
+  return current;
+};
+
+function* walkLists(node) {
+  if (!Array.isArray(node)) return;
+  yield node;
+  for (const child of node) yield* walkLists(child);
+}
+
+/** First `image/…` or `video/…` string anywhere under `node`. */
+function mimeIn(node) {
+  for (const list of walkLists(node)) {
+    for (const value of list) {
+      if (typeof value === "string" && /^(image|video)\/[a-z0-9.+-]+$/i.test(value)) return value.toLowerCase();
+    }
+  }
+  return null;
+}
+
+/**
+ * Every generation record in a `Zzl0ze` payload:
+ * `[workflowId, projectId, mediaId, _, _, [[createdSec, ns], …, posterUrl @5 and @10, …], [[… mime]], [[… clipUrl]]]`.
+ * Three UUIDs plus the details list at slot 5 identify a record (gflow `_is_record`).
+ *
+ * Measured on the 2026-11-20 build: image records carry `image/jpeg` in slot 6
+ * and no status at details[8] (gflow's status slot), so the kind comes from the
+ * mime and a missing status is read as "unknown", not "unfinished".
+ */
+export function listingRecords(payload) {
+  const records = [];
+  for (const node of walkLists(payload)) {
+    if (node.length < 6 || !Array.isArray(node[5])) continue;
+    if (![0, 1, 2].every((i) => typeof node[i] === "string" && UUID_RE.test(node[i]))) continue;
+    const created = at(node, 5, 0, 0);
+    const status = at(node, 5, 8, 0);
+    const poster = [at(node, 5, 10), at(node, 5, 5)].find((v) => typeof v === "string" && v.startsWith("https://")) || null;
+    const clip = at(node, 7, 0, 8);
+    const mime = mimeIn(node.slice(6));
+    records.push({
+      workflowId: node[0].toLowerCase(),
+      projectId: node[1].toLowerCase(),
+      mediaId: node[2].toLowerCase(),
+      createdMs: typeof created === "number" ? created * 1000 : null,
+      status: typeof status === "number" ? status : null,
+      poster,
+      mime,
+      kind: mime ? mime.split("/")[0] : null,
+      clipUrl: typeof clip === "string" && clip.startsWith("https://") ? clip : null,
+    });
+  }
+  return records;
+}
+
+/**
+ * Clips (anything not known to be an image) created no earlier than `sinceMs`
+ * minus the skew margin, oldest first. A record with a status must be done.
+ */
+export function clipRecordsSince(records, sinceMs) {
+  return records
+    .filter(
+      (r) =>
+        r.kind !== "image" &&
+        (r.status === null || r.status === STATUS_DONE) &&
+        r.createdMs !== null &&
+        r.createdMs >= sinceMs - SUBMIT_MARGIN_MS
+    )
+    .sort((a, b) => a.createdMs - b.createdMs);
+}
+
+/** Images created since `sinceMs`: what the agent made when it did not make a video. */
+export function imageRecordsSince(records, sinceMs) {
+  return records.filter((r) => r.kind === "image" && r.createdMs !== null && r.createdMs >= sinceMs - SUBMIT_MARGIN_MS);
+}
+
+/** Grid + chat video state (gflow `_VIDEO_JS`). */
+async function readVideoState(page) {
+  return page
+    .evaluate(() => {
+      const src = (e) => (e ? e.currentSrc || e.src || "" : "");
+      return {
+        pending: document.querySelectorAll("flow-video-tile flow-pending-tile").length,
+        finished: [...document.querySelectorAll("flow-video-tile")]
+          .filter((t) => !t.querySelector("flow-pending-tile"))
+          .map((t) => ({ video: src(t.querySelector("video")), img: src(t.querySelector("img")) })),
+        options: [...document.querySelectorAll("flow-a2ui-video-option img")].map((i) => i.currentSrc || i.src || ""),
+        // Image tiles too: on the 2026-11-20 build the agent can answer a video
+        // request with a picture, and that must end the wait, not time it out.
+        images: [...document.querySelectorAll("flow-image-tile img")].map((i) => i.currentSrc || i.src || ""),
+      };
+    })
+    .catch(() => ({ pending: 0, finished: [], options: [], images: [] }));
+}
+
+const tileKey = (tile) => (tile ? asbToken(tile.img) || asbToken(tile.video) || tile.img || tile.video || "" : "");
+
+/** Clip uuids the page still names through `flow-content.google/video/<uuid>` (older builds). */
+function namedVideoIds(state) {
+  const ids = [];
+  for (const srcUrl of [...state.finished.flatMap((t) => [t.video, t.img]), ...state.options]) {
+    const m = CDN_VIDEO_RE.exec(srcUrl || "");
+    if (m && !ids.includes(m[1].toLowerCase())) ids.push(m[1].toLowerCase());
+  }
+  return ids;
+}
+
+/**
+ * The project's `Zzl0ze` listing, read in a second tab so the generating page
+ * never navigates mid-run. Null when Flow did not answer within the budget.
+ */
+export async function readProjectListing(page, projectId, { budgetMs = 30000 } = {}) {
+  const tab = await page.context().newPage();
+  try {
+    const got = new Promise((resolve) => {
+      tab.on("response", async (res) => {
+        if (!res.url().includes(LISTING_RPC)) return;
+        try {
+          const hit = parseBatchexecute(await res.text()).find((f) => f.rpcid === LISTING_RPC);
+          if (hit) resolve(hit.payload);
+        } catch {
+          /* a lost body leaves the read empty */
+        }
+      });
+    });
+    await tab.goto(`https://flow.google.com/project/${projectId}`, { waitUntil: "domcontentloaded", timeout: budgetMs }).catch(() => {});
+    return await Promise.race([got, new Promise((resolve) => setTimeout(() => resolve(null), budgetMs))]);
+  } finally {
+    await tab.close().catch(() => {});
+  }
+}
+
 /**
  * Finish a job whose submit already happened but whose orchestrating process
- * died: answer the pending credit gate, then download. Never submits again.
+ * died (a server restart, a crash): find the clip Flow made for it and
+ * download it. Never submits again.
+ *
+ * The clip is the oldest finished video in the project's listing created after
+ * the job started. That is exact while one job at a time renders into a
+ * project (the bridge queue is serial); a clip made by hand in the same project
+ * between the job's start and its own clip would be picked instead.
  */
-export async function resumeFlowJob(job, { onStep = () => {}, channel = "", headless = null } = {}) {
+export async function resumeFlowJob(job, { onStep = () => {}, channel = "", headless = null, claimed = [] } = {}) {
   const projectId = job.projectId || process.env.FLOW_PROJECT_ID;
   if (!projectId) throw fail("resume needs the Flow project id");
+  const since = Date.parse(job.startedAt || job.createdAt || "");
+  if (!Number.isFinite(since)) throw fail("resume needs the job's start time");
 
-  const { ctx, page, videos } = await openFlowPage({ profile: job.profile || "", channel, headless });
+  const { ctx, page } = await openFlowPage({ profile: job.profile || "", channel, headless });
   try {
-    onStep(`opening project ${projectId}`);
-    await page.goto(`https://flow.google.com/project/${projectId}`, { waitUntil: "domcontentloaded", timeout: 90000 });
-    // Baseline AFTER the project's own media load, so the clip that is still
-    // waiting for approval is not mistaken for an already-existing one.
-    await page.waitForTimeout(10000);
-    const baseline = new Set(videos.keys());
-    return await harvestFlowResult(page, { videos, baseline, job, onStep });
+    onStep(`reading project ${projectId}`);
+    const listing = await readProjectListing(page, projectId, { budgetMs: 45000 });
+    if (!listing) throw fail(`Flow did not return the listing of project ${projectId}; nothing was submitted`);
+    const taken = new Set(claimed.map((id) => String(id).toLowerCase()));
+    const records = listingRecords(listing);
+    const record = clipRecordsSince(records, since).find((r) => !taken.has(r.mediaId) && !taken.has(r.workflowId));
+    if (!record) {
+      // Uploaded start frames are image records too, so only say what kind of
+      // result there is, not how many images belong to this job.
+      const images = imageRecordsSince(records, since).length;
+      throw fail(
+        images
+          ? "Flow made no video after this job started, only image(s): the agent answered with a picture instead of a clip. There is nothing to download and no video credits were charged. Queue the job again."
+          : `No clip in project ${projectId} created after this job started. It may still be rendering (try again in a minute), or Flow never made it. Nothing was submitted.`
+      );
+    }
+    const out = await downloadClip(page, record, job, { projectId, onStep });
+    return { ...out, mediaId: record.mediaId };
   } finally {
     await ctx.close().catch(() => {});
   }
@@ -357,10 +602,28 @@ export async function renderFlowInComposer(job, { onStep = () => {}, onProject =
     const submit = await firstVisible(page, SEL.submit, { timeout: 15000 });
     if (!submit) throw fail("Submit button not found; nothing was submitted, no credits spent");
 
-    onStep("submitting");
-    await submit.click();
+    // What the grid shows right before submit: a clip already here is not ours.
+    const before = await readVideoState(page);
+    const domBaseline = {
+      head: tileKey(before.finished[0]),
+      ids: new Set(namedVideoIds(before)),
+      tokens: new Set(before.finished.flatMap((t) => [asbToken(t.img), asbToken(t.video)]).filter(Boolean)),
+      images: new Set(before.images.map((s) => asbToken(s) || s).filter(Boolean)),
+    };
 
-    const out = await harvestFlowResult(page, { videos, baseline, job: { ...job, projectId }, onStep });
+    onStep("submitting");
+    const submittedAt = Date.now();
+    await submit.click();
+    onStep("submitted, waiting for Flow");
+
+    const out = await harvestFlowResult(page, {
+      videos,
+      baseline,
+      domBaseline,
+      submittedAt,
+      job: { ...job, projectId },
+      onStep,
+    });
     return { ...out, projectId };
   } finally {
     await ctx.close().catch(() => {});
@@ -370,27 +633,79 @@ export async function renderFlowInComposer(job, { onStep = () => {}, onProject =
 /**
  * Answer the credit gate when it appears and download the finished clip.
  *
- * Split out of renderFlowInComposer so a run whose orchestrating process died
- * after submit can be finished without submitting again: pass a live page and a
- * baseline of already-known video ids. The gate is answered at most once per
- * call, and never re-submits.
+ * The clip is found by whichever signal comes first:
+ *   * a `flow-content.google/video/<uuid>` id in a response (builds before 2026-11-19);
+ *   * the DOM: no pending tile left, a new finished tile, and its uuid either on
+ *     the page or, from the 2026-11-19 build on, in the project listing record
+ *     whose poster shares the tile's /asb/ token and was created after submit.
+ * The gate is answered at most once per call, and nothing here re-submits.
  */
-export async function harvestFlowResult(page, { videos, baseline, job, onStep = () => {} }) {
-  const dir = process.env.FLOW_OUT_DIR || join(process.cwd(), "tmp", "flow_out");
-  mkdirSync(dir, { recursive: true });
-
+export async function harvestFlowResult(
+  page,
+  { videos, baseline, domBaseline = null, submittedAt = Date.now(), job, onStep = () => {} }
+) {
+  const projectId = job.projectId || process.env.FLOW_PROJECT_ID;
   const deadline = Date.now() + TIMEOUT_MS();
   let approved = null;
   let hit = null;
+  let sawPending = false;
+  let listingAfter = 0;
+  let lastLookup = "";
+  let imageSince = 0;
 
   while (Date.now() < deadline) {
-    for (const [id, url] of videos) {
+    for (const [id] of videos) {
       if (!baseline.has(id)) {
-        hit = { id, url };
+        hit = { mediaId: id.toLowerCase(), workflowId: null };
         break;
       }
     }
     if (hit) break;
+
+    if (domBaseline) {
+      const state = await readVideoState(page);
+      if (state.pending) {
+        if (!sawPending) onStep("rendering in Flow");
+        sawPending = true;
+      }
+      const head = state.finished[0];
+      const fresh = head && !state.pending && tileKey(head) !== domBaseline.head;
+      if (fresh) {
+        const named = namedVideoIds(state).filter((id) => !domBaseline.ids.has(id));
+        const token = asbToken(head.img) || asbToken(head.video);
+        if (named.length) {
+          hit = { mediaId: named[0], workflowId: null };
+          break;
+        }
+        if (token && !domBaseline.tokens.has(token) && projectId && Date.now() >= listingAfter) {
+          listingAfter = Date.now() + LISTING_RETRY_MS;
+          const listing = await readProjectListing(page, projectId, { budgetMs: 30000 });
+          const record = listing
+            ? clipRecordsSince(listingRecords(listing), submittedAt).find((r) => asbToken(r.poster) === token)
+            : null;
+          lastLookup = listing ? (record ? "" : "listing has no record for the new tile yet") : "listing did not answer";
+          if (record) {
+            hit = record;
+            break;
+          }
+        }
+      }
+
+      // A new picture and no clip on the way: the agent answered with an image.
+      // Images cost no credits, so stop now instead of waiting out the timeout.
+      const newImages = state.images.filter((s) => !domBaseline.images.has(asbToken(s) || s));
+      if (newImages.length && !state.pending && !fresh) {
+        imageSince ||= Date.now();
+        if (Date.now() - imageSince > 30000) {
+          throw fail(
+            `Flow's agent made ${newImages.length} image(s) instead of a video (no video credits charged). The prompt probably read as an image edit: queue it again, describing the motion.`
+          );
+        }
+      } else {
+        imageSince = 0;
+      }
+    }
+
     // No separate approval window: the agent can sit on the request for minutes
     // before it asks ("menunggu dalam antrean"), so the gate is answered
     // whenever it shows up, up to the overall render timeout.
@@ -407,15 +722,33 @@ export async function harvestFlowResult(page, { videos, baseline, job, onStep = 
 
   if (!hit) {
     throw fail(
-      `Flow produced no video within ${Math.round(TIMEOUT_MS() / 60000)} min (gate answered=${approved}). The generation may still be running in Flow: check the project before retrying, a second submit spends credits twice.`
+      `Flow produced no video within ${Math.round(TIMEOUT_MS() / 60000)} min (gate answered=${approved}${lastLookup ? `; ${lastLookup}` : ""}). The generation may still be running or already finished in Flow: use Resume on this job (it downloads without submitting again) before retrying, a second submit spends credits twice.`
     );
   }
 
-  const out = await downloadFlowMedia(page, hit.id, join(dir, `${job.id}.mp4`), {
-    projectId: job.projectId || process.env.FLOW_PROJECT_ID,
-    onStep,
-  });
-  return { ...out, approved, mediaId: hit.id };
+  const out = await downloadClip(page, hit, job, { projectId, onStep });
+  return { ...out, approved, mediaId: hit.mediaId };
+}
+
+/**
+ * Download a finished clip through its edit page. The listing names two ids
+ * (media and workflow) and the edit route has taken the one the old
+ * `flow-content.google/video/<id>` URL carried, so both are tried.
+ */
+async function downloadClip(page, record, job, { projectId, onStep = () => {} } = {}) {
+  const dir = process.env.FLOW_OUT_DIR || join(process.cwd(), "tmp", "flow_out");
+  mkdirSync(dir, { recursive: true });
+  const outPath = join(dir, `${job.id}.mp4`);
+  const ids = [record.mediaId, record.workflowId].filter((id, i, all) => id && all.indexOf(id) === i);
+  let lastError = null;
+  for (const id of ids) {
+    try {
+      return await downloadFlowMedia(page, id, outPath, { projectId, onStep });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || fail("no clip id to download");
 }
 
 /**
@@ -459,7 +792,12 @@ export async function downloadFlowMedia(page, mediaId, outPath, { projectId, onS
  * explicitly so the render matches what the credit table charged for.
  */
 export function composePrompt(job) {
-  const bits = [`Buat 1 video berdurasi ${job.duration} detik`, `rasio ${job.aspect}`];
-  if (job.model) bits.push(`model ${job.model}`);
-  return `${job.prompt}\n\n(${bits.join(", ")}. Tanpa pertanyaan balik, langsung buat.)`;
+  // The intent goes first. On the 2026-11-20 build, a user prompt followed by a
+  // trailing "(make a video…)" note, with an image attached, was answered with
+  // a picture (an image edit) instead of a clip. gflow 0.103 leads with the
+  // same English sentence ("Make me a N second video of …") on every locale.
+  const head = [`Make me a ${job.duration} second video in a ${job.aspect} aspect ratio`];
+  if (job.model) head.push(`using the ${flowCliModel(job.model)} model`);
+  const frame = job.imagePath ? " Animate the attached image: use it as the first frame of the video." : "";
+  return `${head.join(", ")}.${frame} Video description: ${job.prompt}\n\nGenerate exactly one video now, without follow-up questions. Do not generate an image.`;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { composePrompt, profileDir } from "../../src/lib/flow/composer.js";
+import { composePrompt, profileDir, windowPositionArg } from "../../src/lib/flow/composer.js";
 import { flowPriceTable } from "../../src/lib/flow/bridge.js";
 import { flowCreditCost } from "../../open-sse/providers/registry/flow.js";
 
@@ -9,15 +9,54 @@ describe("flow composer prompt", () => {
   // picks its own defaults, and the credit charged then does not match the table.
   it("states duration, aspect and model so the render matches the price", () => {
     const prompt = composePrompt({ prompt: "lima orang makan", duration: 4, aspect: "16:9", model: "omni-flash" });
-    expect(prompt).toContain("4 detik");
+    expect(prompt).toContain("4 second video");
     expect(prompt).toContain("16:9");
-    expect(prompt).toContain("omni-flash");
-    expect(prompt.startsWith("lima orang makan")).toBe(true);
+    // omni-flash, or omni-1.2-flash once Omni Flash 1.1 has retired
+    expect(prompt).toMatch(/omni-(1\.2-)?flash/);
+  });
+
+  // Flow's 2026-11-20 agent answered "<prompt> (make a video…)" plus an
+  // attached image with a picture: the video request has to lead.
+  it("leads with the video request and names the attached frame for i2v", () => {
+    const prompt = composePrompt({ prompt: "tangan memegang produk", duration: 4, aspect: "16:9", imagePath: "x.png" });
+    expect(prompt.startsWith("Make me a 4 second video")).toBe(true);
+    expect(prompt).toContain("first frame");
+    expect(prompt).toContain("Do not generate an image");
   });
 
   it("keeps the user prompt verbatim before the instruction", () => {
     const raw = "a dog\nwith a newline";
     expect(composePrompt({ prompt: raw, duration: 8, aspect: "9:16" })).toContain(raw);
+  });
+});
+
+// Headless is rejected by reCAPTCHA, so the composer stays headed and parks
+// its window off-screen instead.
+describe("flow composer window position", () => {
+  const withEnv = (value, fn) => {
+    const previous = process.env.FLOW_WINDOW_POSITION;
+    if (value === undefined) delete process.env.FLOW_WINDOW_POSITION;
+    else process.env.FLOW_WINDOW_POSITION = value;
+    try {
+      return fn();
+    } finally {
+      if (previous === undefined) delete process.env.FLOW_WINDOW_POSITION;
+      else process.env.FLOW_WINDOW_POSITION = previous;
+    }
+  };
+
+  it("parks the window off-screen by default", () => {
+    withEnv(undefined, () => expect(windowPositionArg()).toBe("--window-position=-30000,-30000"));
+  });
+
+  it("lets Chrome place the window when off-screen is turned off", () => {
+    withEnv(undefined, () => expect(windowPositionArg({ offscreen: false })).toBeNull());
+  });
+
+  it("takes an explicit X,Y from FLOW_WINDOW_POSITION, and empty means visible", () => {
+    withEnv("100, 50", () => expect(windowPositionArg({ offscreen: false })).toBe("--window-position=100,50"));
+    withEnv("", () => expect(windowPositionArg()).toBeNull());
+    withEnv("nonsense", () => expect(windowPositionArg()).toBeNull());
   });
 });
 

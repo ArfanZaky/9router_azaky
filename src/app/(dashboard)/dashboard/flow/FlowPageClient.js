@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Button, Card, SegmentedControl, Select } from "@/shared/components";
 import FlowGeneratePanel from "./FlowGeneratePanel";
+import FlowImageGeneratePanel from "./FlowImageGeneratePanel";
 import ImagesPanel from "./ImagesPanel";
 import CharactersPanel from "./CharactersPanel";
 import JobsPanel from "./JobsPanel";
@@ -11,6 +12,7 @@ import ConfigPanel from "./ConfigPanel";
 
 const TABS = [
   { value: "generate", label: "Generate", icon: "movie" },
+  { value: "image", label: "Generate Image", icon: "image" },
   { value: "images", label: "Images", icon: "photo_library" },
   { value: "characters", label: "Characters", icon: "person" },
   { value: "jobs", label: "Jobs", icon: "list" },
@@ -219,6 +221,9 @@ export default function FlowPageClient() {
         />
       ) : null}
 
+      {tab === "image" ? (
+        <FlowImageGeneratePanel price={price} profiles={profiles} activeProfile={activeProfile} onUseForVideo={useForVideo} />
+      ) : null}
       {tab === "images" ? <ImagesPanel onUseForVideo={useForVideo} /> : null}
       {tab === "characters" ? <CharactersPanel onUseForVideo={useForVideo} /> : null}
       {tab === "jobs" ? <JobsPanel jobs={jobs} onResume={resume} reloading={busy} /> : null}

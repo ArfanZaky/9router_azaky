@@ -15,14 +15,17 @@
 // "driver not available" instead of pretending to render.
 import {
   FLOW_IMAGE_MODELS,
+  FLOW_RETIREMENT_DATE,
   FLOW_VIDEO_MODELS,
   flowCreditCost,
+  isFlowModelRetired,
 } from "../../../open-sse/providers/registry/flow.js";
 import {
   addFlowCreditSnapshot,
   claimNextFlowJob,
   createFlowJob,
   getFlowJob,
+  listFlowJobs,
   getLatestFlowCreditSnapshot,
   failStaleFlowJobs,
   sumFlowCreditsSince,
@@ -40,6 +43,8 @@ const DEFAULT_FLOW_CONFIG = {
   dailyBudgetCredits: 0,
   hostResolution: "720p",
   headless: false,
+  // Park the composer's headed Chrome off-screen (headless is rejected by reCAPTCHA).
+  offscreen: true,
   channel: "chrome",
   renderTimeoutMinutes: 15,
   composerTimeoutMinutes: 20,
@@ -70,6 +75,7 @@ export async function getFlowConfig() {
     hostResolution: process.env.FLOW_HOST_RESOLUTION || merged.hostResolution || "720p",
     headless:
       process.env.FLOW_HEADLESS !== undefined ? process.env.FLOW_HEADLESS === "1" : Boolean(merged.headless),
+    offscreen: merged.offscreen !== false,
     channel: process.env.FLOW_CHANNEL || merged.channel || "chrome",
     renderTimeoutMinutes: Number(merged.renderTimeoutMinutes) || 15,
     composerTimeoutMinutes: Number(merged.composerTimeoutMinutes) || 20,
@@ -96,6 +102,7 @@ export async function saveFlowConfig(patch = {}) {
         ? patch.hostResolution
         : current.hostResolution,
     headless: patch.headless !== undefined ? Boolean(patch.headless) : current.headless,
+    offscreen: patch.offscreen !== undefined ? Boolean(patch.offscreen) : current.offscreen,
     channel:
       patch.channel && ["chrome", "auto", "internal"].includes(patch.channel) ? patch.channel : current.channel,
     renderTimeoutMinutes:
@@ -132,11 +139,16 @@ export class FlowRequestError extends Error {
 }
 
 /** Validate a generation request against the registry table, before any spend. */
-export function validateFlowRequest(body = {}) {
+export function validateFlowRequest(body = {}, { now = new Date() } = {}) {
   const mode = body.mode === "i2v" || body.imagePath || body.image ? "i2v" : "t2v";
   const model = String(body.model || "omni-flash");
   const spec = FLOW_VIDEO_MODELS[model];
   if (!spec) throw new FlowRequestError(`Unknown Flow model '${model}'`);
+  if (isFlowModelRetired(model, { at: now })) {
+    throw new FlowRequestError(
+      `${spec.name} was retired by Google Flow on ${spec.retiresOn}; use omni-flash or veo-lite (no credits spent)`
+    );
+  }
 
   const prompt = String(body.prompt || "").trim();
   if (!prompt) throw new FlowRequestError("prompt is required");
@@ -175,7 +187,7 @@ export function validateFlowRequest(body = {}) {
     throw new FlowRequestError("i2v needs a local imagePath (upload the frame from the Flow page first)");
   }
 
-  const creditCost = flowCreditCost(model, { duration, resolution });
+  const creditCost = flowCreditCost(model, { duration, resolution, at: now });
   if (creditCost === null) throw new FlowRequestError(`${model} has no price for ${duration}s ${resolution || ""}`.trim());
 
   return { mode, model, prompt, duration, aspect, resolution, imagePath: body.imagePath || null, creditCost };
@@ -412,14 +424,96 @@ async function runJob(job) {
   }
 }
 
-let activeExclusive = Promise.resolve();
+// Kept on globalThis: Next may load this module once per route bundle, and the
+// browser lock and the set of live jobs must be one per process, not per bundle.
+const shared = (globalThis.__flowBridgeState ||= { chain: Promise.resolve(), live: new Set(), bootedAt: Date.now() });
 let pumping = false;
 
 /** Serialize browser/CLI actions so image and video renders never collide on the Chrome profile. */
 function runExclusive(fn) {
-  const next = activeExclusive.then(fn, fn);
-  activeExclusive = next.catch(() => {});
+  const next = shared.chain.then(fn, fn);
+  shared.chain = next.catch(() => {});
   return next;
+}
+
+/**
+ * Jobs left 'running' by a process that no longer exists (a pm2 restart, a
+ * crash): started before this process booted and not being resumed here. Mark
+ * them failed at once, pointing at Resume, instead of leaving them spinning
+ * until the 45-minute stale sweep.
+ */
+export async function reconcileOrphanedFlowJobs() {
+  const running = await listFlowJobs({ status: "running", limit: 50 });
+  let changed = 0;
+  for (const job of running) {
+    if (shared.live.has(job.id)) continue;
+    const started = Date.parse(job.startedAt || "");
+    if (!Number.isFinite(started) || started >= shared.bootedAt) continue;
+    await updateFlowJob(job.id, {
+      status: "failed",
+      step: "interrupted",
+      error:
+        job.mode === "i2v"
+          ? "The server restarted while this job was running. Flow may have finished the clip: press Resume to download it (no new submit, no new credits)."
+          : "The server restarted while this job was running. Check the Flow project before re-running: a second submit spends credits twice.",
+      finishedAt: new Date().toISOString(),
+    });
+    changed += 1;
+  }
+  return changed;
+}
+
+/**
+ * Resume one i2v job through the same serial lock as renders: find the clip
+ * Flow already made for it, download it, and store it like a normal render.
+ * Never submits again.
+ */
+export async function resumeFlowJobQueued(id) {
+  const job = await getFlowJob(id);
+  if (!job) throw new FlowRequestError("Flow job not found", 404);
+  if (job.status === "completed") throw new FlowRequestError("Job already completed", 409);
+  if (job.mode !== "i2v") {
+    throw new FlowRequestError(
+      "Only composer (i2v) jobs can be resumed. A t2v job runs through the gflow CLI: check the Flow project, then re-run it.",
+      409
+    );
+  }
+  if (job.status === "running" && shared.live.has(job.id)) {
+    throw new FlowRequestError("This job is still running in this server; wait for it to finish.", 409);
+  }
+
+  return runExclusive(async () => {
+    shared.live.add(job.id);
+    await updateFlowJob(job.id, { status: "running", step: "resuming", error: null });
+    try {
+      const cfg = await getFlowConfig();
+      const { resumeFlowJob } = await import("./composer.js");
+      const result = await resumeFlowJob(job, {
+        onStep: (step) => {
+          updateFlowJob(job.id, { step: String(step).slice(0, 200) }).catch(() => {});
+        },
+        channel: cfg.channel,
+      });
+      return await updateFlowJob(job.id, {
+        status: "completed",
+        step: "done",
+        error: null,
+        mediaPath: await persistVideo(job.id, result.mediaPath),
+        sourceUrl: result.sourceUrl || null,
+        finishedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      await updateFlowJob(job.id, {
+        status: "failed",
+        step: "resume-failed",
+        error: String(error?.message || error).slice(0, 1000),
+        finishedAt: new Date().toISOString(),
+      });
+      throw error;
+    } finally {
+      shared.live.delete(job.id);
+    }
+  });
 }
 
 /** Resolve an image input (local path, /api/flow/images/{id}, /api/image-gen/assets/{id}, data:image/..., or http URL) to an on-disk path. */
@@ -503,7 +597,12 @@ async function pump() {
       const job = await claimNextFlowJob();
       if (!job) break;
       active += 1;
-      await runExclusive(() => runJob(job));
+      shared.live.add(job.id);
+      try {
+        await runExclusive(() => runJob(job));
+      } finally {
+        shared.live.delete(job.id);
+      }
       active -= 1;
     }
   } catch (error) {
@@ -514,10 +613,11 @@ async function pump() {
 }
 
 /**
- * Render one image through the Flow browser bridge (serialized with video jobs)
- * and persist it into flowImages + media/images so it is reusable for i2v.
+ * Render 1-4 images through the Flow browser bridge (serialized with video
+ * jobs) and persist each into flowImages + media/images so it is reusable for
+ * i2v. Returns the first image's fields plus `images` with all of them.
  */
-export async function generateFlowImage(body = {}) {
+export async function generateFlowImage(body = {}, { refPaths = [] } = {}) {
   const model = String(body.model || "nano2").replace(/^flow\//i, "");
   const spec = FLOW_IMAGE_MODELS[model];
   if (!spec) throw new FlowRequestError(`Unknown Flow image model '${model}'`);
@@ -540,20 +640,39 @@ export async function generateFlowImage(body = {}) {
   }
   if (!aspect || !spec.aspects.includes(aspect)) aspect = spec.aspects[0];
 
-  const rawRef = body.imagePath || body.image || (Array.isArray(body.images) ? body.images[0] : null);
-  const imagePath = rawRef ? await resolveFlowImageInput(rawRef) : null;
+  // OpenAI's `n`, or `count` from the dashboard. Flow renders 1-4 per request.
+  const count = Number(body.count ?? body.n ?? 1);
+  if (!Number.isInteger(count) || count < 1 || count > 4) {
+    throw new FlowRequestError("count must be a whole number from 1 to 4");
+  }
+
+  // References: `refPaths` are paths the dashboard route already resolved from
+  // library ids. They come as a separate argument, never from `body`, because
+  // `body` is whatever a remote /v1/images client sent.
+  const fromBody = [body.imagePath || body.image, ...(Array.isArray(body.images) ? body.images : [])].filter(Boolean);
+  const rawRefs = refPaths.length ? refPaths : fromBody;
+  if (rawRefs.length > spec.maxRefs) {
+    throw new FlowRequestError(`${spec.name} takes at most ${spec.maxRefs} reference images (got ${rawRefs.length})`);
+  }
+  const refs = [];
+  for (const raw of rawRefs) {
+    const resolved = refPaths.length ? raw : await resolveFlowImageInput(raw);
+    if (!resolved) throw new FlowRequestError("a reference image could not be read; nothing was submitted");
+    refs.push(resolved);
+  }
 
   const { randomUUID } = await import("node:crypto");
   const id = randomUUID();
 
   if (DRY_RUN()) {
-    return {
-      id,
-      url: `/api/flow/images/${id}`,
+    const ids = Array.from({ length: count }, (_, i) => (i === 0 ? id : randomUUID()));
+    const images = ids.map((imageId) => ({
+      id: imageId,
+      url: `/api/flow/images/${imageId}`,
       b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
       mime: "image/png",
-      dry_run: true,
-    };
+    }));
+    return { ...images[0], images, dry_run: true };
   }
 
   return runExclusive(async () => {
@@ -564,9 +683,11 @@ export async function generateFlowImage(body = {}) {
       prompt,
       model,
       aspect,
-      imagePath,
+      count,
+      refs,
       projectId: body.projectId || cfg.defaultProjectId || null,
       profile: body.profile || cfg.activeProfile || null,
+      timeoutMs: (cfg.renderTimeoutMinutes || 15) * 60 * 1000,
     });
 
     const [{ readFileSync }, { writeImageAssetFile }, { addFlowImage }] = await Promise.all([
@@ -575,22 +696,24 @@ export async function generateFlowImage(body = {}) {
       import("../db/repos/flowImagesRepo.js"),
     ]);
 
-    const buffer = readFileSync(result.mediaPath);
-    const written = writeImageAssetFile({ id, buffer, mime: "image/png" });
-    await addFlowImage({
-      id,
-      name: prompt.slice(0, 60),
-      path: written.rel,
-      mime: written.mime,
-      origin: "generated",
-    });
+    const paths = result.mediaPaths?.length ? result.mediaPaths : [result.mediaPath];
+    const images = [];
+    for (const [index, path] of paths.entries()) {
+      const imageId = index === 0 ? id : randomUUID();
+      const buffer = readFileSync(path);
+      const written = writeImageAssetFile({ id: imageId, buffer, mime: "image/png" });
+      const label = prompt.slice(0, 60);
+      await addFlowImage({
+        id: imageId,
+        name: paths.length > 1 ? `${label} (${index + 1})` : label,
+        path: written.rel,
+        mime: written.mime,
+        origin: "generated",
+      });
+      images.push({ id: imageId, url: `/api/flow/images/${imageId}`, b64_json: buffer.toString("base64"), mime: written.mime });
+    }
 
-    return {
-      id,
-      url: `/api/flow/images/${id}`,
-      b64_json: buffer.toString("base64"),
-      mime: written.mime,
-    };
+    return { ...images[0], images };
   });
 }
 
@@ -626,7 +749,7 @@ export function flowJobToResponse(job) {
 }
 
 /** Model specs with the host-pinned price for every duration, for the dashboard. */
-export function flowPriceTable() {
+export function flowPriceTable({ now = new Date() } = {}) {
   const host = hostResolution();
   const models = Object.entries(FLOW_VIDEO_MODELS).map(([id, spec]) => {
     // Only omni-flash exposes a resolution switch, and this host pins it, so a
@@ -640,9 +763,11 @@ export function flowPriceTable() {
       aspects: spec.aspects,
       resolutions,
       maxRefs: spec.maxRefs,
+      retiresOn: spec.retiresOn || null,
+      retired: isFlowModelRetired(id, { at: now }),
       costs: resolutions.flatMap((resolution) =>
         spec.durations.map((duration) => {
-          const credits = flowCreditCost(id, { duration, resolution });
+          const credits = flowCreditCost(id, { duration, resolution, at: now });
           return { duration, resolution, credits, perSecond: credits === null ? null : Number((credits / duration).toFixed(2)) };
         })
       ),
@@ -662,10 +787,29 @@ export function flowPriceTable() {
     staleJobTimeoutMin: 45,
     creditSettlementDelaySec: 15,
     supportedModes: ["t2v", "i2v", "t2i", "i2i"],
+    // support.google.com/flow/answer/16526234: every account gets 50 credits a
+    // day; a plan adds its monthly grant on top. Unused credits do not roll over.
     tiers: [
-      { tier: "Google AI Pro", monthlyCredits: 1000, note: "Termasuk akses Veo 3.1 Lite/Fast & Omni Flash" },
-      { tier: "Google AI Ultra", monthlyCredits: 12500, note: "Termasuk akses Veo 3.1 Quality & prioritas penuh" },
+      { tier: "Tanpa langganan", credits: 50, period: "hari", note: "50 kredit per hari, berlaku untuk semua akun. Video bisa ditolak saat jam sibuk (sekitar 14.00–17.00 UTC)." },
+      { tier: "Google AI Plus", credits: 200, period: "bulan", note: "Tambahan di atas 50/hari. Bisa membuat clip Omni sampai 15 detik dan upscale ke 1080p." },
+      { tier: "Google AI Pro", credits: 1000, period: "bulan", note: "Tambahan di atas 50/hari. Bisa membuat clip Omni sampai 15 detik dan upscale ke 1080p." },
+      { tier: "Google AI Ultra ($100)", credits: 10000, period: "bulan", note: "Veo 3.1 Lite 5 kredit (bukan 10), upscale 4K, kuota gambar lebih besar." },
+      { tier: "Google AI Ultra ($200)", credits: 25000, period: "bulan", note: "Seperti Ultra $100, plus Veo 3.1 Lite lower priority (0 kredit)." },
     ],
+    // Image generation spends no credits; Flow caps it per day instead.
+    imageDailyLimits: [
+      { item: "Nano Banana Pro", free: 20, plusPro: 100, ultra: 500 },
+      { item: "Nano Banana 2.1 + 2 Lite (kuota gabungan)", free: 400, plusPro: 1000, ultra: 1000 },
+      { item: "Upscale gambar 2K", free: 200, plusPro: 200, ultra: 200 },
+      { item: "Upscale gambar 4K", free: 0, plusPro: 0, ultra: 200 },
+    ],
+    retirement: {
+      date: FLOW_RETIREMENT_DATE,
+      models: Object.entries(FLOW_VIDEO_MODELS)
+        .filter(([, spec]) => spec.retiresOn)
+        .map(([id]) => id),
+      note: "Google mempensiunkan Veo 3.1 Fast, Veo 3.1 Quality, dan Omni Flash 1.1 pada 5 Desember 2026. Sejak tanggal itu Omni Flash dihitung dengan tarif 1.2: 1 kredit/detik di 360p, 3 kredit/detik di 720p.",
+    },
   };
   return { hostResolution: host, models, imageModels, limits };
 }
